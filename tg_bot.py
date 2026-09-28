@@ -819,7 +819,6 @@ async def cmd_start(message: types.Message):
         return
     await message.answer(
         "🤖 Бот отчётности по продажам\n"
-        "━" * 20 + "\n"
         "🟣 Ozon + 🔵 Wildberries\n\n"
         "Команды:\n"
         "/backfill — выгрузка за 30 дней (Ozon + WB)\n"
