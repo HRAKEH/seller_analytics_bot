@@ -176,11 +176,16 @@ def _parse_wb_sales(rows, target_date_str=None):
             continue
         sid = str(row.get("saleID", "")).upper()
         try:
-            raw_price = row.get("forPay")
-            if raw_price is None:
+            # priceWithDisc — цена после скидок, ДО комиссии WB (аналог revenue Ozon)
+            # forPay — сумма к перечислению продавцу (ПОСЛЕ комиссии) — не используем как основную
+            # Поля могут быть 0 первые 24 часа (заполняются асинхронно) — проверяем через `not`
+            raw_price = row.get("priceWithDisc")
+            if not raw_price:
                 raw_price = row.get("finishedPrice")
-            if raw_price is None:
-                raw_price = row.get("totalCost")
+            if not raw_price:
+                raw_price = row.get("forPay")
+            if not raw_price:
+                raw_price = row.get("totalPrice")
             price = float(raw_price or 0)
         except (TypeError, ValueError):
             price = 0.0
@@ -287,8 +292,10 @@ async def ozon_sales(d: date, client: httpx.AsyncClient, force_refresh: bool = F
 
     units, amount = int(metrics[0] or 0), float(metrics[1] or 0)
 
-    # FBS имеет отдельный rate limit, поэтому каждый запрос проходит через тот же gate.
-    orders, cursor = 0, ""
+    # Сначала FBS, затем FBO — обе схемы учитываются в числе заказов
+    orders = 0
+    fbs_error = None
+    cursor = ""
     try:
         for _ in range(100):
             payload = {
@@ -301,8 +308,8 @@ async def ozon_sales(d: date, client: httpx.AsyncClient, force_refresh: bool = F
                 client, "https://api-seller.ozon.ru/v4/posting/fbs/list", payload, _ozon_headers()
             )
             if ferr:
-                return {"units": units, "amount": amount, "orders": None,
-                        "received_at": datetime.now().isoformat(), "error": ferr}
+                fbs_error = ferr
+                break
             obj2 = (fbs or {}).get("result", fbs or {})
             postings = obj2.get("postings", []) or []
             ids = {str(x.get("posting_number") or x.get("order_id") or x.get("id"))
@@ -312,16 +319,52 @@ async def ozon_sales(d: date, client: httpx.AsyncClient, force_refresh: bool = F
                 break
             new_cursor = obj2.get("cursor") or obj2.get("last_id") or ""
             if not new_cursor or new_cursor == cursor:
-                return {"units": units, "amount": amount, "orders": None,
-                        "received_at": datetime.now().isoformat(), "error": "FBS: курсор не продвинулся"}
+                fbs_error = "FBS: курсор не продвинулся"
+                break
             cursor = new_cursor
         else:
-            return {"units": units, "amount": amount, "orders": None,
-                    "received_at": datetime.now().isoformat(), "error": "FBS: safety limit страниц"}
+            fbs_error = "FBS: safety limit страниц"
     except Exception as e:
         logger.exception("Ozon FBS error")
+        fbs_error = str(e)
+
+    # FBO postings — отдельный запрос
+    fbo_error = None
+    try:
+        fbo_payload = {
+            "dir": "asc",
+            "filter": {"since": ds + "T00:00:00.000Z",
+                       "to": (d + timedelta(days=1)).isoformat() + "T00:00:00.000Z"},
+            "limit": 100, "cursor": ""
+        }
+        for _ in range(100):
+            fbo, ferr = await _ozon_request_with_retry(
+                client, "https://api-seller.ozon.ru/v2/posting/fbo/list", fbo_payload, _ozon_headers()
+            )
+            if ferr:
+                fbo_error = ferr
+                break
+            obj_fbo = (fbo or {}).get("result", fbo or {})
+            postings = obj_fbo.get("postings", []) or []
+            ids = {str(x.get("posting_number") or x.get("order_id") or x.get("id"))
+                   for x in postings if x.get("posting_number") or x.get("order_id") or x.get("id")}
+            orders += len(ids) if ids else len(postings)
+            if not obj_fbo.get("has_next"):
+                break
+            new_cursor = obj_fbo.get("cursor") or obj_fbo.get("last_id") or ""
+            if not new_cursor or new_cursor == fbo_payload["cursor"]:
+                break
+            fbo_payload["cursor"] = new_cursor
+        else:
+            fbo_error = "FBO: safety limit страниц"
+    except Exception as e:
+        logger.exception("Ozon FBO error")
+        fbo_error = str(e)
+
+    # Если обе схемы упали и заказов 0 — ошибка
+    if fbs_error and fbo_error and orders == 0:
         return {"units": units, "amount": amount, "orders": None,
-                "received_at": datetime.now().isoformat(), "error": str(e)}
+                "received_at": datetime.now().isoformat(), "error": f"FBS: {fbs_error}; FBO: {fbo_error}"}
 
     return {"units": units, "amount": amount, "orders": orders,
             "received_at": datetime.now().isoformat(), "error": None}
@@ -475,7 +518,7 @@ async def wb_sales(d: date, client: httpx.AsyncClient, force_refresh: bool = Fal
         client, {"dateFrom": d.isoformat(), "flag": 1}, _wb_headers(), f"flag=1 {d.isoformat()}"
     )
     if err:
-        logger.error("🔵 WB %s: %s", d, err)
+        logger.error("🟣 WB %s: %s", d, err)
         return None
     return _parse_wb_sales(data, d.isoformat())
 
@@ -612,15 +655,15 @@ def format_report(row):
     lines = [f"📊 Отчёт за {row['report_date']}", "━" * 20]
     if row["ozon_received_at"]:
         oo = "—" if row["ozon_orders"] is None else str(row["ozon_orders"])
-        lines.append(f"🟣 OZON: {format_money(row['ozon_amount'] or 0)} | {row['ozon_units'] or 0} шт | {oo} зак.")
+        lines.append(f"🔵 OZON: {format_money(row['ozon_amount'] or 0)} | {row['ozon_units'] or 0} шт | {oo} зак.")
     else:
-        lines.append("🟣 OZON: ⏳ не загружен")
+        lines.append("🔵 OZON: ⏳ не загружен")
     if row["wb_error"]:
-        lines.append(f"🔵 WILDBERRIES: ❌ {row['wb_error']}")
+        lines.append(f"🟣 WILDBERRIES: ❌ {row['wb_error']}")
     elif row["wb_received_at"]:
-        lines.append(f"🔵 WILDBERRIES: {format_money(row['wb_amount'] or 0)} | {row['wb_units'] or 0} шт | {row['wb_orders'] or 0} зак.")
+        lines.append(f"🟣 WILDBERRIES: {format_money(row['wb_amount'] or 0)} | {row['wb_units'] or 0} шт | {row['wb_orders'] or 0} зак.")
     else:
-        lines.append("🔵 WILDBERRIES: ⏳ не загружен")
+        lines.append("🟣 WILDBERRIES: ⏳ не загружен")
     if row["ozon_received_at"] and row["wb_received_at"] and not row["wb_error"]:
         to = "—" if row["total_orders"] is None else str(row["total_orders"])
         lines.append(f"🟡 ИТОГО: {format_money(row['total_amount'] or 0)} | {row['total_units'] or 0} шт | {to} зак.")
@@ -636,8 +679,8 @@ def get_period_report(start_date, end_date, label):
     conn.row_factory = sqlite3.Row
     row = conn.execute("""
         SELECT COALESCE(SUM(ozon_amount),0) oz_a, COALESCE(SUM(ozon_units),0) oz_u,
-               SUM(ozon_orders) oz_o, COALESCE(SUM(wb_amount),0) wb_a,
-               COALESCE(SUM(wb_units),0) wb_u, SUM(wb_orders) wb_o, COUNT(*) days
+               COALESCE(SUM(ozon_orders),0) oz_o, COALESCE(SUM(wb_amount),0) wb_a,
+               COALESCE(SUM(wb_units),0) wb_u, COALESCE(SUM(wb_orders),0) wb_o, COUNT(*) days
         FROM daily_reports
         WHERE report_date BETWEEN ? AND ?
           AND ozon_received_at IS NOT NULL
@@ -650,8 +693,8 @@ def get_period_report(start_date, end_date, label):
     total_o = row["oz_o"] + row["wb_o"] if row["oz_o"] is not None and row["wb_o"] is not None else None
     return "\n".join([
         f"📊 Отчёт: {label}", f"Период: {start_date} — {end_date} ({row['days']} полных дн.)", "━"*20,
-        f"🟣 OZON: {format_money(row['oz_a'])} | {row['oz_u']} шт | {'—' if row['oz_o'] is None else row['oz_o']} зак.",
-        f"🔵 WILDBERRIES: {format_money(row['wb_a'])} | {row['wb_u']} шт | {'—' if row['wb_o'] is None else row['wb_o']} зак.",
+        f"🔵 OZON: {format_money(row['oz_a'])} | {row['oz_u']} шт | {'—' if row['oz_o'] is None else row['oz_o']} зак.",
+        f"🟣 WILDBERRIES: {format_money(row['wb_a'])} | {row['wb_u']} шт | {'—' if row['wb_o'] is None else row['wb_o']} зак.",
         f"🟡 ИТОГО: {format_money(row['oz_a']+row['wb_a'])} | {row['oz_u']+row['wb_u']} шт | {'—' if total_o is None else total_o} зак.",
     ])
 
@@ -683,8 +726,8 @@ def get_status():
     conn.close()
     return "\n".join([
         "⚙️ Статус бота","━"*20,f"💾 БД: {db_size} байт, записей: {row['c'] or 0}",
-        f"🟣 Ozon API: {'✅' if OZON_CLIENT_ID and OZON_API_KEY else '❌'}",
-        f"🔵 WB API: {'✅' if WB_API_TOKEN else '❌'}",
+        f"🔵 Ozon API: {'✅' if OZON_CLIENT_ID and OZON_API_KEY else '❌'}",
+        f"🟣 WB API: {'✅' if WB_API_TOKEN else '❌'}",
         f"📊 Загружено: Ozon {row['oz'] or 0}, WB {row['wb'] or 0}",
         f"⚠️ Ошибок WB: {row['err'] or 0}",f"📦 Backfill: {BACKFILL_DAYS} полных дней",
         f"⏰ Авто-отчёт: {REPORT_HOUR:02d}:{REPORT_MINUTE:02d} МСК",
@@ -819,7 +862,7 @@ async def cmd_start(message: types.Message):
         return
     await message.answer(
         "🤖 Бот отчётности по продажам\n"
-        "🟣 Ozon + 🔵 Wildberries\n\n"
+        "🔵 Ozon + 🟣 Wildberries\n\n"
         "Команды:\n"
         "/backfill — выгрузка за 30 дней (Ozon + WB)\n"
         "/backfill_ozon — только Ozon\n"
@@ -860,7 +903,7 @@ async def cmd_backfill_ozon(message: types.Message):
     if not is_owner(message): await message.answer("⛔ Доступ только для владельцев."); return
     if _job_lock.locked(): await message.answer("⏳ Другая выгрузка уже выполняется."); return
     today=_msk_today(); end=today-timedelta(days=1); start=end-timedelta(days=BACKFILL_DAYS-1)
-    await message.answer(f"📥 Ozon за {start} — {end}\n🟣 Analytics по дням.")
+    await message.answer(f"📥 Ozon за {start} — {end}\n🔵 Analytics по дням.")
     async with _job_lock:
         async with httpx.AsyncClient(timeout=httpx.Timeout(HTTP_TIMEOUT)) as client:
             bulk=await bulk_ozon_sales(start,end,client,skip_cached=True)
@@ -881,7 +924,7 @@ async def cmd_backfill_ozon(message: types.Message):
                 save_report(ds,build_report_for_date(cur,oz,None))
             cur+=timedelta(days=1)
     ok=sum(1 for x in bulk.values() if x.get("received_at"))
-    await message.answer(f"🟣 Ozon готово\n✅ Загружено: {ok}/{len(bulk)} дн.\n⚠️ Не загружено: {len(bulk)-ok} дн.")
+    await message.answer(f"🔵 Ozon готово\n✅ Загружено: {ok}/{len(bulk)} дн.\n⚠️ Не загружено: {len(bulk)-ok} дн.")
 
 
 @dp.message(Command("backfill_wb"))
@@ -889,11 +932,11 @@ async def cmd_backfill_wb(message: types.Message):
     if not is_owner(message): await message.answer("⛔ Доступ только для владельцев."); return
     if _job_lock.locked(): await message.answer("⏳ Другая выгрузка уже выполняется."); return
     today=_msk_today(); end=today-timedelta(days=1); start=end-timedelta(days=BACKFILL_DAYS-1)
-    await message.answer(f"📥 WB за {start} — {end}\n🔵 Собираю чанки, лимит соблюдается автоматически.")
+    await message.answer(f"📥 WB за {start} — {end}\n🟣 Собираю чанки, лимит соблюдается автоматически.")
     async with _job_lock:
         async with httpx.AsyncClient(timeout=httpx.Timeout(HTTP_TIMEOUT)) as client:
             async def progress(chunk,total):
-                try: await message.answer(f"🔵 WB chunk #{chunk}: {total} записей")
+                try: await message.answer(f"🟣 WB chunk #{chunk}: {total} записей")
                 except Exception: pass
             res=await bulk_wb_sales(start,end,client,progress,skip_cached=True)
         wb_bulk, wb_error=res["data"],res["error"]
@@ -912,7 +955,7 @@ async def cmd_backfill_wb(message: types.Message):
                 report=build_report_for_date(cur,None,wb,None if wb else (wb_error or "WB: день не загружен"))
             save_report(ds,_recalc_totals(report)); loaded+=1; cur+=timedelta(days=1)
     status="✅ без ошибок" if not wb_error else f"⚠️ {wb_error}"
-    await message.answer(f"🔵 WB: {status}\n📅 Обработано: {loaded} дн.\n📦 Строк: {res['rows']}\n🔢 Чанков: {res['chunks']}")
+    await message.answer(f"🟣 WB: {status}\n📅 Обработано: {loaded} дн.\n📦 Строк: {res['rows']}\n🔢 Чанков: {res['chunks']}")
 
 
 @dp.message(Command("backfill"))
@@ -920,12 +963,12 @@ async def cmd_backfill(message: types.Message):
     if not is_owner(message): await message.answer("⛔ Доступ только для владельцев."); return
     if _job_lock.locked(): await message.answer("⏳ Другая выгрузка уже выполняется."); return
     today=_msk_today(); end=today-timedelta(days=1); start=end-timedelta(days=BACKFILL_DAYS-1)
-    await message.answer(f"📥 Полная выгрузка за {start} — {end}\n🟣 Ozon → 🔵 WB")
+    await message.answer(f"📥 Полная выгрузка за {start} — {end}\n🔵 Ozon → 🟣 WB")
     async with _job_lock:
         async with httpx.AsyncClient(timeout=httpx.Timeout(HTTP_TIMEOUT)) as client:
             oz=await bulk_ozon_sales(start,end,client,skip_cached=True)
             async def progress(chunk,total):
-                try: await message.answer(f"🔵 WB chunk #{chunk}: {total} записей")
+                try: await message.answer(f"🟣 WB chunk #{chunk}: {total} записей")
                 except Exception: pass
             wr=await bulk_wb_sales(start,end,client,progress,skip_cached=True)
         wb, wb_error=wr["data"],wr["error"]; cur=start; complete=0
@@ -939,7 +982,7 @@ async def cmd_backfill(message: types.Message):
             save_report(ds,report)
             if report["ozon_received_at"] and report["wb_received_at"] and not report["wb_error"]: complete+=1
             cur+=timedelta(days=1)
-    await message.answer(f"✅ Backfill завершён\n📅 Дней: {BACKFILL_DAYS}\n✅ Полных: {complete}\n🟣 Ozon: {sum(1 for x in oz.values() if x.get('received_at'))} дн.\n🔵 WB: {len(wb)} дн." + (f"\n⚠️ WB: {wb_error}" if wb_error else ""))
+    await message.answer(f"✅ Backfill завершён\n📅 Дней: {BACKFILL_DAYS}\n✅ Полных: {complete}\n🔵 Ozon: {sum(1 for x in oz.values() if x.get('received_at'))} дн.\n🟣 WB: {len(wb)} дн." + (f"\n⚠️ WB: {wb_error}" if wb_error else ""))
 
 
 # ─── КНОПКИ ─────────────────────────────────────────────────────────────────
