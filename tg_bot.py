@@ -57,6 +57,8 @@ _WB_ROW_THRESHOLD = 79000
 _OZON_MIN_INTERVAL = max(1, int(os.getenv("OZON_MIN_INTERVAL", "65")))
 BACKFILL_DAYS = max(1, min(int(os.getenv("BACKFILL_DAYS", "30")), 90))
 HTTP_TIMEOUT = float(os.getenv("HTTP_TIMEOUT", "180"))
+CACHE_HOURS = max(1, int(os.getenv("CACHE_HOURS", "6")))
+MAX_NET_RETRIES = max(1, int(os.getenv("MAX_NET_RETRIES", "5")))
 MAX_WB_CHUNKS = max(1, min(int(os.getenv("MAX_WB_CHUNKS", "100")), 1000))
 
 bot = Bot(token=TOKEN) if TOKEN else None
@@ -68,6 +70,20 @@ _ozon_rate_lock = asyncio.Lock()
 _job_lock = asyncio.Lock()
 _wb_next_request_at = 0.0
 _ozon_next_request_at = 0.0
+
+# ─── КЭШ ─────────────────────────────────────────────────────────────────
+
+def _is_cache_fresh(received_at_str):
+    """Проверяет, что кэшированные данные моложе CACHE_HOURS."""
+    if not received_at_str:
+        return False
+    try:
+        received = datetime.fromisoformat(received_at_str)
+        age_hours = (datetime.now() - received).total_seconds() / 3600
+        return age_hours < CACHE_HOURS
+    except (ValueError, TypeError):
+        return False
+
 
 # ─── БАЗА ДАННЫХ (sqlite3, синхронно) ──────────────────────────────────────
 
@@ -192,10 +208,11 @@ def _ozon_headers():
     return h
 
 
-async def _ozon_request_with_retry(client, url, payload, headers, max_retries=3):
-    """POST Ozon с общим rate-limit gate, Retry-After и сетевыми retry."""
+async def _ozon_request_with_retry(client, url, payload, headers, max_retries=MAX_NET_RETRIES):
+    """POST Ozon: бесконечный 429 retry, ограниченные сетевые retry."""
     global _ozon_next_request_at
-    for retry in range(max_retries + 1):
+    net_retries = 0
+    while True:
         async with _ozon_rate_lock:
             loop = asyncio.get_running_loop()
             wait = max(0.0, _ozon_next_request_at - loop.time())
@@ -207,9 +224,10 @@ async def _ozon_request_with_retry(client, url, payload, headers, max_retries=3)
                 resp = await client.post(url, json=payload, headers=headers)
             except (httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError) as e:
                 _ozon_next_request_at = loop.time() + _OZON_MIN_INTERVAL
-                if retry >= max_retries:
+                if net_retries >= max_retries:
                     return None, f"Ozon: {e}"
-                retry_wait = min(300.0, _OZON_MIN_INTERVAL * (retry + 1)) + random.uniform(0, 2)
+                net_retries += 1
+                retry_wait = min(300.0, _OZON_MIN_INTERVAL * net_retries) + random.uniform(0, 2)
                 logger.warning("⚠️ Ozon network error: %s; retry %.1fs", e, retry_wait)
             else:
                 _ozon_next_request_at = loop.time() + _OZON_MIN_INTERVAL
@@ -221,27 +239,34 @@ async def _ozon_request_with_retry(client, url, payload, headers, max_retries=3)
                 if resp.status_code == 429:
                     raw = resp.headers.get("Retry-After") or resp.headers.get("X-Ratelimit-Retry")
                     try:
-                        retry_wait = float(raw) if raw else _OZON_MIN_INTERVAL * (retry + 1)
+                        retry_wait = float(raw) if raw else _OZON_MIN_INTERVAL
                     except (TypeError, ValueError):
-                        retry_wait = _OZON_MIN_INTERVAL * (retry + 1)
-                    retry_wait = max(1.0, min(retry_wait + 5, 600.0))
+                        retry_wait = _OZON_MIN_INTERVAL
+                    retry_wait = max(1.0, retry_wait)
                     _ozon_next_request_at = loop.time() + retry_wait
-                    if retry >= max_retries:
-                        return None, "Ozon 429: лимит запросов"
                     logger.warning("⚠️ Ozon 429: retry %.1fs", retry_wait)
-                elif 500 <= resp.status_code < 600 and retry < max_retries:
-                    retry_wait = min(120.0, 5.0 * (2 ** retry)) + random.uniform(0, 1)
+                elif 500 <= resp.status_code < 600:
+                    if net_retries >= max_retries:
+                        logger.error("Ozon %s: %s", resp.status_code, resp.text[:500])
+                        return None, f"Ozon {resp.status_code}"
+                    net_retries += 1
+                    retry_wait = min(120.0, 5.0 * (2 ** net_retries)) + random.uniform(0, 1)
                     logger.warning("⚠️ Ozon %s: retry %.1fs", resp.status_code, retry_wait)
                 else:
                     logger.error("Ozon %s: %s", resp.status_code, resp.text[:500])
                     return None, f"Ozon {resp.status_code}"
         if retry_wait:
             await asyncio.sleep(retry_wait)
-    return None, "Ozon: превышено число повторов"
 
 
-async def ozon_sales(d: date, client: httpx.AsyncClient):
-    """Ozon: units/revenue из analytics и число FBS postings."""
+async def ozon_sales(d: date, client: httpx.AsyncClient, force_refresh: bool = False):
+    """Ozon: units/revenue из analytics и число FBS postings. С кэшированием."""
+    if not force_refresh:
+        cached = get_report(d.isoformat())
+        if cached and _is_cache_fresh(cached["ozon_received_at"]):
+            return {"units": cached["ozon_units"], "amount": cached["ozon_amount"],
+                    "orders": cached["ozon_orders"], "received_at": cached["ozon_received_at"],
+                    "error": None}
     ds = d.isoformat()
     payload = {
         "metrics": ["ordered_units", "revenue"], "dimension": ["day"],
@@ -302,8 +327,28 @@ async def ozon_sales(d: date, client: httpx.AsyncClient):
             "received_at": datetime.now().isoformat(), "error": None}
 
 
-async def bulk_ozon_sales(start_date: date, end_date: date, client: httpx.AsyncClient):
+async def bulk_ozon_sales(start_date: date, end_date: date, client: httpx.AsyncClient, skip_cached: bool = False):
     """Analytics Ozon по дням. Ошибка не превращается в загруженные нули."""
+    if skip_cached:
+        all_fresh = True
+        cur = start_date
+        while cur <= end_date:
+            cached = get_report(cur.isoformat())
+            if not cached or not _is_cache_fresh(cached["ozon_received_at"]):
+                all_fresh = False
+                break
+            cur += timedelta(days=1)
+        if all_fresh:
+            result = {}
+            cur = start_date
+            while cur <= end_date:
+                cached = get_report(cur.isoformat())
+                result[cur.isoformat()] = {"units": cached["ozon_units"],
+                    "amount": cached["ozon_amount"], "orders": cached["ozon_orders"],
+                    "received_at": cached["ozon_received_at"], "error": None}
+                cur += timedelta(days=1)
+            logger.info("📦 Ozon: все дни свежие, API не дёргаем")
+            return result
     result = {}
     cur = start_date
     while cur <= end_date:
@@ -354,10 +399,10 @@ def _wb_headers():
 
 
 async def _wb_request_with_rate_limit(client, params, headers, attempt_label=""):
-    """GET WB с единым rate-limit gate и безопасным retry."""
+    """GET WB: бесконечный 429 retry, X-Ratelimit-Remaining, ограниченные сетевые retry."""
     global _wb_next_request_at
-    max_retries = 3
-    for retry in range(max_retries + 1):
+    net_retries = 0
+    while True:
         async with _wb_rate_lock:
             loop = asyncio.get_running_loop()
             wait = max(0.0, _wb_next_request_at - loop.time())
@@ -372,13 +417,23 @@ async def _wb_request_with_rate_limit(client, params, headers, attempt_label="")
                 )
             except (httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError) as e:
                 _wb_next_request_at = loop.time() + _WB_MIN_INTERVAL
-                if retry >= max_retries:
+                if net_retries >= MAX_NET_RETRIES:
                     return None, f"WB: {e}"
-                retry_wait = min(300.0, _WB_MIN_INTERVAL * (retry + 1)) + random.uniform(0, 2)
+                net_retries += 1
+                retry_wait = min(300.0, _WB_MIN_INTERVAL * net_retries) + random.uniform(0, 2)
                 logger.warning("⚠️ WB network error: %s; retry %.1fs", e, retry_wait)
             else:
                 _wb_next_request_at = loop.time() + _WB_MIN_INTERVAL
                 if resp.status_code == 200:
+                    remaining = resp.headers.get("X-Ratelimit-Remaining")
+                    if remaining is not None:
+                        try:
+                            rem = int(remaining)
+                            if rem <= 1:
+                                logger.info("WB: X-Ratelimit-Remaining=%d, замедляемся", rem)
+                                _wb_next_request_at = loop.time() + _WB_MIN_INTERVAL * 2
+                        except ValueError:
+                            pass
                     try:
                         data = resp.json()
                     except ValueError:
@@ -387,27 +442,35 @@ async def _wb_request_with_rate_limit(client, params, headers, attempt_label="")
                 if resp.status_code == 429:
                     raw = resp.headers.get("X-Ratelimit-Retry") or resp.headers.get("Retry-After")
                     try:
-                        retry_wait = float(raw) if raw else _WB_MIN_INTERVAL * (retry + 1)
+                        retry_wait = float(raw) if raw else _WB_MIN_INTERVAL
                     except (TypeError, ValueError):
-                        retry_wait = _WB_MIN_INTERVAL * (retry + 1)
-                    retry_wait = max(1.0, min(retry_wait + 5, 900.0))
+                        retry_wait = _WB_MIN_INTERVAL
+                    retry_wait = max(1.0, retry_wait)
                     _wb_next_request_at = loop.time() + retry_wait
-                    if retry >= max_retries:
-                        return None, "WB 429: лимит запросов"
-                    logger.warning("⚠️ WB 429: retry %.1fs", retry_wait)
-                elif 500 <= resp.status_code < 600 and retry < max_retries:
-                    retry_wait = min(120.0, 5.0 * (2 ** retry)) + random.uniform(0, 1)
+                    logger.warning("⚠️ WB 429: retry %.1fs%s", retry_wait,
+                                   f" ({attempt_label})" if attempt_label else "")
+                elif 500 <= resp.status_code < 600:
+                    if net_retries >= MAX_NET_RETRIES:
+                        logger.error("WB %s: %s", resp.status_code, resp.text[:500])
+                        return None, f"WB {resp.status_code}"
+                    net_retries += 1
+                    retry_wait = min(120.0, 5.0 * (2 ** net_retries)) + random.uniform(0, 1)
                     logger.warning("⚠️ WB %s: retry %.1fs", resp.status_code, retry_wait)
                 else:
                     logger.error("WB %s: %s", resp.status_code, resp.text[:500])
                     return None, f"WB {resp.status_code}"
         if retry_wait:
             await asyncio.sleep(retry_wait)
-    return None, "WB: превышено число повторов"
 
 
-async def wb_sales(d: date, client: httpx.AsyncClient):
-    """Продажи WB за день через flag=1."""
+async def wb_sales(d: date, client: httpx.AsyncClient, force_refresh: bool = False):
+    """Продажи WB за день через flag=1. С кэшированием."""
+    if not force_refresh:
+        cached = get_report(d.isoformat())
+        if cached and _is_cache_fresh(cached["wb_received_at"]) and not cached["wb_error"]:
+            return {"units": cached["wb_units"], "amount": cached["wb_amount"],
+                    "orders": cached["wb_orders"], "received_at": cached["wb_received_at"],
+                    "error": None}
     data, err = await _wb_request_with_rate_limit(
         client, {"dateFrom": d.isoformat(), "flag": 1}, _wb_headers(), f"flag=1 {d.isoformat()}"
     )
@@ -417,8 +480,28 @@ async def wb_sales(d: date, client: httpx.AsyncClient):
     return _parse_wb_sales(data, d.isoformat())
 
 
-async def bulk_wb_sales(start_date: date, end_date: date, client: httpx.AsyncClient, progress_callback=None):
+async def bulk_wb_sales(start_date: date, end_date: date, client: httpx.AsyncClient, progress_callback=None, skip_cached: bool = False):
     """Выгрузка WB с официальной пагинацией через lastChangeDate."""
+    if skip_cached:
+        all_fresh = True
+        cur = start_date
+        while cur <= end_date:
+            cached = get_report(cur.isoformat())
+            if not cached or not _is_cache_fresh(cached["wb_received_at"]) or cached["wb_error"]:
+                all_fresh = False
+                break
+            cur += timedelta(days=1)
+        if all_fresh:
+            result = {}
+            cur = start_date
+            while cur <= end_date:
+                cached = get_report(cur.isoformat())
+                result[cur.isoformat()] = {"units": cached["wb_units"],
+                    "amount": cached["wb_amount"], "orders": cached["wb_orders"],
+                    "received_at": cached["wb_received_at"], "error": None}
+                cur += timedelta(days=1)
+            logger.info("📦 WB: все дни свежие, API не дёргаем")
+            return {"data": result, "error": None, "rows": 0, "chunks": 0}
     all_rows, current = [], start_date.isoformat()
     chunk_num, error = 0, None
     seen_signatures = set()
@@ -540,7 +623,7 @@ def format_report(row):
         lines.append("🔵 WILDBERRIES: ⏳ не загружен")
     if row["ozon_received_at"] and row["wb_received_at"] and not row["wb_error"]:
         to = "—" if row["total_orders"] is None else str(row["total_orders"])
-        lines.append(f"🟡 ИТОГО: {format_money((row['ozon_amount'] or 0)+(row['wb_amount'] or 0))} | {(row['ozon_units'] or 0)+(row['wb_units'] or 0)} шт | {to} зак.")
+        lines.append(f"🟡 ИТОГО: {format_money(row['total_amount'] or 0)} | {row['total_units'] or 0} шт | {to} зак.")
     else:
         lines.append("🟡 ИТОГО: ⏳ не рассчитан (не все источники загружены)")
     return "\n".join(lines)
@@ -604,7 +687,10 @@ def get_status():
         f"🔵 WB API: {'✅' if WB_API_TOKEN else '❌'}",
         f"📊 Загружено: Ozon {row['oz'] or 0}, WB {row['wb'] or 0}",
         f"⚠️ Ошибок WB: {row['err'] or 0}",f"📦 Backfill: {BACKFILL_DAYS} полных дней",
-        f"⏰ Авто-отчёт: {REPORT_HOUR:02d}:{REPORT_MINUTE:02d} МСК","🔒 Защита от параллельных выгрузок: ✅"
+        f"⏰ Авто-отчёт: {REPORT_HOUR:02d}:{REPORT_MINUTE:02d} МСК",
+        f"📦 Кэш: {CACHE_HOURS} ч",
+        f"🔄 429: бесконечный retry",
+        "🔒 Защита от параллельных выгрузок: ✅"
     ])
 
 
@@ -639,7 +725,7 @@ async def _send_daily_report():
         return
     async with _job_lock:
         async with httpx.AsyncClient(timeout=httpx.Timeout(HTTP_TIMEOUT)) as client:
-            oz=await ozon_sales(d,client); wb=await wb_sales(d,client)
+            oz=await ozon_sales(d,client,force_refresh=True); wb=await wb_sales(d,client,force_refresh=True)
         wb_err=None if wb else "WB: ошибка запроса"
         save_report(ds,build_report_for_date(d,oz,wb,wb_err))
     if bot:
@@ -705,6 +791,8 @@ def run_diagnostics():
         f"⏱ Ozon интервал: {_OZON_MIN_INTERVAL} сек",
         f"📅 Backfill: {BACKFILL_DAYS} дней",
         f"🔢 WB max chunks: {MAX_WB_CHUNKS}",
+        f"📦 Кэш: {CACHE_HOURS} ч",
+        f"🔄 429: бесконечный retry",
     ])
     return "\n".join(lines)
 
@@ -761,7 +849,7 @@ async def cmd_test_report(message: types.Message):
         await message.answer(f"⏳ Тест отчёта за {d}...")
         try:
             async with httpx.AsyncClient(timeout=httpx.Timeout(HTTP_TIMEOUT)) as client:
-                oz=await ozon_sales(d,client); wb=await wb_sales(d,client)
+                oz=await ozon_sales(d,client,force_refresh=True); wb=await wb_sales(d,client,force_refresh=True)
             save_report(d.isoformat(),build_report_for_date(d,oz,wb,None if wb else "WB: ошибка запроса"))
         except Exception as e:
             logger.exception("test_report error"); await message.answer(f"❌ Ошибка теста: {e}"); return
@@ -776,7 +864,7 @@ async def cmd_backfill_ozon(message: types.Message):
     await message.answer(f"📥 Ozon за {start} — {end}\n🟣 Analytics по дням.")
     async with _job_lock:
         async with httpx.AsyncClient(timeout=httpx.Timeout(HTTP_TIMEOUT)) as client:
-            bulk=await bulk_ozon_sales(start,end,client)
+            bulk=await bulk_ozon_sales(start,end,client,skip_cached=True)
         cur=start
         while cur<=end:
             ds=cur.isoformat(); oz=bulk.get(ds); existing=get_report(ds)
@@ -808,7 +896,7 @@ async def cmd_backfill_wb(message: types.Message):
             async def progress(chunk,total):
                 try: await message.answer(f"🔵 WB chunk #{chunk}: {total} записей")
                 except Exception: pass
-            res=await bulk_wb_sales(start,end,client,progress)
+            res=await bulk_wb_sales(start,end,client,progress,skip_cached=True)
         wb_bulk, wb_error=res["data"],res["error"]
         cur=start; loaded=0
         while cur<=end:
@@ -836,11 +924,11 @@ async def cmd_backfill(message: types.Message):
     await message.answer(f"📥 Полная выгрузка за {start} — {end}\n🟣 Ozon → 🔵 WB")
     async with _job_lock:
         async with httpx.AsyncClient(timeout=httpx.Timeout(HTTP_TIMEOUT)) as client:
-            oz=await bulk_ozon_sales(start,end,client)
+            oz=await bulk_ozon_sales(start,end,client,skip_cached=True)
             async def progress(chunk,total):
                 try: await message.answer(f"🔵 WB chunk #{chunk}: {total} записей")
                 except Exception: pass
-            wr=await bulk_wb_sales(start,end,client,progress)
+            wr=await bulk_wb_sales(start,end,client,progress,skip_cached=True)
         wb, wb_error=wr["data"],wr["error"]; cur=start; complete=0
         while cur<=end:
             ds=cur.isoformat(); od=oz.get(ds); wd=wb.get(ds)
@@ -863,7 +951,8 @@ async def btn_yesterday(message: types.Message):
     d=_msk_today()-timedelta(days=1)
     row=get_report(d.isoformat())
     if row and row["ozon_received_at"] and row["wb_received_at"] and not row["wb_error"]:
-        await message.answer(format_report(row)); return
+        if _is_cache_fresh(row["ozon_received_at"]) and _is_cache_fresh(row["wb_received_at"]):
+            await message.answer(format_report(row)); return
     if _job_lock.locked(): await message.answer("⏳ Другая выгрузка уже выполняется."); return
     async with _job_lock:
         await message.answer(f"⏳ Обновляю {d}...")
@@ -881,7 +970,7 @@ async def btn_today(message: types.Message):
     async with _job_lock:
         await message.answer(f"⏳ Загружаю актуальные данные за {d}...")
         async with httpx.AsyncClient(timeout=httpx.Timeout(HTTP_TIMEOUT)) as client:
-            oz=await ozon_sales(d,client); wb=await wb_sales(d,client)
+            oz=await ozon_sales(d,client,force_refresh=True); wb=await wb_sales(d,client,force_refresh=True)
         save_report(d.isoformat(),build_report_for_date(d,oz,wb,None if wb else "WB: ошибка запроса"))
     await message.answer(format_report(get_report(d.isoformat())))
 
@@ -933,7 +1022,7 @@ async def btn_refresh_yesterday(message: types.Message):
     async with _job_lock:
         await message.answer(f"⏳ Обновляю {d}...")
         async with httpx.AsyncClient(timeout=httpx.Timeout(HTTP_TIMEOUT)) as client:
-            oz=await ozon_sales(d,client); wb=await wb_sales(d,client)
+            oz=await ozon_sales(d,client,force_refresh=True); wb=await wb_sales(d,client,force_refresh=True)
         save_report(d.isoformat(),build_report_for_date(d,oz,wb,None if wb else "WB: ошибка запроса"))
     await message.answer(format_report(get_report(d.isoformat())))
 
