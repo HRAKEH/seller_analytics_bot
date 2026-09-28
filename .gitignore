@@ -1,0 +1,13 @@
+# Секреты — никогда не должны попадать в git
+.env
+
+# Локальная база и логи
+*.sqlite3
+*.sqlite3-journal
+bot.log
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+daily_reports.sqlite3
