@@ -232,10 +232,22 @@ class Repository:
         if not clean:
             raise ValueError("shop name must not be empty")
         with self.db.connect() as c:
-            c.execute("UPDATE shops SET name=? WHERE id=?", (clean, shop_id))
+            current = c.execute("SELECT seller_id FROM shops WHERE id=?", (shop_id,)).fetchone()
+            if not current:
+                raise ValueError("shop not found")
+            duplicate = c.execute(
+                "SELECT 1 FROM shops WHERE seller_id=? AND name=? AND id<>?",
+                (current["seller_id"], clean, shop_id),
+            ).fetchone()
+            if duplicate:
+                raise ValueError("Магазин с таким названием уже существует.")
+            try:
+                c.execute("UPDATE shops SET name=? WHERE id=?", (clean, shop_id))
+            except sqlite3.IntegrityError as exc:
+                # Keep the repository API stable even if another process creates
+                # the same name between the duplicate check and UPDATE.
+                raise ValueError("Магазин с таким названием уже существует.") from exc
             r = c.execute("SELECT * FROM shops WHERE id=?", (shop_id,)).fetchone()
-        if not r:
-            raise ValueError("shop not found")
         return self._shop_from_row(r)
 
     @staticmethod
