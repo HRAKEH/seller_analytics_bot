@@ -87,6 +87,20 @@ def test_forecast_backtest_constant_demand_is_exact(tmp_path):
     assert repo.count('forecast_quality_snapshots')>0
 
 
+def test_forecast_backtest_skips_incomplete_horizon(tmp_path):
+    db,repo,shop,conn=make_repo(tmp_path); end=date(2026,9,28)
+    add_history(repo,shop,conn,'GAPPED',end,days=90,units=3,stock=100)
+    # Remove one completed order day from the most recent 7-day validation horizon.
+    with repo.db.connect() as c:
+        run=c.execute("""SELECT id FROM source_runs WHERE connection_id=? AND data_date='2026-09-25'
+                         AND endpoint='analytics/orders' LIMIT 1""",(conn.id,)).fetchone()
+        assert run is not None
+        c.execute('DELETE FROM source_runs WHERE id=?',(int(run['id']),))
+    report=evaluate_forecast_quality(repo,shop.id,end,horizon_days=7,persist=False)
+    item=next(x for x in report.items if x.internal_sku=='GAPPED')
+    assert item.samples==3
+
+
 def test_action_center_and_export_include_new_operational_layers(tmp_path):
     db,repo,shop,conn=make_repo(tmp_path); end=date(2026,9,28)
     add_history(repo,shop,conn,'URGENT',end,days=56,units=2,stock=0)
