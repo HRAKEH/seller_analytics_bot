@@ -131,18 +131,20 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
         await state.update_data(menu_action=action)
         await message.answer(prompt,parse_mode='HTML',reply_markup=input_keyboard())
 
-    def command_copy(message: types.Message, command: str, value: str):
+    def command_copy(message: types.Message, command: str, value: str, *, actor_user=None):
         text=f'/{command}' + (f' {value.strip()}' if value.strip() else '')
 
         class MessageTextProxy:
             # Keep the original aiogram Message (and therefore its Bot binding)
-            # intact; only override .text for reuse of the slash-command parser.
-            def __init__(self, base, overridden_text):
+            # intact; override only fields required when reusing command handlers.
+            def __init__(self, base, overridden_text, actor):
                 self._base=base; self.text=overridden_text
+                if actor is not None:
+                    self.from_user=actor
             def __getattr__(self, name):
                 return getattr(self._base,name)
 
-        return MessageTextProxy(message,text)
+        return MessageTextProxy(message,text,actor_user)
 
     # Global navigation is registered before wizard state handlers so menu
     # buttons can never be accidentally consumed as a shop name/date/etc.
@@ -1815,7 +1817,8 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
             return
         await callback.answer()
         if callback.message:
-            await launch_input_action(callback.message,state,'user_add' if action=='add' else 'user_remove')
+            selected='user_add' if action=='add' else 'user_remove'
+            await start_menu_input(callback.message,state,selected,prompts[selected])
 
     @dp.callback_query(F.data.startswith('retry:run:'))
     async def cb_retry_job(callback: types.CallbackQuery):
@@ -1854,7 +1857,10 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
         target=local_now().date()-timedelta(days=offset)
         await callback.answer()
         if callback.message:
-            await send(callback.message,format_daily(build_daily_report(ctx.repository,ctx.shop_id,target)))
+            await callback.message.answer(
+                format_daily(build_daily_report(ctx.repository,ctx.shop_id,target)),
+                parse_mode='HTML',
+                reply_markup=main_keyboard(ctx.repository.role_for_user(callback.from_user.id,ctx.shop_id)))
 
     @dp.message(F.text == '📥 Догрузить данные')
     async def btn_backfill_simple(message: types.Message):
@@ -1902,7 +1908,8 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
             except ValueError: return await callback.answer('Некорректный период.',show_alert=True)
             fmt=parts[3]
             await callback.answer('Формирую файл…')
-            await cmd_export(command_copy(callback.message,'export',f'{days} {fmt}'))
+            await cmd_export(command_copy(
+                callback.message,'export',f'{days} {fmt}',actor_user=callback.from_user))
             return
         await callback.answer('Некорректное действие.',show_alert=True)
 
