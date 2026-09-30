@@ -58,7 +58,10 @@ def decode_wb_token(token: str) -> dict:
         'error': None,
     }
     try:
-        parts=(token or '').split('.')
+        clean=(token or '').strip()
+        if clean.lower().startswith('bearer '):
+            clean=clean[7:].strip()
+        parts=clean.split('.')
         if len(parts) < 2:
             raise ValueError('токен не похож на JWT')
         raw=parts[1]
