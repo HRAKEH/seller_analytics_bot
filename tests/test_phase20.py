@@ -286,3 +286,38 @@ def test_context_backfill_routes_selected_marketplace():
     assert "source in {'all','wildberries','wb'}" in block
     assert "source in {'all','ozon'}" in block
     assert 'wb_connection_id=wb_id,ozon_connection_id=ozon_id' in block
+
+
+def test_startup_reuses_existing_active_shop_instead_of_recreating_default():
+    src=(ROOT/'main.py').read_text(encoding='utf-8')
+    assert 'active_shops=repo.list_shops(seller.id)' in src
+    assert "shop=active_shops[0] if active_shops else repo.ensure_shop(" in src
+
+
+def test_daily_ux_has_button_driven_date_export_retry_and_actions(monkeypatch):
+    kb=_load_keyboard_module_with_stub(monkeypatch)
+    day=kb.date_picker_keyboard()
+    assert ('Вчера','day:relative:1') in day
+    assert ('⌨️ Ввести дату','day:custom') in day
+    export=kb.export_picker_keyboard()
+    assert ('Excel · 30 дн.','export:30:xlsx') in export
+    assert ('CSV · 90 дн.','export:90:csv') in export
+    rows=[{'id':7,'job_type':'daily','status':'dead'}]
+    retry=kb.retry_jobs_keyboard(rows)
+    assert ('🔁 #7 · daily','job:retry:7') in retry
+
+
+def test_action_center_is_paginated_to_avoid_telegram_message_limit():
+    src=(ROOT/'app/reports/operations.py').read_text(encoding='utf-8')
+    assert "def format_action_center(center: ActionCenter, *, page: int=0, per_page: int=5)" in src
+    assert 'visible=rows[start:start+per_page]' in src
+    handlers=(ROOT/'app/bot/handlers.py').read_text(encoding='utf-8')
+    assert "F.data.startswith('actions:page:')" in handlers
+    assert "F.data.startswith('action:ack:')" in handlers
+    assert "F.data.startswith('action:snooze:')" in handlers
+
+
+def test_wb_readiness_probes_do_not_sleep_on_429():
+    src=(ROOT/'app/integrations/wildberries.py').read_text(encoding='utf-8')
+    seller=src[src.index('    async def seller_info'):src.index('    async def orders')]
+    assert 'retry_on_429=False' in seller
