@@ -19,6 +19,19 @@ class AppContext:
     wb_connection_id: int | None = None
     ozon_connection_id: int | None = None
     job_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    active_backfill_task: asyncio.Task | None = field(default=None, init=False, repr=False)
+
+    def backfill_running(self) -> bool:
+        task=self.active_backfill_task
+        return bool(task is not None and not task.done())
+
+    def cancel_backfill(self) -> bool:
+        """Cancel the in-process backfill for this shop, if one is running."""
+        task=self.active_backfill_task
+        if task is None or task.done():
+            return False
+        task.cancel()
+        return True
 
     @asynccontextmanager
     async def operation_lock(self, operation: str):
@@ -102,9 +115,19 @@ class AppContext:
             raise ValueError('Ozon не подключён к текущему магазину.')
         if source=='all' and wb_id is None and ozon_id is None:
             raise ValueError('К текущему магазину не подключены маркетплейсы.')
-        async with self.operation_lock('backfill'):
-            return await self.collector.backfill_orders(start=start,end=end,shop_id=self.shop_id,
-                wb_connection_id=wb_id,ozon_connection_id=ozon_id)
+        task=asyncio.current_task()
+        if task is None:
+            raise RuntimeError('Не удалось определить задачу загрузки истории.')
+        if self.backfill_running() and self.active_backfill_task is not task:
+            raise RuntimeError('Уже выполняется другая загрузка истории.')
+        self.active_backfill_task=task
+        try:
+            async with self.operation_lock('backfill'):
+                return await self.collector.backfill_orders(start=start,end=end,shop_id=self.shop_id,
+                    wb_connection_id=wb_id,ozon_connection_id=ozon_id)
+        finally:
+            if self.active_backfill_task is task:
+                self.active_backfill_task=None
 
     async def collect_inventory(self, day: date | None = None, *, automatic: bool = False) -> list[CollectionOutcome]:
         if self.demo_mode(): return []

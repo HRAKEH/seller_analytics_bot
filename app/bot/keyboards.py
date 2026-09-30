@@ -231,6 +231,13 @@ def backfill_source_keyboard(*, has_ozon: bool, has_wb: bool):
     return kb.as_markup()
 
 
+def backfill_running_keyboard():
+    kb=InlineKeyboardBuilder()
+    kb.button(text='🛑 Остановить загрузку',callback_data='backfill:stop')
+    kb.adjust(1)
+    return kb.as_markup()
+
+
 def backfill_period_keyboard(source: str):
     clean=(source or 'all').strip().lower()
     kb=InlineKeyboardBuilder()
