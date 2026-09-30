@@ -83,3 +83,30 @@ def test_alert_resolution_is_emitted_once(tmp_path):
     assert repo.active_alert_states(shop.id)==[]
     assert engine._resolve_missing(shop.id,set(),{'api_stale'})==[]
     assert repo.count('alert_events')==2
+
+
+def test_management_result_includes_expenses_when_order_revenue_is_zero():
+    from app.reports.management import build_management_report
+    class Repo:
+        def financial_metric_totals(self,shop_id,start_date,end_date):
+            return {'ozon':{
+                'ordered_revenue':0.0,
+                'services':100.0,
+                'ad_spend':50.0,
+                'compensation':20.0,
+            }}
+        def estimated_order_cogs(self,shop_id,start_date,end_date):
+            return {'ozon':{'units':0.0,'covered_units':0.0,'estimated_cost':0.0}}
+    report=build_management_report(Repo(),1,date(2026,9,29),days=1)
+    oz=next(x for x in report.sources if x.marketplace=='ozon')
+    assert oz.estimated_result==-130.0
+
+
+def test_successful_backfill_clears_api_stale_freshness(tmp_path):
+    repo,shop,conn=_repo(tmp_path)
+    repo.record_success(conn.id,'analytics/orders/backfill','2026-09-28',{'ok':1},[])
+    engine=AlertEngine(repo,cooldown_minutes=1440)
+    notes=engine.evaluate(
+        shop.id,today=date(2026,9,30),order_drop_pct=35,order_lookback_days=7,
+        api_stale_hours=26,drr_pct=25,stock_risk_days=14,stock_velocity_days=14)
+    assert not any(n.rule_key=='api_stale' and n.subject_key=='ozon' for n in notes)
