@@ -1,0 +1,226 @@
+from __future__ import annotations
+
+import ast
+import asyncio
+import logging
+import sys
+from pathlib import Path
+from types import ModuleType
+
+import pytest
+
+from app.services.backups import BackupService
+from app.services.exporting import _safe_spreadsheet_value
+from app.services.health import public_health_report
+from app.services.observability import JsonFormatter, SecretRedactionFilter
+from app.storage import Database, Repository, LATEST_SCHEMA_VERSION
+import app.storage.database as dbmod
+
+ROOT=Path(__file__).resolve().parents[1]
+
+
+def make_repo(tmp_path):
+    db=Database(tmp_path/'phase20.sqlite3'); assert db.initialize()==LATEST_SCHEMA_VERSION
+    repo=Repository(db); seller=repo.ensure_seller(200,'Seller'); shop=repo.ensure_shop(seller.id,'Shop')
+    return db,repo,seller,shop
+
+
+def _load_context_module():
+    import importlib.util
+    name='phase20_context'
+    spec=importlib.util.spec_from_file_location(name,ROOT/'app/bot/context.py')
+    mod=importlib.util.module_from_spec(spec); assert spec and spec.loader
+    sys.modules[name]=mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+@pytest.mark.asyncio
+async def test_operation_is_cancelled_when_distributed_lease_is_lost():
+    AppContext=_load_context_module().AppContext
+    class Repo:
+        released=False
+        def acquire_lease(self,*a,**k): return True
+        def renew_lease(self,*a,**k): return False
+        def release_lease(self,*a,**k): self.released=True; return True
+    class Settings:
+        distributed_lock_ttl_seconds=1
+        instance_id='instance-a'
+    repo=Repo()
+    ctx=AppContext(Settings(),repo,1,object())
+    with pytest.raises(RuntimeError,match='Потеряна межпроцессная блокировка'):
+        async with ctx.operation_lock('test'):
+            await asyncio.sleep(2)
+    assert repo.released
+
+
+def test_retry_jobs_are_shop_scoped_and_owner_guarded(tmp_path):
+    db,repo,seller,shop1=make_repo(tmp_path)
+    shop2=repo.ensure_shop(seller.id,'Shop 2')
+    j1=repo.enqueue_retry_job(shop1.id,'daily','a',{'day':'2026-09-01'})
+    j2=repo.enqueue_retry_job(shop2.id,'daily','b',{'day':'2026-09-02'})
+    assert repo.retry_job_counts(shop1.id)=={'pending':1}
+    assert [r['id'] for r in repo.recent_retry_jobs(10,shop_id=shop1.id)]==[j1]
+    assert not repo.requeue_retry_job(j2,shop_id=shop1.id)
+
+    claimed=repo.claim_retry_job('worker-a',lease_seconds=30)
+    assert claimed and claimed['id']==j1
+    assert not repo.renew_retry_job(j1,'worker-b',30)
+    assert repo.renew_retry_job(j1,'worker-a',30)
+    assert not repo.complete_retry_job(j1,owner_id='worker-b')
+    assert repo.complete_retry_job(j1,owner_id='worker-a')
+
+
+def test_fresh_database_is_removed_after_failed_first_migration(tmp_path,monkeypatch):
+    path=tmp_path/'fresh.sqlite3'
+    original=dbmod.MIGRATIONS[LATEST_SCHEMA_VERSION]
+    def broken(conn):
+        original(conn)
+        conn.execute('CREATE TABLE phase20_partial(x INTEGER)')
+        raise RuntimeError('phase20 boom')
+    monkeypatch.setitem(dbmod.MIGRATIONS,LATEST_SCHEMA_VERSION,broken)
+    db=Database(path)
+    with pytest.raises(RuntimeError,match='phase20 boom'):
+        db.initialize_safely(tmp_path/'backups')
+    assert not path.exists()
+    assert not Path(str(path)+'-wal').exists()
+    assert not Path(str(path)+'-shm').exists()
+
+
+def test_backup_names_are_unique_and_restore_is_atomic(tmp_path):
+    db,repo,_,shop=make_repo(tmp_path)
+    service=BackupService(db,repo,tmp_path/'backups')
+    first=service.create(kind='manual'); second=service.create(kind='manual')
+    assert first.path != second.path
+    assert first.path.exists() and second.path.exists()
+    repo.rename_shop(shop.id,'Changed')
+    service.restore(first.path)
+    assert repo.get_shop(shop.id).name=='Shop'
+    assert db.quick_check()
+
+
+def test_exception_traceback_is_secret_redacted():
+    secret='phase20-super-secret'
+    try:
+        raise RuntimeError('credential='+secret)
+    except RuntimeError:
+        exc_info=sys.exc_info()
+    record=logging.LogRecord('x',logging.ERROR,__file__,1,'request failed '+secret,(),exc_info)
+    filt=SecretRedactionFilter([secret]); assert filt.filter(record)
+    rendered=JsonFormatter().format(record)
+    assert secret not in rendered
+    assert 'REDACTED' in rendered
+
+
+@pytest.mark.parametrize('value',["=HYPERLINK(\"x\")",'+SUM(A1:A2)','-1+2','@cmd','  =1+1','\t@evil'])
+def test_spreadsheet_formula_injection_is_neutralized(value):
+    safe=_safe_spreadsheet_value(value)
+    assert isinstance(safe,str) and safe.startswith("'")
+    assert _safe_spreadsheet_value(123.0)==123.0
+    assert _safe_spreadsheet_value('normal sku')=='normal sku'
+
+
+def test_public_health_payload_does_not_expose_runtime_identity():
+    report={
+        'status':'ok','ready':True,'timestamp':'2026-09-30T00:00:00+00:00',
+        'checks':{'database':'ok','schema_version':14,'schema_current':True,'shops_runtime':2,
+                  'maintenance_mode':False,'instance_id':'secret-host','poller_lease':{'owner_id':'worker'},
+                  'heartbeats':[{'instance_id':'worker'}],'retry_jobs':{'dead':4}},
+    }
+    public=public_health_report(report)
+    text=str(public)
+    assert 'secret-host' not in text and 'poller_lease' not in text and 'heartbeats' not in text
+    assert public['ready'] is True
+
+
+def _load_keyboard_module_with_stub(monkeypatch):
+    class Builder:
+        def __init__(self): self.items=[]
+        def button(self,*,text): self.items.append(text)
+        def adjust(self,*args): return None
+        def as_markup(self,**kwargs): return tuple(self.items)
+    aiogram=ModuleType('aiogram'); utils=ModuleType('aiogram.utils'); keyboard=ModuleType('aiogram.utils.keyboard')
+    keyboard.ReplyKeyboardBuilder=Builder
+    monkeypatch.setitem(sys.modules,'aiogram',aiogram)
+    monkeypatch.setitem(sys.modules,'aiogram.utils',utils)
+    monkeypatch.setitem(sys.modules,'aiogram.utils.keyboard',keyboard)
+    import importlib.util
+    spec=importlib.util.spec_from_file_location('phase20_keyboards',ROOT/'app/bot/keyboards.py')
+    mod=importlib.util.module_from_spec(spec); assert spec and spec.loader; spec.loader.exec_module(mod)
+    return mod
+
+
+def test_global_database_and_credential_buttons_are_system_owner_only(monkeypatch):
+    kb=_load_keyboard_module_with_stub(monkeypatch)
+    delegated_shop_owner=set(kb.service_keyboard('owner',system_owner=False)) | set(kb.shop_keyboard('owner',system_owner=False))
+    system_owner=set(kb.service_keyboard('owner',system_owner=True)) | set(kb.shop_keyboard('owner',system_owner=True))
+    global_buttons={kb.COMMAND_BUTTONS[x] for x in ('backup','backups','restore','shop_add','shop_profile','profiles')}
+    assert delegated_shop_owner.isdisjoint(global_buttons)
+    assert global_buttons <= system_owner
+
+
+def test_global_slash_handlers_enforce_system_owner():
+    tree=ast.parse((ROOT/'app/bot/handlers.py').read_text(encoding='utf-8'))
+    functions={n.name:n for n in ast.walk(tree) if isinstance(n,(ast.FunctionDef,ast.AsyncFunctionDef))}
+    for name in ('cmd_backup','cmd_backups','cmd_restore','restore_file','cmd_shop_add','cmd_shop_profile','cmd_profiles'):
+        node=functions[name]
+        calls=[n for n in ast.walk(node) if isinstance(n,ast.Call) and isinstance(n.func,ast.Name)]
+        assert any(c.func.id=='is_system_owner' for c in calls), name
+
+
+def test_scheduler_outer_retry_uses_previous_completed_day():
+    src=(ROOT/'app/services/scheduler.py').read_text(encoding='utf-8')
+    assert 'report_day=_scheduled_report_day(now)' in src
+    assert "{'day':report_day,'notify':True}" in src
+    assert "'daily',report_day" in src
+
+
+def test_runtime_validates_credential_profile_before_persisting_it():
+    src=(ROOT/'app/bot/runtime.py').read_text(encoding='utf-8')
+    create=src[src.index('    async def create_shop'):src.index('    async def set_profile')]
+    setp=src[src.index('    async def set_profile'):src.index('    async def close')]
+    assert create.index('credentials_for_profile') < create.index('ensure_shop')
+    assert setp.index('credentials_for_profile') < setp.index('set_shop_credential_profile')
+
+
+def test_future_day_is_rejected_before_collection():
+    src=(ROOT/'app/bot/handlers.py').read_text(encoding='utf-8')
+    start=src.index("    @dp.message(Command('day'))")
+    end=src.index("    @dp.message(Command('backfill'))",start)
+    block=src[start:end]
+    assert 'Нельзя загружать отчёт за будущую дату' in block
+    assert block.index('Нельзя загружать отчёт за будущую дату') < block.index('collect_and_report')
+
+
+def test_action_center_retry_failures_are_shop_scoped():
+    src=(ROOT/'app/services/actions.py').read_text(encoding='utf-8')
+    assert 'recent_retry_jobs(limit=50,shop_id=shop_id)' in src
+
+
+def test_main_singleton_lease_has_fail_fast_cleanup():
+    src=(ROOT/'main.py').read_text(encoding='utf-8')
+    assert "poller_lease='singleton:telegram-poller'" in src
+    assert 'fatal_errors.append(exc)' in src
+    assert 'create_task(dp.stop_polling())' in src
+    assert "repo.release_lease(poller_lease,settings.instance_id)" in src
+    # Cleanup must live in the finally block that wraps post-lease startup.
+    finally_pos=src.rindex('    finally:')
+    release_pos=src.rindex("repo.release_lease(poller_lease,settings.instance_id)")
+    assert release_pos > finally_pos
+
+
+@pytest.mark.asyncio
+async def test_database_integrity_failure_is_fatal():
+    import importlib
+    resilience=importlib.import_module('app.services.resilience')
+    class DB:
+        def checkpoint(self,*a): return None
+        def quick_check(self): return False
+    class Repo: db=DB()
+    class Registry:
+        repository=Repo()
+        class Lock:
+            def locked(self): return False
+        maintenance_lock=Lock()
+    with pytest.raises(resilience.DatabaseIntegrityError):
+        await asyncio.wait_for(resilience.database_maintenance_loop(Registry()),timeout=1)

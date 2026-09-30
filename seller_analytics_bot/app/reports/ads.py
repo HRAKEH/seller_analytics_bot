@@ -1,0 +1,77 @@
+"""Advertising analytics by campaign and SKU."""
+from __future__ import annotations
+from dataclasses import dataclass
+from datetime import date, timedelta
+from html import escape
+from app.storage import Repository
+
+@dataclass(frozen=True)
+class AdRow:
+    marketplace: str
+    key: str
+    name: str
+    spend: float
+    attributed_sales: float
+    orders: float
+    clicks: float
+    impressions: float
+
+    @property
+    def drr(self) -> float | None:
+        return self.spend / self.attributed_sales * 100 if self.attributed_sales > 0 else None
+
+    @property
+    def roas(self) -> float | None:
+        return self.attributed_sales / self.spend if self.spend > 0 else None
+
+@dataclass(frozen=True)
+class AdvertisingReport:
+    start: str
+    end: str
+    days: int
+    campaigns: tuple[AdRow,...]
+    products: tuple[AdRow,...]
+
+
+def build_advertising_report(repo: Repository, shop_id: int, end: date, days: int = 7) -> AdvertisingReport:
+    start=end-timedelta(days=days-1)
+    campaigns=[]
+    for r in repo.ad_campaign_totals(shop_id,start.isoformat(),end.isoformat()):
+        campaigns.append(AdRow(str(r['marketplace']),str(r['campaign_id']),str(r.get('campaign_name') or r['campaign_id']),
+            float(r.get('spend') or 0),float(r.get('attributed_sales') or 0),float(r.get('orders') or 0),
+            float(r.get('clicks') or 0),float(r.get('impressions') or 0)))
+    products=[]
+    for r in repo.ad_product_totals(shop_id,start.isoformat(),end.isoformat()):
+        products.append(AdRow(str(r['marketplace']),str(r['marketplace_sku']),str(r.get('name') or r['marketplace_sku']),
+            float(r.get('spend') or 0),float(r.get('attributed_sales') or 0),float(r.get('orders') or 0),
+            float(r.get('clicks') or 0),float(r.get('impressions') or 0)))
+    campaigns.sort(key=lambda x:x.spend,reverse=True); products.sort(key=lambda x:x.spend,reverse=True)
+    return AdvertisingReport(start.isoformat(),end.isoformat(),days,tuple(campaigns),tuple(products))
+
+
+def _money(v: float) -> str:
+    return f'{v:,.0f}'.replace(',',' ')+' ₽'
+
+def _pct(v: float | None) -> str:
+    return '—' if v is None else f'{v:.1f}%'
+
+
+def format_advertising(report: AdvertisingReport, limit: int = 7) -> str:
+    lines=[f'📣 <b>Реклама · {report.start} — {report.end}</b>','━━━━━━━━━━━━━━━━',
+           'ДРР здесь считается только из рекламно-атрибутированной выручки конкретного источника.',
+           'ℹ️ Рекламная атрибуция не равна финансовому признанию продажи или выплате маркетплейса.']
+    if not report.campaigns and not report.products:
+        return '\n'.join(lines+['','📭 Детальной рекламной статистики за период нет.'])
+    if report.campaigns:
+        lines += ['','<b>Кампании по расходу</b>']
+        for i,r in enumerate(report.campaigns[:limit],1):
+            icon='🟣' if r.marketplace=='ozon' else '🔵'
+            lines.append(f'{i}. {icon} <b>{escape(r.name)}</b> · {_money(r.spend)} · ДРР {_pct(r.drr)}')
+            lines.append(f'   продажи рекламы {_money(r.attributed_sales)} · заказы {r.orders:g} · клики {r.clicks:g}')
+    if report.products:
+        lines += ['','<b>SKU по рекламному расходу</b>']
+        for i,r in enumerate(report.products[:limit],1):
+            icon='🟣' if r.marketplace=='ozon' else '🔵'
+            lines.append(f'{i}. {icon} <b>{escape(r.name)}</b> · SKU <code>{escape(r.key)}</code>')
+            lines.append(f'   расход {_money(r.spend)} · продажи {_money(r.attributed_sales)} · ДРР {_pct(r.drr)} · заказы {r.orders:g}')
+    return '\n'.join(lines)

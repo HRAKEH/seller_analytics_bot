@@ -1,0 +1,3 @@
+marketplace,sku,cost_price,effective_date,internal_sku,name
+wb,12345678,350,2026-09-01,PRODUCT-001,Пример товара
+ozon,987654321,350,2026-09-01,PRODUCT-001,Пример товара
