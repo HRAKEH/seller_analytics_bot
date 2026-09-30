@@ -355,3 +355,33 @@ def test_context_backfill_routes_selected_marketplace():
     assert "source in {'all','wildberries','wb'}" in block
     assert "source in {'all','ozon'}" in block
     assert 'wb_connection_id=wb_id,ozon_connection_id=ozon_id' in block
+
+
+def test_normal_report_buttons_are_cached_and_refresh_is_explicit(monkeypatch):
+    kb=_load_keyboard_module_with_stub(monkeypatch)
+    products=set(kb.products_keyboard('owner'))
+    money=set(kb.money_keyboard('owner'))
+    assert '🔄 Обновить остатки' in products
+    assert '🔄 Обновить финансы' in money
+    assert '🔄 Обновить рекламу' in money
+
+    src=(ROOT/'app/bot/handlers.py').read_text(encoding='utf-8')
+    finance=src[src.index("@dp.message(F.text == COMMAND_BUTTONS['finance'])"):src.index("@dp.message(F.text == COMMAND_BUTTONS['ads'])")]
+    ads=src[src.index("@dp.message(F.text == COMMAND_BUTTONS['ads'])"):src.index("@dp.message(F.text == COMMAND_BUTTONS['management'])")]
+    stocks=src[src.index("@dp.message(F.text == '📦 Остатки')"):src.index("@dp.message(F.text == '🔄 Обновить остатки')")]
+    assert 'collect_finance' not in finance
+    assert 'collect_advertising' not in ads
+    assert 'collect_inventory' not in stocks
+    assert "@dp.message(F.text == '🔄 Обновить финансы')" in src
+    assert "@dp.message(F.text == '🔄 Обновить рекламу')" in src
+    assert "@dp.message(F.text == '🔄 Обновить остатки')" in src
+
+
+def test_wb_connection_check_fails_fast_and_stops_extra_probes_after_429():
+    wb=(ROOT/'app/integrations/wildberries.py').read_text(encoding='utf-8')
+    probe=wb[wb.index('    async def ping'):wb.index('    async def orders')]
+    assert probe.count('retry_on_429=False') >= 2
+
+    readiness=(ROOT/'app/services/readiness.py').read_text(encoding='utf-8')
+    assert "rate_limited=(not info.ok and info.status_code==429)" in readiness
+    assert 'WB временно ограничил запросы; повторите проверку позже' in readiness
