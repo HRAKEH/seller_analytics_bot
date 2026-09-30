@@ -234,6 +234,25 @@ def export_format_keyboard(days: int):
     return kb.as_markup()
 
 
+def users_admin_keyboard():
+    kb=InlineKeyboardBuilder()
+    kb.button(text='➕ Дать доступ',callback_data='users:add')
+    kb.button(text='➖ Отозвать доступ',callback_data='users:remove')
+    kb.button(text='❌ Закрыть',callback_data='users:cancel')
+    kb.adjust(2,1)
+    return kb.as_markup()
+
+
+def retry_jobs_keyboard(rows):
+    kb=InlineKeyboardBuilder()
+    for row in rows:
+        if str(row.get('status'))!='dead':
+            continue
+        kb.button(text=f'🔁 Повторить #{int(row["id"])}',callback_data=f'retry:run:{int(row["id"])}')
+    kb.adjust(1)
+    return kb.as_markup() if kb.buttons else None
+
+
 def shop_admin_keyboard():
     kb=InlineKeyboardBuilder()
     kb.button(text='➕ Добавить',callback_data='shopadmin:add')
