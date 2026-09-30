@@ -223,7 +223,8 @@ class CollectionService:
         return None
 
     async def backfill_orders(self, *, start: date, end: date, wb_connection_id: int | None = None,
-                              ozon_connection_id: int | None = None, shop_id: int | None = None) -> list[CollectionOutcome]:
+                              ozon_connection_id: int | None = None, shop_id: int | None = None,
+                              include_ozon_fulfillment: bool = True) -> list[CollectionOutcome]:
         if end < start:
             raise ValueError('end must not be before start')
         outcomes: list[CollectionOutcome] = []
@@ -310,7 +311,7 @@ class CollectionService:
                                 rid=self.repo.record_failure(ozon_connection_id,endpoint,ds,f'Normalization: {exc}',attempts=result.attempts)
                                 outcomes.append(CollectionOutcome('ozon',ds,False,rid,str(exc)))
                             current += timedelta(days=1)
-        if ozon_connection_id is not None and shop_id is not None and self.ozon is not None:
+        if include_ozon_fulfillment and ozon_connection_id is not None and shop_id is not None and self.ozon is not None:
             outcomes.extend(await self.collect_ozon_fulfillment_range(
                 shop_id=shop_id,connection_id=ozon_connection_id,start=start,end=end))
         return outcomes
