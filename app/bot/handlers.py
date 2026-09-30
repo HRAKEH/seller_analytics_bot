@@ -1502,15 +1502,15 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
     async def menu_products(message: types.Message):
         await show_submenu(message,
             '📦 <b>Товары и остатки</b>\n'
-            '«Товары» — продажи по SKU. «Остатки» — текущий запас. '
-            '«Экономика SKU» — выручка/расходы по товарам.',products_keyboard)
+            '«Товары» — продажи по SKU. «Остатки» — последний сохранённый снимок без API. '
+            '«Обновить остатки» — явный запрос к маркетплейсам. «Экономика SKU» — выручка/расходы.',products_keyboard)
 
     @dp.message(F.text == MENU_MONEY)
     async def menu_money(message: types.Message):
         await show_submenu(message,
             '💰 <b>Финансы</b>\n'
-            'Финансы — начисления и расходы. Реклама — затраты и ДРР. '
-            'Результат бизнеса — сводная оценка. Сверка — проверка цепочки данных.',money_keyboard)
+            'Финансы, Реклама и Результат бизнеса показывают сохранённые данные без API. '
+            'Кнопки «Обновить…» запрашивают маркетплейсы. Сверка — тяжёлая полная проверка.',money_keyboard)
 
     @dp.message(F.text == MENU_SUPPLY)
     async def menu_supply(message: types.Message):
@@ -1818,11 +1818,20 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
     @dp.message(F.text == COMMAND_BUTTONS['products'])
     async def btn_menu_products_report(message: types.Message): await cmd_products(command_copy(message,'products',''))
     @dp.message(F.text == COMMAND_BUTTONS['finance'])
-    async def btn_menu_finance(message: types.Message): await cmd_finance(command_copy(message,'finance',''))
+    async def btn_menu_finance(message: types.Message):
+        if not allowed(message): return await denied(message)
+        p=pref(); days=p.finance_lookback_days; end=local_now().date()-timedelta(days=1)
+        await send(message,format_finance(build_finance_report(ctx.repository,ctx.shop_id,end,days)))
     @dp.message(F.text == COMMAND_BUTTONS['ads'])
-    async def btn_menu_ads(message: types.Message): await cmd_ads(command_copy(message,'ads',''))
+    async def btn_menu_ads(message: types.Message):
+        if not allowed(message): return await denied(message)
+        p=pref(); days=p.finance_lookback_days; end=local_now().date()-timedelta(days=1)
+        await send(message,format_advertising(build_advertising_report(ctx.repository,ctx.shop_id,end,days)))
     @dp.message(F.text == COMMAND_BUTTONS['management'])
-    async def btn_menu_management(message: types.Message): await cmd_management(command_copy(message,'management',''))
+    async def btn_menu_management(message: types.Message):
+        if not allowed(message): return await denied(message)
+        p=pref(); days=p.finance_lookback_days; end=local_now().date()-timedelta(days=1)
+        await send(message,format_management(build_management_report(ctx.repository,ctx.shop_id,end,days)))
     @dp.message(F.text == COMMAND_BUTTONS['sku_finance'])
     async def btn_menu_sku_finance(message: types.Message): await cmd_sku_finance(command_copy(message,'sku_finance',''))
     @dp.message(F.text == COMMAND_BUTTONS['reconcile'])
@@ -1898,7 +1907,23 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
             days=p.product_report_days,stock_lookback_days=p.stock_velocity_days,stock_risk_days=p.stock_risk_days)))
 
     @dp.message(F.text == '📦 Остатки')
-    async def btn_stocks(message: types.Message): await cmd_stocks(message)
+    async def btn_stocks(message: types.Message):
+        if not allowed(message): return await denied(message)
+        p=pref(); end=local_now().date()-timedelta(days=1)
+        await send(message,format_stock_report(build_product_report(ctx.repository,ctx.shop_id,end,
+            days=p.product_report_days,stock_lookback_days=p.stock_velocity_days,stock_risk_days=p.stock_risk_days)))
+
+    @dp.message(F.text == '🔄 Обновить остатки')
+    async def btn_stocks_refresh(message: types.Message):
+        await cmd_stocks(message)
+
+    @dp.message(F.text == '🔄 Обновить финансы')
+    async def btn_finance_refresh(message: types.Message):
+        await cmd_finance(command_copy(message,'finance',''))
+
+    @dp.message(F.text == '🔄 Обновить рекламу')
+    async def btn_ads_refresh(message: types.Message):
+        await cmd_ads(command_copy(message,'ads',''))
 
     @dp.message(F.text == '🚚 Поставка')
     async def btn_supply(message: types.Message):
