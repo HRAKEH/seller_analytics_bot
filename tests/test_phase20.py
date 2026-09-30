@@ -223,6 +223,31 @@ def test_simplified_user_menus_hide_manual_and_technical_actions(monkeypatch):
     assert kb.COMMAND_BUTTONS['supply_defaults'] not in supply
 
 
+def test_common_report_export_and_retry_flows_are_button_driven(monkeypatch):
+    kb=_load_keyboard_module_with_stub(monkeypatch)
+    reports=set(kb.reports_keyboard('owner'))
+    assert {'🗓 Другая дата','📥 Догрузить данные','📜 Что уже загружено'} <= reports
+    assert ('Вчера','report_date:1') in kb.report_date_keyboard()
+    assert ('30 дней','export:period:30') in kb.export_period_keyboard()
+    assert ('📊 Excel','export:run:30:xlsx') in kb.export_format_keyboard(30)
+    users=kb.users_admin_keyboard()
+    assert ('➕ Дать доступ','users:add') in users
+    retry=kb.retry_jobs_keyboard([{'id':7,'status':'dead'},{'id':8,'status':'success'}])
+    assert ('🔁 Повторить #7','retry:run:7') in retry
+    assert all(not (isinstance(x,tuple) and x[1]=='retry:run:8') for x in retry)
+
+
+def test_report_date_button_reads_database_without_forcing_api_refresh():
+    src=(ROOT/'app/bot/handlers.py').read_text(encoding='utf-8')
+    assert "F.data.startswith('report_date:')" in src
+    assert "menu_action='day_view'" in src
+    start=src.index("if action=='day_view':")
+    end=src.index('pair=input_actions.get(action)',start)
+    block=src[start:end]
+    assert 'build_daily_report' in block
+    assert 'collect_day' not in block
+
+
 def test_action_center_has_inline_button_flow(monkeypatch):
     kb=_load_keyboard_module_with_stub(monkeypatch)
     class Item:
