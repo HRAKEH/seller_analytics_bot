@@ -46,8 +46,8 @@ COMMAND_BUTTONS: dict[str, str] = {
     'stocks': '📦 Остатки',
     'finance': '💰 Финансы',
     'ads': '📣 Реклама',
-    'management': '📈 Прибыль магазина',
-    'sku_finance': '🧾 Прибыль по товарам',
+    'management': '📈 Результат магазина',
+    'sku_finance': '🧾 Экономика по товарам',
     'reconcile': '🔎 Проверка расхождений',
     'cost': '💲 Задать себестоимость',
     'alerts': '🚨 Алерты',
@@ -69,10 +69,10 @@ COMMAND_BUTTONS: dict[str, str] = {
     'supply_defaults': '🧰 Defaults поставок',
     'supply_set': '✏️ Настроить SKU',
     'status': '📡 Состояние данных',
-    'health': '❤️ Health-check',
-    'jobs': '🧰 Retry-очередь',
+    'health': '❤️ Проверка бота',
+    'jobs': '🧰 Фоновые задачи',
     'job_retry': '🔁 Повторить retry-задачу',
-    'diagnostics': '🧪 Диагностика',
+    'diagnostics': '🧪 Техническая диагностика',
 }
 
 MENU_REPORTS = '📊 Отчёты'
