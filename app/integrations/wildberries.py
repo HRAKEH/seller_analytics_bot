@@ -112,11 +112,11 @@ class WildberriesClient(MarketplaceClient):
 
     async def ping(self, base_url: str = 'https://common-api.wildberries.ru') -> FetchResult:
         return await self.request('GET', base_url.rstrip('/') + '/ping', headers=self._headers(),
-                                  rate_key='ping:'+base_url, min_interval=10.0)
+                                  rate_key='ping:'+base_url, min_interval=10.0, retry_on_429=False)
 
     async def seller_info(self) -> FetchResult:
         return await self.request('GET','https://common-api.wildberries.ru/api/v1/seller-info',
-                                  headers=self._headers(),rate_key='seller_info',min_interval=60.0)
+                                  headers=self._headers(),rate_key='seller_info',min_interval=60.0,retry_on_429=False)
 
     async def orders(self, date_from: str, *, flag: int = 0) -> FetchResult:
         """Operational orders. flag=1 returns rows whose order date matches date_from."""
