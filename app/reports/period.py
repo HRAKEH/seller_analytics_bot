@@ -37,16 +37,17 @@ def build_period_report(repo: Repository, shop_id: int, end: date, days: int, la
         ds=d.isoformat()
         if conns and all(ds in current[c.id] for c in conns): complete.append(ds)
         d += timedelta(days=1)
-    prev_complete=[]
-    d=prev_start
-    while d<=prev_end:
-        ds=d.isoformat()
-        if conns and all(ds in previous[c.id] for c in conns): prev_complete.append(ds)
-        d += timedelta(days=1)
+    # Compare only like-for-like calendar positions. If the current period is
+    # partial, each included current day is matched to the day exactly one
+    # requested-period earlier. Never compare N current complete days with a
+    # different number of previous days.
+    previous_matches=[(date.fromisoformat(ds)-timedelta(days=days)).isoformat() for ds in complete]
+    previous_comparable=bool(previous_matches) and all(
+        pds in previous[c.id] for c in conns for pds in previous_matches)
     sources=[]
     for c in conns:
         units=sum(current[c.id][d] for d in complete)
-        prev=sum(previous[c.id][d] for d in prev_complete) if prev_complete else None
+        prev=sum(previous[c.id][d] for d in previous_matches) if previous_comparable else None
         sources.append(SourcePeriod(c.marketplace,units,prev))
-    prev_total=sum(x.previous_units for x in sources if x.previous_units is not None) if prev_complete else None
+    prev_total=sum(float(x.previous_units or 0) for x in sources) if previous_comparable else None
     return PeriodReport(label,start.isoformat(),end.isoformat(),len(complete),days,tuple(sources),prev_total)

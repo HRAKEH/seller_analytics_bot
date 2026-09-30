@@ -51,6 +51,7 @@ class ProductReport:
     inventory_schemes: list[dict[str, Any]] = field(default_factory=list)
     stock_risks: list[StockRisk] = field(default_factory=list)
     risk_days: int = 14
+    comparison_complete: bool = False
 
 
 def _index(rows: list[dict[str,Any]]) -> dict[int,dict[str,Any]]:
@@ -84,16 +85,26 @@ def build_product_report(repo: Repository, shop_id: int, end: date, *, days: int
         rows.sort(key=lambda x:(x.order_amount,x.units),reverse=True)
         top[market]=rows[:top_n]
 
+    # Growth/decline is a period-over-period formula and must not compare
+    # different data coverage. Top lists can still show available data, but
+    # change rankings are suppressed unless both periods are complete for every
+    # enabled core connection.
+    conns=[c for c in repo.list_connections(shop_id) if c.enabled and c.marketplace in {'ozon','wildberries'}]
+    comparison_complete=bool(conns) and all(
+        len(repo.successful_order_dates(c.id,start.isoformat(),end.isoformat()))==days
+        and len(repo.successful_order_dates(c.id,prev_start.isoformat(),prev_end.isoformat()))==days
+        for c in conns)
     changes:list[ProductChange]=[]
-    all_lids=set(unit_idx)|set(prev_idx)
-    for lid in all_lids:
-        cur=float(unit_idx.get(lid,{}).get('value',0) or 0)
-        prev=float(prev_idx.get(lid,{}).get('value',0) or 0)
-        base=unit_idx.get(lid) or prev_idx.get(lid)
-        if not base or (cur==0 and prev==0): continue
-        pct=((cur-prev)/prev*100.0) if prev>0 else None
-        changes.append(ProductChange(str(base['marketplace']),str(base['name']),
-                                     str(base['marketplace_sku']),cur,prev,pct))
+    if comparison_complete:
+        all_lids=set(unit_idx)|set(prev_idx)
+        for lid in all_lids:
+            cur=float(unit_idx.get(lid,{}).get('value',0) or 0)
+            prev=float(prev_idx.get(lid,{}).get('value',0) or 0)
+            base=unit_idx.get(lid) or prev_idx.get(lid)
+            if not base or (cur==0 and prev==0): continue
+            pct=((cur-prev)/prev*100.0) if prev>0 else None
+            changes.append(ProductChange(str(base['marketplace']),str(base['name']),
+                                         str(base['marketplace_sku']),cur,prev,pct))
     # Ignore tiny one-unit bases in percentage fall ranking: they generate noise.
     decline=sorted((x for x in changes if x.previous_units>=2 and x.current_units<x.previous_units),
                    key=lambda x: ((x.change_pct if x.change_pct is not None else 0), x.current_units-x.previous_units))[:top_n]
@@ -136,4 +147,8 @@ def build_product_report(repo: Repository, shop_id: int, end: date, *, days: int
     # Out of stock first, then the shortest calculated runway. Items with unknown demand go last.
     stock_risks.sort(key=lambda x:(0 if x.available_units<=0 else 1, x.days_left if x.days_left is not None else 10**12, x.available_units))
 
-    return ProductReport(start,end,days,top,growth,decline,fulfillment_orders,inventory_schemes,stock_risks,stock_risk_days)
+    return ProductReport(
+        start=start,end=end,days=days,top=top,growth=growth,decline=decline,
+        fulfillment_orders=fulfillment_orders,inventory_schemes=inventory_schemes,
+        stock_risks=stock_risks,risk_days=stock_risk_days,
+        comparison_complete=comparison_complete)

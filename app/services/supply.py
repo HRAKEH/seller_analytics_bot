@@ -397,7 +397,10 @@ def evaluate_forecast_quality(repo: Repository, shop_id: int, as_of: date, *, ho
             cutoff=as_of-timedelta(days=n*horizon)
             future=[d for d in complete if cutoff.isoformat()<d<=(cutoff+timedelta(days=horizon)).isoformat()]
             history=[d for d in complete if (cutoff-timedelta(days=lookback-1)).isoformat()<=d<=cutoff.isoformat()]
-            if len(history)<14 or not future: continue
+            # A horizon sample is valid only when every calendar day in that
+            # horizon is complete across all enabled marketplaces. Otherwise the
+            # backtest would silently score a 7-day forecast on fewer than 7 days.
+            if len(history)<14 or len(future)!=horizon: continue
             values=[float(series.get(d,0.0)) for d in history]; baseline=_weighted_forecast(values)
             factors=_weekday_factors(history,values,enabled=bool(pref.get('seasonality_enabled',1)))
             predicted=sum(baseline*factors.get(date.fromisoformat(d).weekday(),1.0) for d in future)

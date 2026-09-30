@@ -87,6 +87,9 @@ def format_product_report(report) -> str:
         for i,row in enumerate(rows,1):
             lines.append(f'{i}. {_product_name(row.name)} · {row.units:g} шт. · {money(row.order_amount)}')
 
+    if not getattr(report,'comparison_complete',True):
+        lines.append('\n⚠️ Сравнение роста/просадки скрыто: текущий или предыдущий период загружен не полностью.')
+
     if report.decline:
         lines.append('\n📉 <b>Просадка по заказанным единицам</b>')
         for row in report.decline[:5]:
