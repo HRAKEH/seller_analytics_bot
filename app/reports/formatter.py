@@ -29,9 +29,12 @@ def format_daily(report: DailyReport) -> str:
             lines.append(f'{source_name(s.marketplace)}: ⏳ данных нет')
             if s.warning: lines.append(f'  ⚠️ {escape(s.warning[:180])}')
             continue
-        share=(s.units/total*100) if total else 0
         avg=(s.ordered_revenue/s.units) if s.ordered_revenue is not None and s.units else None
-        lines.append(f'{source_name(s.marketplace)}: <b>{num(s.units)} шт.</b> · доля {share:.1f}%')
+        if total is not None and total>0:
+            share=s.units/total*100
+            lines.append(f'{source_name(s.marketplace)}: <b>{num(s.units)} шт.</b> · доля {share:.1f}%')
+        else:
+            lines.append(f'{source_name(s.marketplace)}: <b>{num(s.units)} шт.</b>')
         if s.ordered_revenue is not None:
             lines.append(f'  сумма заказов {money(s.ordered_revenue)} · на ед. {money(avg)}')
         if s.cancellations is not None:
@@ -45,7 +48,11 @@ def format_daily(report: DailyReport) -> str:
     if total is not None:
         lines.append(f'🟡 <b>ИТОГО: {num(total)} заказанных ед.</b> · {delta(total, report.previous_total_units)}')
     else:
-        lines.append('🟡 ИТОГО: ⏳ нет сопоставимых данных')
+        partial=report.available_units
+        if partial is not None:
+            lines.append(f'🟡 ИТОГО: ⏳ неполные данные · по загруженным источникам {num(partial)} ед.')
+        else:
+            lines.append('🟡 ИТОГО: ⏳ нет сопоставимых данных')
     lines.append('ℹ️ Суммы заказов по площадкам пока не складываются: финансовая методика источников различается.')
     return '\n'.join(lines)
 
