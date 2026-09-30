@@ -70,7 +70,7 @@ def test_main_menu_is_logically_grouped_and_emoji_first():
     _, mapping, categories = _menu_model()
     expected = {
         '📊 Отчёты', '📦 Товары', '💰 Деньги и реклама', '🚚 Поставки',
-        '🚨 Проблемы', '🏪 Магазин', '🛠 Ещё',
+        '🚨 Проблемы', '🏪 Магазин', '🛠 Ещё', '🧰 Техническое',
     }
     assert set(categories.values()) == expected
     assert len(set(mapping.values())) == len(mapping)
@@ -88,5 +88,14 @@ def test_primary_workflows_are_rendered_by_keyboard_builders():
         'alerts','actions','action_history','supply','inbound','promotions','forecast_quality',
         'export','health','jobs','diagnostics',
     }
-    missing=[cmd for cmd in primary if f"COMMAND_BUTTONS['{cmd}']" not in builders]
+    aliases={
+        'backfill':'📥 Догрузить данные',
+        'export':'📤 Экспорт',
+    }
+    missing=[]
+    for cmd in primary:
+        canonical=f"COMMAND_BUTTONS['{cmd}']" in builders
+        alias=aliases.get(cmd)
+        if not canonical and not (alias and repr(alias) in builders):
+            missing.append(cmd)
     assert missing == [], f'Primary workflows absent from button menus: {missing}'
