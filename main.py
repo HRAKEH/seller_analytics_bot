@@ -47,7 +47,11 @@ async def main():
     fatal_errors: list[BaseException]=[]
     try:
         seller=repo.ensure_seller(settings.owner_ids[0],'Основной селлер',settings.timezone)
-        shop=repo.ensure_shop(seller.id,'Основной магазин',credential_profile='DEFAULT')
+        active_shops=repo.list_shops(seller.id)
+        # Never recreate a default shop just because the existing primary shop was renamed.
+        # A new default shop is only needed for a genuinely empty seller account.
+        shop=active_shops[0] if active_shops else repo.ensure_shop(
+            seller.id,'Основной магазин',credential_profile='DEFAULT')
         defaults=defaults_from_settings(settings)
         for existing in repo.list_shops(seller.id):
             preferences=repo.ensure_shop_preferences(existing.id,defaults)
