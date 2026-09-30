@@ -244,13 +244,14 @@ def users_admin_keyboard():
 
 
 def retry_jobs_keyboard(rows):
-    kb=InlineKeyboardBuilder()
+    kb=InlineKeyboardBuilder(); added=False
     for row in rows:
         if str(row.get('status'))!='dead':
             continue
         kb.button(text=f'🔁 Повторить #{int(row["id"])}',callback_data=f'retry:run:{int(row["id"])}')
+        added=True
     kb.adjust(1)
-    return kb.as_markup() if kb.buttons else None
+    return kb.as_markup() if added else None
 
 
 def shop_admin_keyboard():
