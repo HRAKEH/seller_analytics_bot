@@ -121,14 +121,14 @@ class RuntimeRegistry:
         current=self._contexts.get(shop_id)
         if current is not None and current.job_lock.locked():
             raise RuntimeError('Нельзя архивировать магазин во время загрузки данных.')
+        # Persist the state change first. Repository guards ensure that the last
+        # active shop cannot be archived, so a failed request leaves runtime intact.
+        self.repository.archive_shop(self.seller_id,shop_id)
         async with self._lock:
             current=self._contexts.pop(shop_id,None)
-            self.repository.archive_shop(self.seller_id,shop_id)
             if current is not None:
                 await self._close_context(current)
             active=self.repository.list_shops(self.seller_id)
-            if not active:
-                raise RuntimeError('После архивирования не осталось активных магазинов.')
             if self.default_shop_id==shop_id or not any(x.id==self.default_shop_id for x in active):
                 self.default_shop_id=active[0].id
 
