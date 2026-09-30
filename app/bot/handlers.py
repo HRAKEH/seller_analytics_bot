@@ -1591,10 +1591,17 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
     @dp.message(StateFilter(MenuInputStates.waiting_value), F.text)
     async def menu_input_value(message: types.Message,state: FSMContext):
         data=await state.get_data(); action=str(data.get('menu_action') or '')
+        value=(message.text or '').strip()
+        if action=='day_view':
+            await state.clear()
+            try: target=date.fromisoformat(value)
+            except ValueError: return await message.answer('⚠️ Неверная дата. Используйте YYYY-MM-DD.')
+            if target > local_now().date():
+                return await message.answer('⚠️ Нельзя показать будущую дату.')
+            return await send(message,format_daily(build_daily_report(ctx.repository,ctx.shop_id,target)))
         pair=input_actions.get(action)
         if pair is None:
             await state.clear(); return await show_main_menu(message,text='⚠️ Действие меню устарело. Выберите его заново.')
-        value=(message.text or '').strip()
         await state.clear()
         command,handler=pair
         await handler(command_copy(message,command,value))
@@ -1680,6 +1687,189 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
     async def btn_menu_jobs(message: types.Message): await cmd_jobs(message)
     @dp.message(F.text == COMMAND_BUTTONS['diagnostics'])
     async def btn_menu_diagnostics(message: types.Message): await cmd_diagnostics(message)
+
+    # --- button-first workflows ------------------------------------------
+    @dp.message(F.text == '🗓 Другая дата')
+    async def btn_report_other_date(message: types.Message):
+        if not allowed(message): return await denied(message)
+        await message.answer('🗓 <b>Выберите дату отчёта</b>\nОтчёт читается из БД и сам по себе не вызывает API.',
+            parse_mode='HTML',reply_markup=report_date_keyboard())
+
+    @dp.callback_query(F.data.startswith('report_date:'))
+    async def cb_report_date(callback: types.CallbackQuery, state: FSMContext):
+        if callback.from_user is None or not ctx.repository.can_user(callback.from_user.id,ctx.shop_id,'view'):
+            return await callback.answer('Недостаточно прав.',show_alert=True)
+        value=(callback.data or '').split(':',1)[1]
+        if value=='cancel':
+            await callback.answer('Отменено')
+            if callback.message: await callback.message.edit_text('↩️ Выбор даты отменён.')
+            return
+        if value=='custom':
+            await state.clear(); await state.set_state(MenuInputStates.waiting_value)
+            await state.update_data(menu_action='day_view')
+            await callback.answer()
+            if callback.message:
+                await callback.message.edit_text('✍️ Введите дату: <code>YYYY-MM-DD</code>',parse_mode='HTML')
+            return
+        try: offset=max(1,int(value))
+        except ValueError: return await callback.answer('Некорректная дата.',show_alert=True)
+        target=local_now().date()-timedelta(days=offset)
+        await callback.answer()
+        if callback.message:
+            await send(callback.message,format_daily(build_daily_report(ctx.repository,ctx.shop_id,target)))
+
+    @dp.message(F.text == '📥 Догрузить данные')
+    async def btn_backfill_simple(message: types.Message):
+        await show_backfill_source_picker(message)
+
+    @dp.message(F.text == '📜 Что уже загружено')
+    async def btn_history_simple(message: types.Message):
+        if not allowed(message): return await denied(message)
+        rows=ctx.repository.recent_metric_days(ctx.shop_id,limit=14)
+        if not rows:
+            return await send(message,'📜 История пока пуста. Нажмите «📥 Догрузить данные».')
+        await send(message,'\n'.join(['📜 <b>Данные в базе</b>']+
+            [f'{"✅" if got==total else "⏳"} {day} · источников {got}/{total}' for day,got,total in rows]))
+
+    @dp.message(F.text == '📤 Экспорт')
+    async def btn_export_picker(message: types.Message):
+        if not allowed(message): return await denied(message)
+        await message.answer('📤 <b>Экспорт</b>\nЗа какой период?',parse_mode='HTML',reply_markup=export_period_keyboard())
+
+    @dp.callback_query(F.data.startswith('export:'))
+    async def cb_export(callback: types.CallbackQuery):
+        if callback.from_user is None or not ctx.repository.can_user(callback.from_user.id,ctx.shop_id,'view'):
+            return await callback.answer('Недостаточно прав.',show_alert=True)
+        parts=(callback.data or '').split(':')
+        action=parts[1] if len(parts)>1 else ''
+        if action=='cancel':
+            await callback.answer('Отменено')
+            if callback.message: await callback.message.edit_text('↩️ Экспорт отменён.')
+            return
+        if action=='back':
+            await callback.answer()
+            if callback.message:
+                await callback.message.edit_text('📤 <b>Экспорт</b>\nЗа какой период?',parse_mode='HTML',reply_markup=export_period_keyboard())
+            return
+        if action=='period' and len(parts)==3:
+            days=int(parts[2]); await callback.answer()
+            if callback.message:
+                await callback.message.edit_text(f'📤 <b>Экспорт за {days} дней</b>\nВыберите формат:',
+                    parse_mode='HTML',reply_markup=export_format_keyboard(days))
+            return
+        if action=='run' and len(parts)==4 and callback.message:
+            days=int(parts[2]); fmt=parts[3]
+            await callback.answer('Формирую файл…')
+            await cmd_export(command_copy(callback.message,'export',f'{days} {fmt}'))
+            return
+        await callback.answer('Некорректное действие.',show_alert=True)
+
+    @dp.message(F.text == '🚨 Активные проблемы')
+    async def btn_active_problems(message: types.Message): await cmd_alerts(message)
+
+    @dp.message(F.text == '🎯 Что делать сегодня')
+    async def btn_actions_simple(message: types.Message): await cmd_actions(message)
+
+    @dp.message(F.text == '⚙️ Состояние источников')
+    async def btn_status_simple(message: types.Message): await cmd_status(message)
+
+    @dp.message(F.text == '📋 История рекомендаций')
+    async def btn_action_history_simple(message: types.Message):
+        await cmd_action_history(command_copy(message,'action_history','14'))
+
+    @dp.message(F.text == '⚙️ Параметры отчётов')
+    async def btn_report_settings(message: types.Message): await cmd_settings(message)
+
+    @dp.message(F.text == '🔌 Проверить API')
+    async def btn_api_check(message: types.Message): await cmd_connect_check(message)
+
+    @dp.message(F.text == '🏪 Магазины')
+    async def btn_shops_simple(message: types.Message): await cmd_shops(message)
+
+    @dp.message(F.text == '👥 Доступ пользователей')
+    async def btn_users_simple(message: types.Message):
+        if not allowed(message,'manage'): return await denied(message,'manage')
+        rows=ctx.repository.users_for_shop(ctx.shop_id)
+        lines=['👥 <b>Доступ пользователей</b>','━━━━━━━━━━━━━━━━']
+        for row in rows:
+            name=f" · {escape(str(row['display_name']))}" if row.get('display_name') else ''
+            lines.append(f"• <code>{int(row['telegram_user_id'])}</code>{name} · <b>{escape(str(row['role']))}</b>")
+        await message.answer('\n'.join(lines),parse_mode='HTML',reply_markup=users_admin_keyboard())
+
+    @dp.callback_query(F.data.startswith('users:'))
+    async def cb_users_admin(callback: types.CallbackQuery, state: FSMContext):
+        if callback.from_user is None or not ctx.repository.can_user(callback.from_user.id,ctx.shop_id,'manage'):
+            return await callback.answer('Недостаточно прав.',show_alert=True)
+        action=(callback.data or '').split(':',1)[1]
+        if action=='cancel':
+            await callback.answer('Закрыто')
+            if callback.message: await callback.message.edit_reply_markup(reply_markup=None)
+            return
+        await callback.answer()
+        if callback.message:
+            await launch_input_action(callback.message,state,'user_add' if action=='add' else 'user_remove')
+
+    @dp.message(F.text == '🗄 Управление магазинами')
+    async def btn_shop_admin(message: types.Message):
+        if not is_system_owner(message): return await system_denied(message)
+        await message.answer('🗄 <b>Управление магазинами</b>\nВыберите действие. ID вручную вводить не нужно для архива/восстановления/удаления.',
+            parse_mode='HTML',reply_markup=shop_admin_keyboard())
+
+    @dp.callback_query(F.data.startswith('shopadmin:'))
+    async def cb_shop_admin(callback: types.CallbackQuery, state: FSMContext):
+        if callback.from_user is None or not is_system_owner(callback.message):
+            if callback.from_user is None or callback.from_user.id not in ctx.settings.owner_ids:
+                return await callback.answer('Только system owner.',show_alert=True)
+        action=(callback.data or '').split(':',1)[1]
+        if action=='cancel':
+            await callback.answer('Закрыто')
+            if callback.message: await callback.message.edit_reply_markup(reply_markup=None)
+            return
+        await callback.answer()
+        if callback.message is None: return
+        if action=='archive': return await show_shop_picker(callback.message,'archive')
+        if action=='restore': return await show_shop_picker(callback.message,'restore')
+        if action=='delete': return await show_shop_picker(callback.message,'delete')
+        if action=='add': return await launch_input_action(callback.message,state,'shop_add')
+        if action=='profile': return await launch_input_action(callback.message,state,'shop_profile')
+
+    @dp.message(F.text == '❤️ Проверка системы')
+    async def btn_health_simple(message: types.Message): await cmd_health(message)
+
+    @dp.message(F.text == '🧪 Диагностика')
+    async def btn_diagnostics_simple(message: types.Message): await cmd_diagnostics(message)
+
+    @dp.message(F.text == '🧰 Ошибки и повторы')
+    async def btn_jobs_simple(message: types.Message): await cmd_jobs(message)
+
+    @dp.callback_query(F.data.startswith('retry:run:'))
+    async def cb_retry_run(callback: types.CallbackQuery):
+        if callback.from_user is None or not ctx.repository.can_user(callback.from_user.id,ctx.shop_id,'manage'):
+            return await callback.answer('Недостаточно прав.',show_alert=True)
+        try: job_id=int((callback.data or '').rsplit(':',1)[1])
+        except ValueError: return await callback.answer('Некорректная задача.',show_alert=True)
+        ok=ctx.repository.requeue_retry_job(job_id,shop_id=ctx.shop_id)
+        await callback.answer('Задача возвращена в очередь.' if ok else 'Задача уже недоступна.',show_alert=not ok)
+
+    @dp.message(F.text == '💾 Резервные копии')
+    async def btn_backups_menu(message: types.Message):
+        if not is_system_owner(message): return await system_denied(message)
+        await message.answer('💾 <b>Резервные копии</b>\nВыберите действие:',parse_mode='HTML',reply_markup=backups_menu_keyboard())
+
+    @dp.callback_query(F.data.startswith('backups:'))
+    async def cb_backups_menu(callback: types.CallbackQuery, state: FSMContext):
+        if callback.from_user is None or callback.from_user.id not in ctx.settings.owner_ids:
+            return await callback.answer('Только system owner.',show_alert=True)
+        action=(callback.data or '').split(':',1)[1]
+        if action=='cancel':
+            await callback.answer('Закрыто')
+            if callback.message: await callback.message.edit_reply_markup(reply_markup=None)
+            return
+        await callback.answer()
+        if callback.message is None: return
+        if action=='create': return await cmd_backup(callback.message)
+        if action=='list': return await cmd_backups(callback.message)
+        if action=='restore': return await cmd_restore(callback.message,state)
 
     # --- keyboard buttons ------------------------------------------------
     @dp.message(F.text == '📊 Вчера')
