@@ -76,7 +76,7 @@ COMMAND_BUTTONS: dict[str, str] = {
 
 MENU_REPORTS = '📊 Продажи и отчёты'
 MENU_PRODUCTS = '📦 Товары и остатки'
-MENU_MONEY = '💰 Финансы'
+MENU_MONEY = '💰 Деньги'
 MENU_SUPPLY = '🚚 Поставки'
 MENU_CONTROL = '🎯 Что требует внимания'
 MENU_SHOP = '⚙️ Магазин'
