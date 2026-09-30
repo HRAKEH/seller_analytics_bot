@@ -101,14 +101,27 @@ def build_action_center(repo: Repository, shop_id: int, as_of: date, *, persist:
     for a in repo.active_alert_states(shop_id):
         rule=str(a.get('rule_key') or 'alert'); subject=str(a.get('subject_key') or '')
         if rule in {'low_stock','high_drr'}: continue
-        labels={'order_drop':'Падение заказов','api_stale':'API'}
         p=1 if rule=='api_stale' else 2
-        _merge_action(actions,ActionItem(
-            f'alert:{rule}:{subject}',p,'system' if rule=='api_stale' else 'sales',
-            f'🚨 {labels.get(rule,rule)} · {subject}',
-            f'Активный алерт. Последнее значение: {a.get("last_value") if a.get("last_value") is not None else "—"}',
-            '🚨 Контроль → 🚨 Алерты',('источник: alert engine',)
-        ))
+        if rule=='api_stale':
+            market={'wildberries':'Wildberries','ozon':'Ozon'}.get(subject,subject.title() or 'API')
+            raw_age=a.get('last_value')
+            age_text='нет успешной загрузки' if raw_age is None else f'последняя успешная загрузка была примерно {float(raw_age):.1f} ч. назад'
+            item=ActionItem(
+                f'alert:{rule}:{subject}',p,'system',
+                f'🔌 Нет свежих заказов · {market}',
+                f'{market}: {age_text}. Отчёты могут использовать устаревшие данные.',
+                '⚙️ Магазин → 🔌 Проверить API',
+                ('проверьте доступ API и дождитесь следующей успешной загрузки',)
+            )
+        else:
+            item=ActionItem(
+                f'alert:{rule}:{subject}',p,'sales',
+                f'📉 Падение заказов · {subject}',
+                f'Активная проблема. Последнее значение: {a.get("last_value") if a.get("last_value") is not None else "—"}',
+                '📊 Продажи и отчёты → Вчера',
+                ()
+            )
+        _merge_action(actions,item)
 
     dead=[j for j in repo.recent_retry_jobs(limit=50,shop_id=shop_id) if str(j.get('status'))=='dead']
     if dead:
