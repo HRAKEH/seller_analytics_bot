@@ -101,7 +101,7 @@ class MarketplaceClient:
 
     async def request(self, method: str, path: str, *, params=None, json=None, headers=None,
                       rate_key: str = 'default', min_interval: float | None = None,
-                      retry_429: bool = True, fail_fast_rate_limit: bool = False) -> FetchResult:
+                      retry_on_429: bool = True, fail_fast_rate_limit: bool = False) -> FetchResult:
         url = path if path.startswith('https://') else f'{self.base_url}/{path.lstrip("/")}'
         interval = self.min_interval if min_interval is None else max(0.0, float(min_interval))
         loop=asyncio.get_running_loop()
@@ -143,7 +143,7 @@ class MarketplaceClient:
                         # attempt or a diagnostic caller asked us not to retry.
                         self._shared_rate_next[state_key]=max(
                             self._shared_rate_next.get(state_key,0.0),loop.time()+retry_wait)
-                        if not retry_429 or attempt > self.max_retries:
+                        if not retry_on_429 or attempt > self.max_retries:
                             return FetchResult.failure(
                                 self.source,
                                 f'HTTP 429: лимит API; повтор не ранее чем через {int(retry_wait + 0.999)} сек.',
