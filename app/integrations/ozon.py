@@ -4,24 +4,36 @@ This module only transports raw source data. Business meanings are normalized in
 ``app.services`` so API plumbing cannot silently redefine a metric.
 """
 from __future__ import annotations
+import hashlib
 from .base import MarketplaceClient, FetchResult
 
 
 class OzonClient(MarketplaceClient):
     def __init__(self, client_id: str, api_key: str, *, timeout: float = 60,
                  min_interval: float = 1.0, max_retries: int = 3, transport=None):
+        fingerprint=f'{client_id}|{api_key}'
+        scope='ozon:'+hashlib.sha256(fingerprint.encode('utf-8')).hexdigest()[:24]
         super().__init__('ozon', 'https://api-seller.ozon.ru', timeout=timeout,
-                         min_interval=min_interval, max_retries=max_retries, transport=transport)
+                         min_interval=min_interval, max_retries=max_retries, transport=transport,
+                         rate_scope=scope)
         self.client_id, self.api_key = client_id, api_key
 
     def _headers(self):
         return {'Content-Type': 'application/json', 'Client-Id': self.client_id, 'Api-Key': self.api_key}
 
-    async def seller_info(self) -> FetchResult:
-        return await self.request('POST','/v1/seller/info',json={},headers=self._headers(),rate_key='seller_info',min_interval=1.0)
+    async def seller_info(self, *, retry_429: bool = True,
+                          fail_fast_rate_limit: bool = False) -> FetchResult:
+        return await self.request(
+            'POST','/v1/seller/info',json={},headers=self._headers(),
+            rate_key='seller_info',min_interval=1.0,retry_429=retry_429,
+            fail_fast_rate_limit=fail_fast_rate_limit)
 
-    async def api_roles(self) -> FetchResult:
-        return await self.request('POST','/v1/roles',json={},headers=self._headers(),rate_key='roles',min_interval=1.0)
+    async def api_roles(self, *, retry_429: bool = True,
+                        fail_fast_rate_limit: bool = False) -> FetchResult:
+        return await self.request(
+            'POST','/v1/roles',json={},headers=self._headers(),
+            rate_key='roles',min_interval=1.0,retry_429=retry_429,
+            fail_fast_rate_limit=fail_fast_rate_limit)
 
     async def analytics(self, payload: dict) -> FetchResult:
         return await self.request('POST', '/v1/analytics/data', json=payload, headers=self._headers(), rate_key='analytics')
