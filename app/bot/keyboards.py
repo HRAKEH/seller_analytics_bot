@@ -27,21 +27,21 @@ COMMAND_BUTTONS: dict[str, str] = {
     'user_add': '➕ Дать доступ',
     'user_remove': '➖ Отозвать доступ',
     'my_access': '🙋 Мой доступ',
-    'export': '📤 Экспорт данных',
+    'export': '📤 Скачать данные',
     'backup': '💾 Создать backup',
     'backups': '🗂 История backup',
     'restore': '♻️ Восстановить backup',
     'setup': '🧩 Мастер настройки',
     'readiness': '✅ Что настроено',
-    'connect_check': '🔌 Проверить подключения',
+    'connect_check': '🔌 Проверить API',
     'help': '🧭 Как подключить магазин',
     'demo_on': '🧪 Включить демо',
     'demo_off': '🟢 Выключить демо',
     'settings': '⚙️ Настройки магазина',
     'import_costs': '📥 Импорт себестоимости',
     'link': '🔗 Связать WB ↔ Ozon',
-    'day': '🗓 Отчёт по дате',
-    'backfill': '📥 Загрузить историю',
+    'day': '🗓 Другой день',
+    'backfill': '📥 Догрузить историю',
     'products': '🏆 Топ товаров',
     'stocks': '📦 Остатки',
     'finance': '💰 Финансы',
@@ -70,7 +70,7 @@ COMMAND_BUTTONS: dict[str, str] = {
     'supply_set': '✏️ Настроить SKU',
     'status': '📡 Состояние данных',
     'health': '❤️ Health-check',
-    'jobs': '🧰 Retry-очередь',
+    'jobs': '🔁 Ошибки и повторы',
     'job_retry': '🔁 Повторить retry-задачу',
     'diagnostics': '🧪 Диагностика',
 }
@@ -107,7 +107,8 @@ def reports_keyboard(role: str | None = 'owner', *, system_owner: bool = False):
     role = _role(role)
     buttons = [
         '📊 Вчера', '📅 Неделя',
-        '📅 Месяц', '📜 История',
+        '📅 Месяц', COMMAND_BUTTONS['day'],
+        '📜 История',
     ]
     if role in {'analyst', 'owner'}:
         buttons += ['🔄 Обновить вчера', COMMAND_BUTTONS['backfill']]
@@ -122,17 +123,20 @@ def products_keyboard(role: str | None = 'owner', *, system_owner: bool = False)
         COMMAND_BUTTONS['sku_finance'],
     ]
     if role in {'analyst', 'owner'}:
-        buttons += [COMMAND_BUTTONS['import_costs']]
+        buttons += ['🔄 Обновить остатки', COMMAND_BUTTONS['import_costs']]
     buttons += [BACK, HOME]
     return _build(buttons)
 
 
 def money_keyboard(role: str | None = 'owner', *, system_owner: bool = False):
+    role = _role(role)
     buttons = [
         COMMAND_BUTTONS['finance'], COMMAND_BUTTONS['ads'],
         COMMAND_BUTTONS['management'], COMMAND_BUTTONS['reconcile'],
-        BACK, HOME,
     ]
+    if role in {'analyst', 'owner'}:
+        buttons += ['🔄 Обновить финансы', '🔄 Обновить рекламу']
+    buttons += [BACK, HOME]
     return _build(buttons)
 
 
@@ -239,6 +243,44 @@ def action_item_keyboard(ref: str):
     kb.button(text='⏰ Отложить на 24 ч',callback_data=f'action:snooze:{ref}')
     kb.button(text='⬅️ К списку',callback_data='action:list')
     kb.adjust(2,1)
+    return kb.as_markup()
+
+
+def date_picker_keyboard():
+    kb=InlineKeyboardBuilder()
+    for days,label in ((1,'Вчера'),(2,'2 дня назад'),(3,'3 дня назад'),(7,'7 дней назад')):
+        kb.button(text=label,callback_data=f'day:relative:{days}')
+    kb.button(text='⌨️ Ввести дату',callback_data='day:custom')
+    kb.button(text='❌ Закрыть',callback_data='flow:cancel')
+    kb.adjust(2,2,1,1)
+    return kb.as_markup()
+
+
+def export_picker_keyboard():
+    kb=InlineKeyboardBuilder()
+    for days in (7,30,90):
+        kb.button(text=f'Excel · {days} дн.',callback_data=f'export:{days}:xlsx')
+    kb.button(text='CSV · 30 дн.',callback_data='export:30:csv')
+    kb.button(text='CSV · 90 дн.',callback_data='export:90:csv')
+    kb.button(text='❌ Закрыть',callback_data='flow:cancel')
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+def retry_jobs_keyboard(rows):
+    kb=InlineKeyboardBuilder()
+    added=0
+    for row in rows:
+        if str(row.get('status')) not in {'dead','pending'}:
+            continue
+        job_id=int(row['id'])
+        label=str(row.get('job_type') or 'задача')
+        kb.button(text=f'🔁 Повторить #{job_id} · {label[:24]}',callback_data=f'job:retry:{job_id}')
+        added+=1
+        if added>=8:
+            break
+    kb.button(text='❌ Закрыть',callback_data='flow:cancel')
+    kb.adjust(1)
     return kb.as_markup()
 
 
