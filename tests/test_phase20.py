@@ -155,8 +155,16 @@ def _load_keyboard_module_with_stub(monkeypatch):
 
 def test_global_database_and_credential_buttons_are_system_owner_only(monkeypatch):
     kb=_load_keyboard_module_with_stub(monkeypatch)
-    delegated_shop_owner=set(kb.service_keyboard('owner',system_owner=False)) | set(kb.shop_keyboard('owner',system_owner=False))
-    system_owner=set(kb.service_keyboard('owner',system_owner=True)) | set(kb.shop_keyboard('owner',system_owner=True))
+    delegated_shop_owner=(
+        set(kb.service_keyboard('owner',system_owner=False))
+        | set(kb.technical_keyboard('owner',system_owner=False))
+        | set(kb.shop_keyboard('owner',system_owner=False))
+    )
+    system_owner=(
+        set(kb.service_keyboard('owner',system_owner=True))
+        | set(kb.technical_keyboard('owner',system_owner=True))
+        | set(kb.shop_keyboard('owner',system_owner=True))
+    )
     global_buttons={kb.COMMAND_BUTTONS[x] for x in ('backup','backups','restore','shop_add','shop_profile','shop_archive','shop_archived','shop_restore','shop_delete','profiles')}
     assert delegated_shop_owner.isdisjoint(global_buttons)
     assert global_buttons <= system_owner
@@ -385,3 +393,15 @@ def test_wb_connection_check_fails_fast_and_stops_extra_probes_after_429():
     readiness=(ROOT/'app/services/readiness.py').read_text(encoding='utf-8')
     assert "rate_limited=(not info.ok and info.status_code==429)" in readiness
     assert 'WB временно ограничил запросы; повторите проверку позже' in readiness
+
+
+def test_rare_service_controls_are_grouped_under_technical_menu(monkeypatch):
+    kb=_load_keyboard_module_with_stub(monkeypatch)
+    service=set(kb.service_keyboard('owner',system_owner=True))
+    assert kb.MENU_TECH in service
+    for key in ('health','diagnostics','jobs','backup','backups','restore','profiles'):
+        assert kb.COMMAND_BUTTONS[key] not in service
+    technical=set(kb.technical_keyboard('owner',system_owner=True))
+    assert kb.COMMAND_BUTTONS['health'] in technical
+    assert kb.COMMAND_BUTTONS['jobs'] in technical
+    assert kb.COMMAND_BUTTONS['backup'] in technical
