@@ -78,3 +78,15 @@ def test_initialize_is_repeatable(tmp_path):
     assert database.initialize() == LATEST_SCHEMA_VERSION
     assert database.initialize() == LATEST_SCHEMA_VERSION
     assert database.integrity_check()
+
+
+def test_rename_shop_rejects_duplicate_name(repo):
+    seller = repo.ensure_seller(3003, 'Duplicate Seller')
+    first = repo.ensure_shop(seller.id, 'Shop A')
+    second = repo.ensure_shop(seller.id, 'Shop B')
+
+    with pytest.raises(ValueError, match='уже существует'):
+        repo.rename_shop(second.id, 'Shop A')
+
+    assert repo.get_shop(first.id).name == 'Shop A'
+    assert repo.get_shop(second.id).name == 'Shop B'
