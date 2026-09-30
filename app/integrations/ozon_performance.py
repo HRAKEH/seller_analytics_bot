@@ -1,5 +1,6 @@
 """Ozon Performance API client (advertising), with its own OAuth2 credentials."""
 from __future__ import annotations
+import hashlib
 from datetime import datetime, timedelta, timezone
 from .base import MarketplaceClient, FetchResult
 
@@ -7,8 +8,11 @@ from .base import MarketplaceClient, FetchResult
 class OzonPerformanceClient(MarketplaceClient):
     def __init__(self, client_id: str, client_secret: str, *, timeout: float = 60,
                  min_interval: float = 1.0, max_retries: int = 3, transport=None):
+        fingerprint=f'{client_id}|{client_secret}'
+        scope='ozon_performance:'+hashlib.sha256(fingerprint.encode('utf-8')).hexdigest()[:24]
         super().__init__('ozon_performance', 'https://api-performance.ozon.ru', timeout=timeout,
-                         min_interval=min_interval, max_retries=max_retries, transport=transport)
+                         min_interval=min_interval, max_retries=max_retries, transport=transport,
+                         rate_scope=scope)
         self.client_id = client_id
         self.client_secret = client_secret
         self._access_token: str | None = None
