@@ -35,7 +35,9 @@ from .context import AppContext
 from .keyboards import (
     main_keyboard, reports_keyboard, products_keyboard, money_keyboard, supply_keyboard,
     control_keyboard, shop_keyboard, service_keyboard, input_keyboard, shop_picker_keyboard,
-    shop_confirm_keyboard, backfill_source_keyboard, backfill_period_keyboard, backfill_running_keyboard, COMMAND_BUTTONS,
+    shop_confirm_keyboard, backfill_source_keyboard, backfill_period_keyboard, backfill_running_keyboard,
+    report_date_keyboard, export_period_keyboard, export_format_keyboard, users_admin_keyboard,
+    retry_jobs_keyboard, shop_admin_keyboard, backups_menu_keyboard, COMMAND_BUTTONS,
     MENU_REPORTS, MENU_PRODUCTS, MENU_MONEY, MENU_SUPPLY, MENU_CONTROL, MENU_SHOP, MENU_SERVICE,
     HOME, BACK, CANCEL,
 )
@@ -1454,11 +1456,11 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
 
     @dp.message(F.text == MENU_PRODUCTS)
     async def menu_products(message: types.Message):
-        await show_submenu(message,'📦 <b>Товары и SKU</b>\nАссортимент, остатки, себестоимость и связка листингов.',products_keyboard)
+        await show_submenu(message,'📦 <b>Товары</b>\nПродажи по товарам, остатки и экономика SKU.',products_keyboard)
 
     @dp.message(F.text == MENU_MONEY)
     async def menu_money(message: types.Message):
-        await show_submenu(message,'💰 <b>Деньги и реклама</b>\nФинансы, реклама, управленческий результат и сверка.',money_keyboard)
+        await show_submenu(message,'💰 <b>Финансы</b>\nДеньги, реклама и итоговый результат.',money_keyboard)
 
     @dp.message(F.text == MENU_SUPPLY)
     async def menu_supply(message: types.Message):
@@ -1466,15 +1468,15 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
 
     @dp.message(F.text == MENU_CONTROL)
     async def menu_control(message: types.Message):
-        await show_submenu(message,'🚨 <b>Контроль</b>\nАлерты, состояние API, health-check и retry-очередь.',control_keyboard)
+        await show_submenu(message,'🚨 <b>Проблемы</b>\nСначала смотрите активные проблемы, затем рекомендации.',control_keyboard)
 
     @dp.message(F.text == MENU_SHOP)
     async def menu_shop(message: types.Message):
-        await show_submenu(message,'🏪 <b>Магазин и доступ</b>\nМагазины, роли сотрудников, профили ключей и настройки.',shop_keyboard)
+        await show_submenu(message,'⚙️ <b>Настройки</b>\nAPI, параметры отчётов, магазины и доступ пользователей.',shop_keyboard)
 
     @dp.message(F.text == MENU_SERVICE)
     async def menu_service(message: types.Message):
-        await show_submenu(message,'🛠 <b>Сервис</b>\nЭкспорт и резервное копирование.',service_keyboard)
+        await show_submenu(message,'🛠 <b>Ещё</b>\nЭкспорт, диагностика и технические инструменты.',service_keyboard)
 
     @dp.message(F.text == BACK)
     async def menu_back(message: types.Message, state: FSMContext):
