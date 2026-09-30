@@ -71,3 +71,37 @@ def test_daily_warning_uses_latest_attempt_across_backfill_and_daily(tmp_path):
     report=build_daily_report(repo,shop.id,date(2026,9,28))
     row=next(x for x in report.sources if x.marketplace=='wildberries')
     assert row.warning is None
+
+
+def test_period_delta_uses_matching_calendar_positions_only(tmp_path):
+    from app.reports import build_period_report
+    repo,shop,wb,oz=setup_repo(tmp_path)
+    # Current 2-day window: only Sep 27 is complete.
+    save(repo,wb,'2026-09-27',8,800,0,{'x':'cur-wb'})
+    save(repo,oz,'2026-09-27',12,1200,0,{'x':'cur-oz'})
+    save(repo,wb,'2026-09-28',9,900,0,{'x':'cur2-wb'})
+    # Previous 2-day window has both days, but only Sep 25 corresponds to
+    # current complete Sep 27 (exactly two days earlier).
+    save(repo,wb,'2026-09-25',4,400,0,{'x':'prev-wb-match'})
+    save(repo,oz,'2026-09-25',6,600,0,{'x':'prev-oz-match'})
+    save(repo,wb,'2026-09-26',50,5000,0,{'x':'prev-wb-extra'})
+    save(repo,oz,'2026-09-26',50,5000,0,{'x':'prev-oz-extra'})
+    report=build_period_report(repo,shop.id,date(2026,9,28),2,'Два дня')
+    assert report.complete_days==1
+    assert report.total==20
+    assert report.previous_total==10
+    assert {x.marketplace:x.previous_units for x in report.sources}=={
+        'wildberries':4,'ozon':6}
+
+
+def test_period_delta_is_hidden_when_matching_previous_day_is_missing(tmp_path):
+    from app.reports import build_period_report
+    repo,shop,wb,oz=setup_repo(tmp_path)
+    save(repo,wb,'2026-09-27',8,800,0,{'x':'cur-wb'})
+    save(repo,oz,'2026-09-27',12,1200,0,{'x':'cur-oz'})
+    # Only WB exists on the corresponding previous date.
+    save(repo,wb,'2026-09-25',4,400,0,{'x':'prev-wb'})
+    report=build_period_report(repo,shop.id,date(2026,9,28),2,'Два дня')
+    assert report.total==20
+    assert report.previous_total is None
+    assert all(x.previous_units is None for x in report.sources)
