@@ -61,7 +61,9 @@ async def main():
         proxy=ContextProxy()
         bot=Bot(settings.telegram_token)
         dp=Dispatcher(storage=MemoryStorage())
-        dp.message.middleware(ShopContextMiddleware(registry))
+        context_middleware=ShopContextMiddleware(registry)
+        dp.message.middleware(context_middleware)
+        dp.callback_query.middleware(context_middleware)
         register_handlers(dp,proxy,registry)
 
         async def poller_guard():
