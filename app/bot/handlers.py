@@ -419,7 +419,10 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
         value=(message.text or '').strip()
         if not value or value.startswith('/'):
             return await message.answer('Введите обычным текстом название магазина.')
-        ctx.repository.rename_shop(ctx.shop_id,value)
+        try:
+            ctx.repository.rename_shop(ctx.shop_id,value)
+        except ValueError as exc:
+            return await message.answer(f'⚠️ {escape(str(exc))}')
         await state.set_state(SetupStates.timezone)
         await message.answer('🧩 <b>2/6</b> Введите часовой пояс IANA.\nПример: <code>Europe/Moscow</code>',parse_mode='HTML')
 
