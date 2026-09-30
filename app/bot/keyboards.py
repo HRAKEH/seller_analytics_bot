@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+
 from aiogram.utils.keyboard import ReplyKeyboardBuilder, InlineKeyboardBuilder
 
 HOME = '🏠 Главное меню'
@@ -182,7 +184,7 @@ def service_keyboard(role: str | None = 'owner', *, system_owner: bool = False):
     if system_owner:
         buttons += [
             COMMAND_BUTTONS['backup'], COMMAND_BUTTONS['backups'], COMMAND_BUTTONS['restore'],
-            COMMAND_BUTTONS['profiles'],
+            COMMAND_BUTTONS['shop_add'], COMMAND_BUTTONS['shop_profile'], COMMAND_BUTTONS['profiles'],
         ]
     buttons += [BACK, HOME]
     return _build(buttons)
@@ -214,6 +216,29 @@ def shop_confirm_keyboard(action: str, shop_id: int):
     kb.button(text=labels.get(action,'✅ Подтвердить'),callback_data=f'shop:{action}_confirm:{int(shop_id)}')
     kb.button(text='❌ Отмена',callback_data='shop:cancel')
     kb.adjust(1)
+    return kb.as_markup()
+
+
+def action_ref(action_key: str) -> str:
+    return hashlib.blake2s(action_key.encode('utf-8'),digest_size=6).hexdigest()
+
+
+def action_center_keyboard(items):
+    kb=InlineKeyboardBuilder()
+    for item in list(items)[:8]:
+        title=str(getattr(item,'title','Действие'))
+        short=title if len(title)<=42 else title[:39]+'…'
+        kb.button(text=f'➡️ {short}',callback_data=f'action:view:{action_ref(str(item.action_key))}')
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+def action_item_keyboard(ref: str):
+    kb=InlineKeyboardBuilder()
+    kb.button(text='✅ Принято',callback_data=f'action:ack:{ref}')
+    kb.button(text='⏰ Отложить на 24 ч',callback_data=f'action:snooze:{ref}')
+    kb.button(text='⬅️ К списку',callback_data='action:list')
+    kb.adjust(2,1)
     return kb.as_markup()
 
 
