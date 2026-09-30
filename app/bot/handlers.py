@@ -183,18 +183,16 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
             outcomes=await ctx.backfill_orders(start,end,marketplace=source)
         except (RuntimeError,ValueError) as exc:
             return await message.answer(f'⚠️ {escape(str(exc)[:400])}')
-        core=[x for x in outcomes if x.message=='orders loaded']
-        core_ok=sum(1 for x in core if x.ok)
-        core_failed=sum(1 for x in core if not x.ok)
-        extra=[x for x in outcomes if x.message!='orders loaded']
-        extra_failed=sum(1 for x in extra if not x.ok)
+        core_ok=sum(1 for x in outcomes if x.ok and x.message=='orders loaded')
+        total_failed=sum(1 for x in outcomes if not x.ok)
+        source_count=2 if source=='all' and ctx.wb_connection_id is not None and ctx.ozon_connection_id is not None else 1
+        expected_core=span*source_count
         lines=[
             f'✅ <b>Загрузка завершена · {label}</b>',
             f'Период: {start} — {end}',
-            f'Основных дневных записей: ✅ {core_ok} · ❌ {core_failed}',
+            f'Основные заказы по дням: {core_ok}/{expected_core}',
+            f'Ошибок API/доп. источников: {total_failed}',
         ]
-        if extra:
-            lines.append(f'Дополнительные источники: {len(extra)-extra_failed} успешно · {extra_failed} ошибок')
         await message.answer('\n'.join(lines),parse_mode='HTML')
         role=ctx.repository.role_for_user(uid,ctx.shop_id) or 'viewer'
         await message.answer(
