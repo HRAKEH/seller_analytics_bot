@@ -93,7 +93,7 @@ async def build_readiness(ctx, *, live: bool = False, persist: bool = True) -> R
     if live and not p.demo_mode:
         if ctx.collector.wb is not None:
             wb=ctx.collector.wb
-            info=await wb.seller_info(retry_429=False,fail_fast_rate_limit=True)
+            info=await wb.seller_info(retry_on_429=False,fail_fast_rate_limit=True)
             name=''
             if info.ok and isinstance(info.data,dict): name=str(info.data.get('name') or info.data.get('tradeMark') or '')
             items.append(ReadinessItem('wb_auth','WB · токен',info.ok,True,
@@ -148,7 +148,7 @@ async def build_readiness(ctx, *, live: bool = False, persist: bool = True) -> R
                 if categories is not None and category not in categories:
                     items.append(ReadinessItem(key,label,False,False,'категория отсутствует в токене'))
                     continue
-                r=await wb.ping(url,retry_429=False,fail_fast_rate_limit=True)
+                r=await wb.ping(url,retry_on_429=False,fail_fast_rate_limit=True)
                 items.append(ReadinessItem(key,label,r.ok,False,'доступ есть' if r.ok else (r.error or f'HTTP {r.status_code}')))
 
             if token_meta['ok']:
@@ -185,7 +185,7 @@ async def build_readiness(ctx, *, live: bool = False, persist: bool = True) -> R
                     stock_ok,False,stock_detail))
         if ctx.collector.ozon is not None:
             oz=ctx.collector.ozon
-            info=await oz.seller_info(retry_429=False,fail_fast_rate_limit=True); company=''
+            info=await oz.seller_info(retry_on_429=False,fail_fast_rate_limit=True); company=''
             if info.ok and isinstance(info.data,dict):
                 company=str((info.data.get('company') or {}).get('name') or (info.data.get('company') or {}).get('legal_name') or '')
             items.append(ReadinessItem('ozon_auth','Ozon · кабинет',info.ok,True,
@@ -194,7 +194,7 @@ async def build_readiness(ctx, *, live: bool = False, persist: bool = True) -> R
                 items.append(ReadinessItem('ozon_roles','Ozon · права API-ключа',False,False,
                                            'не проверялось: действует лимит Ozon'))
             else:
-                roles=await oz.api_roles(retry_429=False,fail_fast_rate_limit=True)
+                roles=await oz.api_roles(retry_on_429=False,fail_fast_rate_limit=True)
                 methods=_ozon_method_strings(roles.data) if roles.ok else set()
                 detail=(f'{len(methods)} методов доступны'+_expiry_hint(roles.data)) if roles.ok else (roles.error or 'ошибка ролей')
                 items.append(ReadinessItem('ozon_roles','Ozon · права API-ключа',roles.ok,True,detail))
