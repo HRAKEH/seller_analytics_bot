@@ -2,7 +2,8 @@ from datetime import date
 from pathlib import Path
 import pytest
 from app.integrations.base import FetchResult
-from app.services.collection import CollectionService
+from app.services.collection import CollectionService, CollectionOutcome
+from app.bot.context import AppContext
 from app.storage import Database, Repository
 
 class FakeWB:
@@ -128,3 +129,54 @@ async def test_automatic_inventory_suppresses_wb_401_403_until_manual_probe(ctx)
         shop_id=shop.id,wb_connection_id=wbconn.id,automatic=False,data_date=date(2026,9,30))
     assert len(third)==2 and all(not x.ok for x in third)
     assert wb.calls==['wb','seller','wb','seller']
+
+
+class FakeIncrementalCollector:
+    def __init__(self):
+        self.calls=[]
+
+    async def backfill_orders(self, **kwargs):
+        self.calls.append(kwargs)
+        start=kwargs['start']; end=kwargs['end']
+        market='wildberries' if kwargs.get('wb_connection_id') is not None else 'ozon'
+        connection_id=kwargs.get('wb_connection_id') or kwargs.get('ozon_connection_id')
+        out=[]; current=start
+        while current<=end:
+            out.append(CollectionOutcome(market,current.isoformat(),True,int(connection_id),'orders loaded'))
+            current += __import__('datetime').timedelta(days=1)
+        return out
+
+
+class BackfillSettings:
+    distributed_lock_ttl_seconds=3600
+    instance_id='test-instance'
+
+
+@pytest.mark.asyncio
+async def test_context_backfill_skips_api_when_all_days_are_already_loaded(ctx):
+    repo, wbconn, _ = ctx
+    for ds in ('2026-09-27','2026-09-28','2026-09-29'):
+        repo.record_success(wbconn.id,'statistics/orders/backfill',ds,{'day':ds},[])
+    collector=FakeIncrementalCollector()
+    app=AppContext(BackfillSettings(),repo,wbconn.shop_id,collector,wb_connection_id=wbconn.id)
+    app.demo_mode=lambda: False
+
+    out=await app.backfill_orders(date(2026,9,27),date(2026,9,29),'wildberries')
+    assert collector.calls==[]
+    assert len(out)==3 and all(x.message=='orders already loaded' for x in out)
+
+
+@pytest.mark.asyncio
+async def test_context_backfill_starts_at_earliest_missing_day(ctx):
+    repo, wbconn, _ = ctx
+    repo.record_success(wbconn.id,'statistics/orders/backfill','2026-09-27',{'day':'27'},[])
+    repo.record_success(wbconn.id,'statistics/orders/backfill','2026-09-29',{'day':'29'},[])
+    collector=FakeIncrementalCollector()
+    app=AppContext(BackfillSettings(),repo,wbconn.shop_id,collector,wb_connection_id=wbconn.id)
+    app.demo_mode=lambda: False
+
+    out=await app.backfill_orders(date(2026,9,27),date(2026,9,29),'wildberries')
+    assert len(collector.calls)==1
+    assert collector.calls[0]['start']==date(2026,9,28)
+    assert collector.calls[0]['end']==date(2026,9,29)
+    assert out[0].message=='orders already loaded'
