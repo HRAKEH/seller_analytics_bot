@@ -33,7 +33,8 @@ from app.services.demo import enable_demo, disable_demo
 from .context import AppContext
 from .keyboards import (
     main_keyboard, reports_keyboard, products_keyboard, money_keyboard, supply_keyboard,
-    control_keyboard, shop_keyboard, service_keyboard, input_keyboard, COMMAND_BUTTONS,
+    control_keyboard, shop_keyboard, service_keyboard, input_keyboard, shop_picker_keyboard,
+    shop_confirm_keyboard, COMMAND_BUTTONS,
     MENU_REPORTS, MENU_PRODUCTS, MENU_MONEY, MENU_SUPPLY, MENU_CONTROL, MENU_SHOP, MENU_SERVICE,
     HOME, BACK, CANCEL,
 )
@@ -188,11 +189,37 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
             if creds.has_wb: sources.append('WB')
             if creds.has_ozon: sources.append('Ozon')
             lines.append(f'{mark} <b>#{shop.id} {escape(shop.name)}</b> · {escape(str(row["role"]))} · <code>{escape(shop.credential_profile)}</code> · {" + ".join(sources) or "без API"}')
-        lines += ['', 'Для переключения используйте кнопку «🔁 Выбрать магазин».']
+        lines += ['', 'Нажмите на магазин ниже, чтобы переключиться.']
         if allowed(message,'manage'):
             lines += ['Для нового магазина: «➕ Добавить магазин».',
                       'Для смены профиля ключей: «🔐 Профиль ключей».']
-        await send(message,'\n'.join(lines))
+        picker=[registry.repository.get_shop(int(row['id'])) for row in shops]
+        picker=[shop for shop in picker if shop is not None]
+        await message.answer('\n'.join(lines),parse_mode='HTML',
+                             reply_markup=shop_picker_keyboard(picker,'select',current_shop_id=ctx.shop_id))
+
+    async def show_shop_picker(message: types.Message, action: str):
+        if registry is None: return await message.answer('Multi-shop runtime не подключён.')
+        if action=='select':
+            shops=[registry.repository.get_shop(int(row['id'])) for row in registry.repository.shops_for_user(message.from_user.id)]
+            shops=[shop for shop in shops if shop is not None]
+            if not shops: return await message.answer('⚠️ Нет доступных магазинов.')
+            return await message.answer('🔁 <b>Выберите магазин</b>',parse_mode='HTML',
+                reply_markup=shop_picker_keyboard(shops,'select',current_shop_id=ctx.shop_id))
+        if not is_system_owner(message): return await system_denied(message)
+        if action=='archive':
+            shops=registry.repository.list_shops(registry.seller_id)
+            if len(shops)<=1:
+                return await message.answer('⚠️ Нельзя архивировать последний активный магазин.')
+            return await message.answer('🗄 <b>Какой магазин архивировать?</b>\nДанные сохранятся, API-запросы и scheduler для него остановятся.',
+                parse_mode='HTML',reply_markup=shop_picker_keyboard(shops,'archive',current_shop_id=ctx.shop_id))
+        if action in {'restore','delete'}:
+            shops=registry.repository.archived_shops(registry.seller_id)
+            if not shops:
+                return await message.answer('🗂 Архив магазинов пуст.')
+            title='♻️ <b>Какой магазин вернуть?</b>' if action=='restore' else '🗑 <b>Какой магазин удалить навсегда?</b>'
+            return await message.answer(title,parse_mode='HTML',reply_markup=shop_picker_keyboard(shops,action))
+        raise ValueError('unknown shop picker action')
 
     @dp.message(Command('shop'))
     async def cmd_shop(message: types.Message):
@@ -327,6 +354,137 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
         await message.answer(
             f'🗑 Магазин <b>#{shop.id} {escape(shop.name)}</b> удалён безвозвратно вместе с его данными.',
             parse_mode='HTML')
+
+    @dp.callback_query(F.data == 'shop:cancel')
+    async def cb_shop_cancel(callback: types.CallbackQuery):
+        await callback.answer('Отменено')
+        if callback.message:
+            await callback.message.edit_text('❌ Действие отменено.')
+
+    @dp.callback_query(F.data.startswith('shop:select:'))
+    async def cb_shop_select(callback: types.CallbackQuery):
+        if registry is None or callback.from_user is None:
+            return await callback.answer('Runtime недоступен.',show_alert=True)
+        try: shop_id=int((callback.data or '').rsplit(':',1)[1])
+        except (ValueError,IndexError):
+            return await callback.answer('Некорректный магазин.',show_alert=True)
+        allowed_ids={int(row['id']) for row in registry.repository.shops_for_user(callback.from_user.id)}
+        if shop_id not in allowed_ids:
+            return await callback.answer('Нет доступа к этому магазину.',show_alert=True)
+        registry.select_shop(callback.from_user.id,shop_id)
+        shop=registry.repository.get_shop(shop_id)
+        await callback.answer('Магазин выбран')
+        if callback.message and shop:
+            await callback.message.edit_text(f'✅ Текущий магазин: <b>#{shop.id} {escape(shop.name)}</b>',parse_mode='HTML')
+            role=registry.repository.role_for_user(callback.from_user.id,shop_id) or 'viewer'
+            await callback.message.answer('🏠 Выберите раздел:',reply_markup=main_keyboard(role))
+
+    @dp.callback_query(F.data.startswith('shop:archive:'))
+    async def cb_shop_archive_pick(callback: types.CallbackQuery):
+        if registry is None or callback.from_user is None:
+            return await callback.answer('Runtime недоступен.',show_alert=True)
+        if callback.from_user.id not in registry.settings.owner_ids:
+            return await callback.answer('Только system owner.',show_alert=True)
+        try: shop_id=int((callback.data or '').rsplit(':',1)[1])
+        except (ValueError,IndexError):
+            return await callback.answer('Некорректный магазин.',show_alert=True)
+        shop=registry.repository.get_shop(shop_id)
+        if not shop or not shop.active or shop.seller_id!=registry.seller_id:
+            return await callback.answer('Магазин недоступен.',show_alert=True)
+        await callback.answer()
+        if callback.message:
+            await callback.message.edit_text(
+                f'🗄 Архивировать <b>#{shop.id} {escape(shop.name)}</b>?\n\n'
+                'Данные сохранятся. Фоновые задачи и API-запросы для этого магазина остановятся.',
+                parse_mode='HTML',reply_markup=shop_confirm_keyboard('archive',shop.id))
+
+    @dp.callback_query(F.data.startswith('shop:archive_confirm:'))
+    async def cb_shop_archive_confirm(callback: types.CallbackQuery):
+        if registry is None or callback.from_user is None:
+            return await callback.answer('Runtime недоступен.',show_alert=True)
+        if callback.from_user.id not in registry.settings.owner_ids:
+            return await callback.answer('Только system owner.',show_alert=True)
+        try: shop_id=int((callback.data or '').rsplit(':',1)[1])
+        except (ValueError,IndexError):
+            return await callback.answer('Некорректный магазин.',show_alert=True)
+        shop=registry.repository.get_shop(shop_id)
+        if not shop:
+            return await callback.answer('Магазин не найден.',show_alert=True)
+        try:
+            await registry.archive_shop(shop_id)
+            fallback=registry.repository.selected_authorized_shop_for_user(callback.from_user.id,registry.default_shop_id)
+            if fallback is not None:
+                registry.select_shop(callback.from_user.id,int(fallback))
+        except Exception as exc:
+            return await callback.answer(str(exc)[:180],show_alert=True)
+        await callback.answer('Магазин архивирован')
+        if callback.message:
+            fallback_shop=registry.repository.get_shop(int(fallback)) if fallback is not None else None
+            suffix=f'\nТекущий магазин: <b>{escape(fallback_shop.name)}</b>.' if fallback_shop else ''
+            await callback.message.edit_text(
+                f'🗄 Магазин <b>#{shop.id} {escape(shop.name)}</b> перемещён в архив.\n'
+                'Данные сохранены, фоновые запросы остановлены.'+suffix,parse_mode='HTML')
+
+    @dp.callback_query(F.data.startswith('shop:restore:'))
+    async def cb_shop_restore(callback: types.CallbackQuery):
+        if registry is None or callback.from_user is None:
+            return await callback.answer('Runtime недоступен.',show_alert=True)
+        if callback.from_user.id not in registry.settings.owner_ids:
+            return await callback.answer('Только system owner.',show_alert=True)
+        try: shop_id=int((callback.data or '').rsplit(':',1)[1])
+        except (ValueError,IndexError):
+            return await callback.answer('Некорректный магазин.',show_alert=True)
+        try:
+            ctx2=await registry.restore_shop(shop_id)
+        except Exception as exc:
+            return await callback.answer(str(exc)[:180],show_alert=True)
+        shop=registry.repository.get_shop(ctx2.shop_id)
+        await callback.answer('Магазин восстановлен')
+        if callback.message and shop:
+            await callback.message.edit_text(
+                f'♻️ Магазин <b>#{shop.id} {escape(shop.name)}</b> восстановлен.\n'
+                'Он снова участвует в scheduler и может обращаться к API.',parse_mode='HTML')
+
+    @dp.callback_query(F.data.startswith('shop:delete:'))
+    async def cb_shop_delete_pick(callback: types.CallbackQuery):
+        if registry is None or callback.from_user is None:
+            return await callback.answer('Runtime недоступен.',show_alert=True)
+        if callback.from_user.id not in registry.settings.owner_ids:
+            return await callback.answer('Только system owner.',show_alert=True)
+        try: shop_id=int((callback.data or '').rsplit(':',1)[1])
+        except (ValueError,IndexError):
+            return await callback.answer('Некорректный магазин.',show_alert=True)
+        shop=registry.repository.get_shop(shop_id)
+        if not shop or shop.active or shop.seller_id!=registry.seller_id:
+            return await callback.answer('Удалять можно только архивный магазин.',show_alert=True)
+        await callback.answer()
+        if callback.message:
+            await callback.message.edit_text(
+                f'🗑 <b>Безвозвратно удалить #{shop.id} {escape(shop.name)}?</b>\n\n'
+                'Будут удалены данные магазина, история загрузок, товары, настройки и доступы. Отменить это действие нельзя.',
+                parse_mode='HTML',reply_markup=shop_confirm_keyboard('delete',shop.id))
+
+    @dp.callback_query(F.data.startswith('shop:delete_confirm:'))
+    async def cb_shop_delete_confirm(callback: types.CallbackQuery):
+        if registry is None or callback.from_user is None:
+            return await callback.answer('Runtime недоступен.',show_alert=True)
+        if callback.from_user.id not in registry.settings.owner_ids:
+            return await callback.answer('Только system owner.',show_alert=True)
+        try: shop_id=int((callback.data or '').rsplit(':',1)[1])
+        except (ValueError,IndexError):
+            return await callback.answer('Некорректный магазин.',show_alert=True)
+        shop=registry.repository.get_shop(shop_id)
+        if not shop:
+            return await callback.answer('Магазин не найден.',show_alert=True)
+        try:
+            await registry.delete_archived_shop(shop_id)
+        except Exception as exc:
+            return await callback.answer(str(exc)[:180],show_alert=True)
+        await callback.answer('Магазин удалён')
+        if callback.message:
+            await callback.message.edit_text(
+                f'🗑 Магазин <b>#{shop.id} {escape(shop.name)}</b> удалён безвозвратно.',
+                parse_mode='HTML')
 
     @dp.message(Command('profiles'))
     async def cmd_profiles(message: types.Message):
@@ -1200,17 +1358,21 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
         await start_menu_input(message,state,action,prompts[action])
 
     @dp.message(F.text == COMMAND_BUTTONS['shop'])
-    async def btn_menu_shop_select(message: types.Message,state: FSMContext): await launch_input_action(message,state,'shop')
+    async def btn_menu_shop_select(message: types.Message,state: FSMContext):
+        await state.clear(); await show_shop_picker(message,'select')
     @dp.message(F.text == COMMAND_BUTTONS['shop_add'])
     async def btn_menu_shop_add(message: types.Message,state: FSMContext): await launch_input_action(message,state,'shop_add')
     @dp.message(F.text == COMMAND_BUTTONS['shop_profile'])
     async def btn_menu_shop_profile(message: types.Message,state: FSMContext): await launch_input_action(message,state,'shop_profile')
     @dp.message(F.text == COMMAND_BUTTONS['shop_archive'])
-    async def btn_menu_shop_archive(message: types.Message,state: FSMContext): await launch_input_action(message,state,'shop_archive')
+    async def btn_menu_shop_archive(message: types.Message,state: FSMContext):
+        await state.clear(); await show_shop_picker(message,'archive')
     @dp.message(F.text == COMMAND_BUTTONS['shop_restore'])
-    async def btn_menu_shop_restore(message: types.Message,state: FSMContext): await launch_input_action(message,state,'shop_restore')
+    async def btn_menu_shop_restore(message: types.Message,state: FSMContext):
+        await state.clear(); await show_shop_picker(message,'restore')
     @dp.message(F.text == COMMAND_BUTTONS['shop_delete'])
-    async def btn_menu_shop_delete(message: types.Message,state: FSMContext): await launch_input_action(message,state,'shop_delete')
+    async def btn_menu_shop_delete(message: types.Message,state: FSMContext):
+        await state.clear(); await show_shop_picker(message,'delete')
     @dp.message(F.text == COMMAND_BUTTONS['user_add'])
     async def btn_menu_user_add(message: types.Message,state: FSMContext): await launch_input_action(message,state,'user_add')
     @dp.message(F.text == COMMAND_BUTTONS['user_remove'])

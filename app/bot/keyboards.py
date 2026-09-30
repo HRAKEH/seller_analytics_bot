@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from aiogram.utils.keyboard import ReplyKeyboardBuilder
+from aiogram.utils.keyboard import ReplyKeyboardBuilder, InlineKeyboardBuilder
 
 HOME = '🏠 Главное меню'
 BACK = '⬅️ Назад'
@@ -191,3 +191,28 @@ def service_keyboard(role: str | None = 'owner', *, system_owner: bool = False):
 
 def input_keyboard():
     return _build([CANCEL, HOME], columns=2)
+
+
+def shop_picker_keyboard(shops, action: str, *, current_shop_id: int | None = None):
+    """Inline one-tap picker for shop lifecycle actions."""
+    kb=InlineKeyboardBuilder()
+    for shop in shops:
+        shop_id=int(shop.id if hasattr(shop,'id') else shop['id'])
+        name=str(shop.name if hasattr(shop,'name') else shop['name'])
+        mark='✅ ' if current_shop_id is not None and shop_id==int(current_shop_id) else ''
+        kb.button(text=f'{mark}{name}',callback_data=f'shop:{action}:{shop_id}')
+    kb.button(text='❌ Отмена',callback_data='shop:cancel')
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+def shop_confirm_keyboard(action: str, shop_id: int):
+    labels={
+        'archive': '🗄 Да, архивировать',
+        'delete': '🗑 Да, удалить навсегда',
+    }
+    kb=InlineKeyboardBuilder()
+    kb.button(text=labels.get(action,'✅ Подтвердить'),callback_data=f'shop:{action}_confirm:{int(shop_id)}')
+    kb.button(text='❌ Отмена',callback_data='shop:cancel')
+    kb.adjust(1)
+    return kb.as_markup()
