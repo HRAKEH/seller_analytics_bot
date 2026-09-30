@@ -12,6 +12,7 @@ from html import escape
 from typing import Any
 
 from app.storage import Repository
+from app.integrations.wildberries import decode_wb_token, WB_BOT_REQUIRED_CATEGORIES
 
 
 @dataclass(frozen=True)
@@ -97,16 +98,63 @@ async def build_readiness(ctx, *, live: bool = False, persist: bool = True) -> R
             if info.ok and isinstance(info.data,dict): name=str(info.data.get('name') or info.data.get('tradeMark') or '')
             items.append(ReadinessItem('wb_auth','WB · токен',info.ok,True,
                                        ('кабинет: '+name) if info.ok and name else (info.error or 'OK')))
+
+            token_meta=decode_wb_token(wb.token)
+            if token_meta['ok']:
+                type_name=str(token_meta['type'])
+                type_ok=token_meta['type_code'] in {3,4} and token_meta['expired'] is not True
+                access='RO' if token_meta['read_only'] else 'RW'
+                expiry=''
+                if token_meta['expires_at']:
+                    expiry=' · истёк' if token_meta['expired'] else f" · до {str(token_meta['expires_at'])[:10]}"
+                type_detail=f'{type_name} · {access}{expiry}'
+                if token_meta['type_code']==1:
+                    type_detail += ' · для полного набора функций лучше Personal/Service'
+                elif token_meta['type_code']==2:
+                    type_detail += ' · тестовый токен не работает с боевыми данными'
+                items.append(ReadinessItem('wb_token_type','WB · тип токена',type_ok,False,type_detail))
+
+                categories=set(token_meta['categories'])
+                missing=[x for x in WB_BOT_REQUIRED_CATEGORIES if x not in categories]
+                items.append(ReadinessItem(
+                    'wb_categories','WB · категории для функций бота',not missing and token_meta['expired'] is not True,False,
+                    'все 6 категорий доступны' if not missing else 'не хватает: '+', '.join(missing)))
+            else:
+                categories=None
+                items.append(ReadinessItem(
+                    'wb_token_type','WB · тип токена',False,False,
+                    'JWT не распознан; фактический доступ проверяется API'))
+
             domains=[
-                ('wb_statistics','WB · Статистика','https://statistics-api.wildberries.ru'),
-                ('wb_analytics','WB · Аналитика','https://seller-analytics-api.wildberries.ru'),
-                ('wb_finance','WB · Финансы','https://finance-api.wildberries.ru'),
-                ('wb_ads','WB · Продвижение','https://advert-api.wildberries.ru'),
-                ('wb_supplies','WB · Поставки','https://supplies-api.wildberries.ru'),
+                ('wb_statistics','WB · Статистика','https://statistics-api.wildberries.ru','Статистика'),
+                ('wb_analytics','WB · Аналитика','https://seller-analytics-api.wildberries.ru','Аналитика'),
+                ('wb_finance','WB · Финансы','https://finance-api.wildberries.ru','Финансы'),
+                ('wb_ads','WB · Продвижение','https://advert-api.wildberries.ru','Продвижение'),
+                ('wb_supplies','WB · Поставки','https://supplies-api.wildberries.ru','Поставки'),
+                ('wb_prices','WB · Цены и скидки','https://discounts-prices-api.wildberries.ru','Цены и скидки'),
             ]
-            for key,label,url in domains:
+            auth_blocked=(not info.ok and info.status_code in {401,403})
+            for key,label,url,category in domains:
+                if auth_blocked:
+                    items.append(ReadinessItem(key,label,False,False,'WB-токен не авторизован'))
+                    continue
+                if token_meta['ok'] and token_meta['expired'] is True:
+                    items.append(ReadinessItem(key,label,False,False,'срок WB-токена истёк'))
+                    continue
+                if categories is not None and category not in categories:
+                    items.append(ReadinessItem(key,label,False,False,'категория отсутствует в токене'))
+                    continue
                 r=await wb.ping(url)
                 items.append(ReadinessItem(key,label,r.ok,False,'доступ есть' if r.ok else (r.error or f'HTTP {r.status_code}')))
+
+            if token_meta['ok']:
+                stock_type_ok=token_meta['type_code'] in {3,4} and token_meta['expired'] is not True
+                analytics_ok='Аналитика' in set(token_meta['categories'])
+                items.append(ReadinessItem(
+                    'wb_stock_capability','WB · текущие остатки FBW/FBS',
+                    stock_type_ok and analytics_ok,False,
+                    'тип токена и категория подходят' if stock_type_ok and analytics_ok
+                    else 'нужен Personal/Service + категория Аналитика'))
         if ctx.collector.ozon is not None:
             oz=ctx.collector.ozon
             info=await oz.seller_info(); company=''
@@ -154,7 +202,8 @@ def format_onboarding_help(profile: str='DEFAULT') -> str:
         '🧭 <b>Подключение нового магазина</b>','━━━━━━━━━━━━━━━━',
         '1️⃣ Пройдите «🧩 Мастер настройки».',
         '2️⃣ В Bothost/VPS задайте нужные секреты окружения:',
-        f'• <code>{env("WB_API_TOKEN")}</code>',
+        f'• <code>{env("WB_API_TOKEN")}</code> — для полного WB: Personal, только чтение',
+        '  категории WB: Статистика, Аналитика, Финансы, Продвижение, Поставки, Цены и скидки',
         f'• <code>{env("OZON_CLIENT_ID")}</code>',
         f'• <code>{env("OZON_API_KEY")}</code>',
         f'• <code>{env("OZON_PERF_CLIENT_ID")}</code> — реклама Ozon, необязательно',

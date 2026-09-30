@@ -1,6 +1,103 @@
 """Wildberries API client. Raw source responses only."""
 from __future__ import annotations
+import base64
+import json
+from datetime import datetime, timezone
+
 from .base import MarketplaceClient, FetchResult
+
+
+WB_TOKEN_TYPES = {
+    1: 'Базовый',
+    2: 'Тестовый',
+    3: 'Персональный',
+    4: 'Сервисный',
+}
+
+WB_TOKEN_CATEGORY_BITS = {
+    1: 'Контент',
+    2: 'Аналитика',
+    3: 'Цены и скидки',
+    4: 'Маркетплейс',
+    5: 'Статистика',
+    6: 'Продвижение',
+    7: 'Вопросы и отзывы',
+    9: 'Чат с покупателями',
+    10: 'Поставки',
+    11: 'Возвраты',
+    12: 'Документы',
+    13: 'Финансы',
+    16: 'Пользователи',
+}
+
+WB_BOT_REQUIRED_CATEGORIES = (
+    'Статистика',
+    'Аналитика',
+    'Финансы',
+    'Продвижение',
+    'Поставки',
+    'Цены и скидки',
+)
+
+
+def decode_wb_token(token: str) -> dict:
+    """Decode public WB JWT claims locally without verifying the signature.
+
+    This is diagnostics only: actual API calls remain the source of truth for
+    whether a token is active and accepted. The token itself is never logged or
+    returned.
+    """
+    result = {
+        'ok': False,
+        'type_code': None,
+        'type': 'Неизвестный',
+        'categories': tuple(),
+        'read_only': None,
+        'expires_at': None,
+        'expired': None,
+        'error': None,
+    }
+    try:
+        clean=(token or '').strip()
+        if clean.lower().startswith('bearer '):
+            clean=clean[7:].strip()
+        parts=clean.split('.')
+        if len(parts) < 2:
+            raise ValueError('токен не похож на JWT')
+        raw=parts[1]
+        raw += '=' * (-len(raw) % 4)
+        payload=json.loads(base64.urlsafe_b64decode(raw.encode('ascii')).decode('utf-8'))
+        if not isinstance(payload,dict):
+            raise ValueError('JWT payload не является объектом')
+        type_code=int(payload.get('acc')) if payload.get('acc') is not None else None
+        mask=int(payload.get('s') or 0)
+        categories=tuple(
+            label for bit,label in WB_TOKEN_CATEGORY_BITS.items()
+            if mask & (1 << bit)
+        )
+        exp=payload.get('exp')
+        expires_at=None; expired=None
+        if exp is not None:
+            dt=datetime.fromtimestamp(int(exp),tz=timezone.utc)
+            expires_at=dt.isoformat(timespec='seconds')
+            expired=dt <= datetime.now(timezone.utc)
+        result.update({
+            'ok': True,
+            'type_code': type_code,
+            'type': WB_TOKEN_TYPES.get(type_code,'Неизвестный'),
+            'categories': categories,
+            'read_only': bool(mask & (1 << 30)),
+            'expires_at': expires_at,
+            'expired': expired,
+        })
+    except (ValueError,TypeError,KeyError,json.JSONDecodeError,UnicodeDecodeError) as exc:
+        result['error']=str(exc)
+    except Exception:
+        # Diagnostics must never break startup/readiness because of a malformed
+        # token. Deliberately avoid including exception text that could contain
+        # unexpected token material.
+        result['error']='не удалось декодировать JWT'
+    return result
 
 
 class WildberriesClient(MarketplaceClient):

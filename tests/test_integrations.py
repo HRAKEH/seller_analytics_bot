@@ -99,3 +99,48 @@ async def test_ozon_current_posting_lists_use_conservative_cursor_page_size():
     assert fbo.ok and fbs.ok
     assert [x[0] for x in seen]==['/v3/posting/fbo/list','/v4/posting/fbs/list']
     await client.close()
+
+
+def _jwt_for_test(payload: dict) -> str:
+    import base64
+    import json
+    def enc(value):
+        raw=json.dumps(value,separators=(',',':')).encode()
+        return base64.urlsafe_b64encode(raw).decode().rstrip('=')
+    return f"{enc({'alg':'none','typ':'JWT'})}.{enc(payload)}."
+
+
+def test_wb_token_decoder_reports_type_categories_and_read_only():
+    from app.integrations.wildberries import decode_wb_token, WB_BOT_REQUIRED_CATEGORIES
+
+    mask=(1 << 30)
+    for bit in (2,3,5,6,10,13):
+        mask |= (1 << bit)
+    token=_jwt_for_test({'acc':3,'for':'self','t':False,'s':mask,'exp':4102444800})
+    meta=decode_wb_token(token)
+
+    assert meta['ok'] is True
+    assert meta['type_code']==3
+    assert meta['type']=='Персональный'
+    assert meta['read_only'] is True
+    assert set(WB_BOT_REQUIRED_CATEGORIES) <= set(meta['categories'])
+    assert meta['expired'] is False
+
+
+def test_wb_token_decoder_marks_base_token_without_required_categories():
+    from app.integrations.wildberries import decode_wb_token
+
+    token=_jwt_for_test({'acc':1,'t':False,'s':(1 << 5),'exp':4102444800})
+    meta=decode_wb_token(token)
+
+    assert meta['ok'] is True
+    assert meta['type']=='Базовый'
+    assert meta['read_only'] is False
+    assert meta['categories']==('Статистика',)
+
+
+def test_wb_readiness_checks_prices_and_discounts_category():
+    from pathlib import Path
+    src=(Path(__file__).parents[1]/'app/services/readiness.py').read_text(encoding='utf-8')
+    assert "'WB · Цены и скидки','https://discounts-prices-api.wildberries.ru','Цены и скидки'" in src
+    assert "'wb_stock_capability','WB · текущие остатки FBW/FBS'" in src
