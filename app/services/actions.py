@@ -4,9 +4,8 @@ from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 from app.storage import Repository
+from app.reports.management import build_management_report
 from .supply import build_supply_plan, evaluate_forecast_quality
-
-EXPENSE_KEYS=('commission','logistics','storage','acceptance','acquiring','services','penalties')
 
 @dataclass(frozen=True)
 class ActionItem:
@@ -46,28 +45,18 @@ def _merge_action(target: dict[str,ActionItem], item: ActionItem) -> None:
 
 
 def _management_actions(repo: Repository, shop_id: int, as_of: date, days: int) -> list[ActionItem]:
-    start=as_of-timedelta(days=max(1,days)-1)
-    totals=repo.financial_metric_totals(shop_id,start.isoformat(),as_of.isoformat())
-    cogs=repo.estimated_order_cogs(shop_id,start.isoformat(),as_of.isoformat())
     out=[]
-    for market in ('ozon','wildberries'):
-        m=totals.get(market,{})
-        c=cogs.get(market,{})
-        units=float(c.get('units',0)); covered=float(c.get('covered_units',0))
-        revenue=float(m.get('ordered_revenue',0)); estimated_cogs=float(c.get('estimated_cost',0))
-        expenses=sum(float(m.get(k,0)) for k in EXPENSE_KEYS)
-        ads=float(m.get('ad_spend',0)); compensation=float(m.get('compensation',0))
-        complete=units<=0 or covered+1e-9>=units
-        if revenue>0 and complete:
-            result=revenue-estimated_cogs-expenses-ads+compensation
-            if result<0:
-                out.append(ActionItem(
-                    f'management:negative:{market}',2,'finance',
-                    f'📉 Отрицательный управленческий результат · {market.title()}',
-                    f'Оценка за {days} дн.: {result:,.0f} ₽ при полном покрытии себестоимости.'.replace(',',' '),
-                    '💰 Деньги и реклама → 📈 Управленческий результат',
-                    (f'заказы {revenue:,.0f} ₽'.replace(',',' '),f'расходы МП {expenses:,.0f} ₽'.replace(',',' '),f'реклама {ads:,.0f} ₽'.replace(',',' ')),
-                ))
+    for row in build_management_report(repo,shop_id,as_of,max(1,days)).sources:
+        market=row.marketplace; revenue=row.ordered_revenue
+        expenses=row.marketplace_expenses; ads=row.ad_spend; result=row.estimated_result
+        if result is not None and result<0:
+            out.append(ActionItem(
+                f'management:negative:{market}',2,'finance',
+                f'📉 Отрицательный управленческий результат · {market.title()}',
+                f'Оценка за {days} дн.: {result:,.0f} ₽ при полном покрытии себестоимости.'.replace(',',' '),
+                '💰 Деньги и реклама → 📈 Управленческий результат',
+                (f'заказы {revenue:,.0f} ₽'.replace(',',' '),f'расходы МП {expenses:,.0f} ₽'.replace(',',' '),f'реклама {ads:,.0f} ₽'.replace(',',' ')),
+            ))
     return out
 
 

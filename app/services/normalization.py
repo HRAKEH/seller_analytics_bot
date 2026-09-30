@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 from app.storage.models import MetricPoint
+from .numeric import finite_number
 
 class NormalizationError(ValueError):
     pass
@@ -25,6 +26,8 @@ def normalize_wb_orders(payload: Any, connection_id: int, data_date: str) -> lis
     """
     if not isinstance(payload, list):
         raise NormalizationError('WB orders payload must be a list')
+    if any(not isinstance(r,dict) for r in payload):
+        raise NormalizationError('WB orders contains a non-object row')
     rows = [r for r in payload if str(r.get('date', ''))[:10] == data_date]
     ordered_units = len(rows)
     cancellations = sum(1 for r in rows if bool(r.get('isCancel')))
@@ -33,8 +36,10 @@ def normalize_wb_orders(payload: Any, connection_id: int, data_date: str) -> lis
         raw = r.get('priceWithDisc')
         if raw is None:
             raw = r.get('finishedPrice')
+        if raw is None:
+            raw = r.get('totalPrice')
         try:
-            order_revenue += float(raw or 0)
+            order_revenue += finite_number(raw)
         except (TypeError, ValueError):
             raise NormalizationError('WB orders contains non-numeric order price')
     as_of_values = [str(r.get('lastChangeDate')) for r in rows if r.get('lastChangeDate')]
@@ -56,6 +61,8 @@ def normalize_ozon_order_analytics(payload: Any, connection_id: int, data_date: 
     if not isinstance(payload, dict):
         raise NormalizationError('Ozon analytics payload must be an object')
     result = payload.get('result') or {}
+    if not isinstance(result,dict):
+        raise NormalizationError('Ozon analytics result must be an object')
     rows = result.get('data') or result.get('rows') or []
     metrics = result.get('totals')
     if not isinstance(metrics, list) or len(metrics) < 2:
@@ -63,21 +70,21 @@ def normalize_ozon_order_analytics(payload: Any, connection_id: int, data_date: 
         # explicitly requested additive metrics and avoids the old first-row bug.
         units = 0.0
         revenue = 0.0
-        if not rows:
+        if not isinstance(rows,list) or not rows:
             raise NormalizationError('Ozon analytics has no ordered_units/revenue metrics')
         try:
             for row in rows:
                 values = row.get('metrics') if isinstance(row, dict) else None
                 if not isinstance(values, list) or len(values) < 2:
-                    continue
-                units += float(values[0] or 0)
-                revenue += float(values[1] or 0)
+                    raise NormalizationError('Ozon analytics row has no ordered_units/revenue metrics')
+                units += finite_number(values[0])
+                revenue += finite_number(values[1])
         except (TypeError, ValueError) as exc:
             raise NormalizationError('Ozon analytics metrics are not numeric') from exc
     else:
         try:
-            units = float(metrics[0] or 0)
-            revenue = float(metrics[1] or 0)
+            units = finite_number(metrics[0])
+            revenue = finite_number(metrics[1])
         except (TypeError, ValueError) as exc:
             raise NormalizationError('Ozon analytics metrics are not numeric') from exc
     now = _now()
@@ -107,7 +114,7 @@ def split_ozon_daily_analytics(payload: Any, connection_id: int) -> dict[str, li
         day = str(raw_day)[:10]
         if len(day) != 10: continue
         try:
-            units, revenue = float(metrics[0] or 0), float(metrics[1] or 0)
+            units, revenue = finite_number(metrics[0]), finite_number(metrics[1])
         except (TypeError, ValueError) as exc:
             raise NormalizationError(f'Ozon non-numeric metrics for {day}') from exc
         out[day] = [

@@ -21,7 +21,7 @@ def make_repo(tmp_path: Path):
 
 def test_schema_v14_onboarding_fields_and_readiness_table(tmp_path):
     db,repo,shop=make_repo(tmp_path)
-    assert db.schema_version()==14
+    assert db.schema_version()==LATEST_SCHEMA_VERSION
     pref=repo.get_shop_preferences(shop.id)
     assert pref and pref.demo_mode is False and pref.onboarding_version==''
     with db.connect() as c:

@@ -11,12 +11,12 @@ def num(value: float | None) -> str:
     if value is None: return '—'
     return str(int(value)) if float(value).is_integer() else f'{value:.1f}'
 
-def delta(current: float | None, previous: float | None) -> str:
+def delta(current: float | None, previous: float | None, comparison: str = 'к пред. дню') -> str:
     if current is None or previous is None: return 'нет базы сравнения'
     if previous == 0: return '↑ с 0' if current > 0 else 'без изменений'
     pct=(current-previous)/previous*100
     arrow='↑' if pct>0 else ('↓' if pct<0 else '→')
-    return f'{arrow} {abs(pct):.1f}% к пред. дню'
+    return f'{arrow} {abs(pct):.1f}% {comparison}'
 
 def source_name(source: str) -> str:
     return '🟣 Ozon' if source == 'ozon' else '🔵 Wildberries'
@@ -61,10 +61,10 @@ def format_period(report) -> str:
     lines=[f'📅 <b>{escape(report.label)}</b> · {report.start} — {report.end}',
            f'✅ Полных дней: {report.complete_days}/{report.requested_days}', '━━━━━━━━━━━━━━━━']
     for s in report.sources:
-        lines.append(f'{source_name(s.marketplace)}: <b>{num(s.units)} шт.</b> · {delta(s.units,s.previous_units)}')
+        lines.append(f'{source_name(s.marketplace)}: <b>{num(s.units)} шт.</b> · {delta(s.units,s.previous_units,"к сопоставимым дням прошлого периода")}')
     lines.append('━━━━━━━━━━━━━━━━')
     if report.complete_days:
-        lines.append(f'🟡 <b>ИТОГО: {num(report.total)} заказанных ед.</b> · {delta(report.total,report.previous_total)}')
+        lines.append(f'🟡 <b>ИТОГО: {num(report.total)} заказанных ед.</b> · {delta(report.total,report.previous_total,"к сопоставимым дням прошлого периода")}')
     else:
         lines.append('📭 Нет полностью сопоставимых дней. Откройте «📊 Отчёты» → «📥 Загрузить историю».')
     return '\n'.join(lines)
@@ -144,7 +144,10 @@ def format_stock_report(report) -> str:
         lines.append('\n<b>Минимальный запас</b>')
         for row in report.stock_risks[:10]:
             demand=f'{row.avg_daily_units:.1f}/день' if row.avg_daily_units is not None else 'спрос —'
-            days='∞/нет спроса' if row.days_left is None and row.available_units>0 else ('0 дн.' if row.available_units<=0 else f'{row.days_left:.1f} дн.')
+            if row.available_units<=0: days='0 дн.'
+            elif row.avg_daily_units is None: days='нет данных для оценки'
+            elif row.avg_daily_units==0: days='нет спроса за загруженные дни'
+            else: days=f'{row.days_left:.1f} дн.'
             lines.append(f'• {_product_name(row.name)} · {row.available_units:g} шт. · {demand} · {days}')
     lines.append('\n<i>Ozon: показывается present; reserved хранится отдельно и не вычитается без подтверждённой методики. WB: quantity.</i>')
     return '\n'.join(lines)

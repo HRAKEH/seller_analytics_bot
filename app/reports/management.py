@@ -42,6 +42,9 @@ def build_management_report(repo: Repository, shop_id: int, end: date, days: int
         units=float(c.get('units',0)); covered=float(c.get('covered_units',0))
         coverage=(covered/units*100) if units>0 else None
         ordered_revenue=float(m.get('ordered_revenue',0))
+        expected_units=float(m['ordered_units']) if 'ordered_units' in m else units
+        if expected_units>0:
+            coverage=min(covered,expected_units)/expected_units*100
         estimated_cogs=float(c.get('estimated_cost',0))
         marketplace_expenses=sum(float(m.get(k,0)) for k in EXPENSE_KEYS)
         ad_spend=float(m.get('ad_spend',0)); compensation=float(m.get('compensation',0))
@@ -51,7 +54,9 @@ def build_management_report(repo: Repository, shop_id: int, end: date, days: int
         # at all while order revenue exists, treating missing product coverage as
         # zero cost would overstate the result.
         has_cogs_basis=marketplace in cogs
-        if has_cogs_basis and (units<=0 or covered+1e-9>=units):
+        units_match=abs(units-expected_units)<=1e-9
+        revenue_basis='ordered_revenue' in m and (units>0 or ordered_revenue==0)
+        if has_cogs_basis and c.get('basis_complete',True) and units_match and revenue_basis and (units<=0 or covered+1e-9>=units):
             result=ordered_revenue-estimated_cogs-marketplace_expenses-ad_spend+compensation
         rows.append(ManagementSource(marketplace,ordered_revenue,estimated_cogs,coverage,
             marketplace_expenses,ad_spend,compensation,result,

@@ -29,6 +29,9 @@ def build_finance_report(repo: Repository, shop_id: int, end: date, days: int=7)
         c=cogs.get(marketplace,{})
         units=float(c.get('units',0)); covered=float(c.get('covered_units',0))
         coverage=(covered/units*100) if units>0 else None
+        expected_units=float(m['ordered_units']) if 'ordered_units' in m else units
+        if expected_units>0:
+            coverage=min(covered,expected_units)/expected_units*100
         if m or c:
             sources.append(FinanceSource(marketplace,m,float(c.get('estimated_cost',0)),coverage))
     missing=len(repo.products_without_cost(shop_id,limit=10000))

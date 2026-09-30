@@ -128,7 +128,7 @@ def build_product_report(repo: Repository, shop_id: int, end: date, *, days: int
         lid=int(row['listing_id'])
         agg=listing_inventory.setdefault(lid,dict(row,total_available=0.0,total_reserved=0.0))
         agg['total_available']+=available; agg['total_reserved']+=reserved
-        if str(row.get('captured_at') or '') > str(agg.get('captured_at') or ''):
+        if str(row.get('captured_at') or '') < str(agg.get('captured_at') or ''):
             agg['captured_at']=row.get('captured_at')
 
     inventory_schemes=sorted(inventory_schemes_map.values(),key=lambda x:(x['marketplace'],x['fulfillment_scheme']))

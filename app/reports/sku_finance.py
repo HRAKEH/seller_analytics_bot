@@ -9,6 +9,7 @@ from datetime import date, timedelta
 from html import escape
 
 from app.storage import Repository
+from .management import EXPENSE_KEYS
 
 @dataclass(frozen=True)
 class SkuEconomicsRow:
@@ -43,9 +44,9 @@ def build_sku_economics(repo: Repository, shop_id: int, end: date, days: int = 7
         units=float(raw.get('units') or 0); covered=float(raw.get('covered_units') or 0)
         revenue=float(raw.get('order_revenue') or 0); cost=float(raw.get('estimated_cost') or 0)
         coverage=(covered/units*100) if units>0 else None
-        contribution=(revenue-cost) if units>0 and covered+1e-9>=units else None
+        contribution=(revenue-cost) if raw.get('data_complete',True) and units>0 and covered+1e-9>=units else None
         fm=actual.get((marketplace,sku),{}); am=ads.get((marketplace,sku),{})
-        known_marketplace=sum(float(fm.get(k,0)) for k in ('commission','logistics','storage','acceptance','services','penalties'))
+        known_marketplace=sum(float(fm.get(k,0)) for k in EXPENSE_KEYS)
         ad_spend=float(am.get('ad_spend',0))
         after=(contribution-known_marketplace-ad_spend+float(fm.get('compensation',0))) if contribution is not None else None
         rows.append(SkuEconomicsRow(marketplace,str(raw['internal_sku']),sku,str(raw['name']),units,revenue,cost,coverage,contribution,after,fm,am))
@@ -77,7 +78,7 @@ def format_sku_economics(report: SkuEconomicsReport, limit: int = 10) -> str:
             fm=row.financial_metrics
             if 'financial_sales' in fm:
                 lines.append(f'   фин. продажи источника: {_money(fm["financial_sales"])}')
-            expense_keys=('commission','logistics','storage','acceptance','services','penalties')
+            expense_keys=EXPENSE_KEYS
             known=sum(float(fm.get(k,0)) for k in expense_keys)
             if known:
                 lines.append(f'   известные расходы маркетплейса по SKU: {_money(known)}')

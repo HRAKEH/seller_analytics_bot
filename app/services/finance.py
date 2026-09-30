@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 from app.storage.models import MetricPoint
+from .numeric import finite_number
 
 class FinanceNormalizationError(ValueError):
     pass
@@ -22,9 +23,7 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec='seconds')
 
 def _num(value: Any) -> float:
-    if value is None or value == '': return 0.0
-    if isinstance(value, dict): value = value.get('amount', 0)
-    try: return float(str(value).replace(' ', '').replace(',', '.'))
+    try: return finite_number(value)
     except (TypeError, ValueError) as exc: raise FinanceNormalizationError(f'Некорректная денежная сумма: {value!r}') from exc
 
 def normalize_wb_finance_report(row: dict[str, Any], connection_id: int) -> tuple[str, list[MetricPoint]]:

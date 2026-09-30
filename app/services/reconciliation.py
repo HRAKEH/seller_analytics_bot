@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 import hashlib
 import json
 from typing import Any
+from .numeric import finite_number
 
 
 class ReconciliationNormalizationError(ValueError):
@@ -47,12 +48,8 @@ def _fingerprint(prefix: str, *parts: Any) -> str:
 
 
 def _num(value: Any) -> float:
-    if value is None or value == '':
-        return 0.0
-    if isinstance(value, dict):
-        value=value.get('amount', 0)
     try:
-        return float(str(value).replace(' ', '').replace(',', '.'))
+        return finite_number(value)
     except (TypeError, ValueError) as exc:
         raise ReconciliationNormalizationError(f'Non-numeric amount: {value!r}') from exc
 
@@ -196,7 +193,7 @@ def normalize_ozon_posting_events(payload: Any, *, fulfillment_scheme: str,
                 continue
             offer=str(item.get('offer_id') or '').strip() or None
             name=str(item.get('name') or offer or f'Ozon {sku}')
-            qty=_num(item.get('quantity') or 1)
+            qty=_num(item.get('quantity', 1))
             price=_num(item.get('price')) if item.get('price') is not None else 0.0
             stable=posting_number or _fingerprint('ozon-posting-row',posting)
             out.append(CommerceObservation(
@@ -214,9 +211,14 @@ def normalize_ozon_finance_events(payload: Any, *, data_date: str) -> list[Comme
     if not isinstance(rows,list):
         raise ReconciliationNormalizationError('Ozon finance accruals must be a list')
     out=[]
-    for row_index,row in enumerate(rows):
+    occurrences: dict[str,int]={}
+    for row in rows:
         if not isinstance(row,dict):
             continue
+        # A pagination/reordering change must not invent new financial events.
+        # Preserve multiplicity of identical rows without using their position.
+        row_key=_fingerprint('ozon-finance-row',data_date,row)
+        occurrence=occurrences.get(row_key,0); occurrences[row_key]=occurrence+1
         posting=row.get('posting') or {}
         posting_number=str(_pick(posting,'posting_number','postingNumber','number') or '').strip() or None
         products=posting.get('products') or posting.get('items') or []
@@ -232,7 +234,7 @@ def normalize_ozon_finance_events(payload: Any, *, data_date: str) -> list[Comme
             gross=_num(commission.get('seller_price'))
             sale_comm=_num(commission.get('sale_commission'))
             delivery=_num((item.get('delivery') or {}).get('total_accrued'))
-            stable=_fingerprint('ozon-finance-source',data_date,row_index,item_index,row)
+            stable=_fingerprint('ozon-finance-source',row_key,occurrence,item_index)
             out.append(CommerceObservation(
                 sku,name,data_date,'finance','ozon_finance',_fingerprint('ozon-finance',stable,sku),offer,
                 str(row.get('date') or data_date),posting_number,None,0.0,gross,None,'ALL',False,

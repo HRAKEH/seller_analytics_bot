@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
+from .numeric import finite_number
 
 
 class ProductNormalizationError(ValueError):
@@ -15,7 +16,7 @@ def _now() -> str:
 
 def _num(value: Any, label: str) -> float:
     try:
-        return float(value or 0)
+        return finite_number(value)
     except (TypeError, ValueError) as exc:
         raise ProductNormalizationError(f'{label} is not numeric') from exc
 
@@ -147,12 +148,12 @@ def normalize_ozon_product_analytics(payload: Any, *, default_date: str | None =
         if not isinstance(row, dict):
             continue
         metrics = row.get('metrics') or []
-        if len(metrics) < 2:
-            continue
+        if not isinstance(metrics,list) or len(metrics) < 2:
+            raise ProductNormalizationError('Ozon row has no ordered_units/revenue metrics')
         day, sku, name = _dimension_parts(row)
         day = day or default_date
         if not day or not sku:
-            continue
+            raise ProductNormalizationError('Ozon product row has no day/SKU dimensions')
         units = _num(metrics[0], 'Ozon ordered_units')
         revenue = _num(metrics[1], 'Ozon revenue')
         key = (day, sku)
@@ -246,7 +247,7 @@ def normalize_ozon_postings(payload: Any, *, fulfillment_scheme: str,
             sku = str(product.get('sku') or '').strip()
             if not sku:
                 continue
-            qty = _num(product.get('quantity') or 1, 'Ozon posting quantity')
+            qty = _num(product.get('quantity', 1), 'Ozon posting quantity')
             offer = str(product.get('offer_id') or '').strip() or None
             name = str(product.get('name') or offer or f'Ozon {sku}')
             key = (day, sku)

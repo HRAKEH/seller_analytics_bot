@@ -101,7 +101,7 @@ class CollectionService:
             for scheme, units in obs.fulfillment_units.items():
                 points.append(ProductMetricPoint(listing.id, obs.data_date, 'fulfillment_units', units,
                                                  'units', scheme, True, obs.as_of))
-        return self.repo.save_product_metrics(source_run_id, points) if points else 0
+        return self.repo.save_product_metrics(source_run_id, points, replace_order_snapshot=True)
 
     def _save_fulfillment_observations(self, *, shop_id: int, connection_id: int,
                                        marketplace: str, source_run_id: int,
@@ -129,17 +129,19 @@ class CollectionService:
 
     def _save_product_finance_observations(self, *, shop_id: int, connection_id: int,
                                            marketplace: str, source_run_id: int,
-                                           observations: Iterable[ProductFinanceObservation]) -> int:
+                                           observations: Iterable[ProductFinanceObservation],
+                                           replace_finance_snapshot: bool = False) -> int:
         points: list[ProductMetricPoint] = []
         for obs in observations:
             listing=self._listing(shop_id,connection_id,marketplace,obs.marketplace_sku,obs.name,obs.offer_id)
             for metric,value in obs.metrics.items():
                 points.append(ProductMetricPoint(listing.id,obs.data_date,metric,float(value),'RUB','ALL',False,obs.as_of))
-        return self.repo.save_product_metrics(source_run_id,points) if points else 0
+        return self.repo.save_product_metrics(source_run_id,points,replace_finance_snapshot=replace_finance_snapshot)
 
     def _save_commerce_observations(self, *, shop_id: int, connection_id: int,
                                     marketplace: str, source_run_id: int,
-                                    observations: Iterable[CommerceObservation]) -> int:
+                                    observations: Iterable[CommerceObservation],
+                                    replace_finance_snapshot: bool = False) -> int:
         points: list[CommerceEventPoint]=[]
         for obs in observations:
             listing=self._listing(shop_id,connection_id,marketplace,obs.marketplace_sku,obs.name,obs.offer_id)
@@ -147,7 +149,7 @@ class CollectionService:
                 listing.id,obs.data_date,obs.event_kind,obs.source_name,obs.fingerprint,obs.event_time,
                 obs.external_order_id,obs.external_event_id,obs.quantity,obs.gross_amount,obs.net_amount,
                 obs.fulfillment_scheme,obs.is_preliminary,json.dumps(obs.metadata,ensure_ascii=False,sort_keys=True,default=str)))
-        return self.repo.save_commerce_events(source_run_id,points) if points else 0
+        return self.repo.save_commerce_events(source_run_id,points,replace_finance_snapshot=replace_finance_snapshot)
 
     def _resolve_ad_product_listings(self, connection_id: int, products):
         resolved=[]
@@ -278,7 +280,7 @@ class CollectionService:
                     outcomes.append(CollectionOutcome('ozon',start.isoformat(),False,rid,result.error or 'Ozon error'))
                 else:
                     try:
-                        product_obs=normalize_ozon_product_analytics(result.data)
+                        product_obs=normalize_ozon_product_analytics(result.data) if shop_id is not None else []
                         obs_by_day: dict[str,list[ProductDayObservation]] = {}
                         for obs in product_obs:
                             if start.isoformat() <= obs.data_date <= end.isoformat():
@@ -527,10 +529,11 @@ class CollectionService:
                             rid=self.repo.record_success(ozon_connection_id,endpoint,ds,result.data,points,attempts=result.attempts)
                             if shop_id is not None:
                                 self._save_product_finance_observations(shop_id=shop_id,connection_id=ozon_connection_id,
-                                    marketplace='ozon',source_run_id=rid,observations=product_finance)
+                                    marketplace='ozon',source_run_id=rid,observations=product_finance,replace_finance_snapshot=True)
                                 self._save_commerce_observations(shop_id=shop_id,connection_id=ozon_connection_id,
                                     marketplace='ozon',source_run_id=rid,
-                                    observations=normalize_ozon_finance_events(result.data,data_date=ds))
+                                    observations=normalize_ozon_finance_events(result.data,data_date=ds),
+                                    replace_finance_snapshot=True)
                             outcomes.append(CollectionOutcome('ozon',ds,True,rid,'finance loaded'))
                         except (FinanceNormalizationError,ValueError) as exc:
                             rid=self.repo.record_failure(ozon_connection_id,endpoint,ds,f'Normalization: {exc}',attempts=result.attempts)

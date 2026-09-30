@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.0.1 — Formula and snapshot consistency audit
+
+- Schema 15 preserves all data while allowing historical A → B → A corrections; consecutive identical responses remain idempotent and refresh source freshness.
+- Complete order refreshes clear previously observed SKU values missing from the new snapshot. Independent posting flow stays separate.
+- Ozon daily finance refreshes replace obsolete SKU components and reconciliation events, including empty days and legacy positional fingerprints.
+- Management COGS must reconcile with aggregate orders per day; missing order revenue or SKU coverage suppresses the result. Action Center uses the same calculation.
+- SKU expenses now include acquiring. Partial order runs no longer count as complete days for product comparison or stock velocity.
+- Inventory freshness uses the oldest contributing snapshot. Overdue unreceived supplies do not offset replenishment. Promotion uplift is removed from the training baseline before being applied to future promotion days.
+- Forecast bias includes zero-actual horizons; backtests exclude history before a product exists. Missing data does not send false order-drop or DRR recovery alerts.
+- Reject malformed/non-finite numeric metrics, preserve explicit zero posting quantities, and distinguish unknown demand from zero demand in stock reports.
+- Add regression coverage for formula, snapshot, migration and missing-data edge cases.
+
 ## 1.0.0 — Stable Release / Phase 20
 
 - Final release audit completed without changing marketplace metric semantics or schema v14.
