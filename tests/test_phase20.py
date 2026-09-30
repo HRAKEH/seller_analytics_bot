@@ -251,6 +251,33 @@ def test_backfill_picker_uses_marketplace_and_period_callbacks(monkeypatch):
     assert ('📅 Свой период','backfill:custom:wildberries') in period
 
 
+    running=kb.backfill_running_keyboard()
+    assert ('🛑 Остановить загрузку','backfill:stop') in running
+
+
+@pytest.mark.asyncio
+async def test_context_can_cancel_active_backfill_task():
+    AppContext=_load_context_module().AppContext
+    class Settings: pass
+    ctx=AppContext(Settings(),object(),1,object())
+    task=asyncio.create_task(asyncio.sleep(60))
+    ctx.active_backfill_task=task
+    assert ctx.backfill_running()
+    assert ctx.cancel_backfill() is True
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert not ctx.backfill_running()
+    assert ctx.cancel_backfill() is False
+
+
+def test_backfill_handler_catches_cancellation_and_exposes_stop_callback():
+    src=(ROOT/'app/bot/handlers.py').read_text(encoding='utf-8')
+    assert "F.data == 'backfill:stop'" in src
+    assert 'ctx.cancel_backfill()' in src
+    assert 'except asyncio.CancelledError:' in src
+    assert 'backfill_running_keyboard()' in src
+
+
 def test_context_backfill_routes_selected_marketplace():
     src=(ROOT/'app/bot/context.py').read_text(encoding='utf-8')
     start=src.index('    async def backfill_orders')
