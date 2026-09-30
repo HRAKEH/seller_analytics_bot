@@ -140,7 +140,7 @@ async def build_readiness(ctx, *, live: bool = False, persist: bool = True) -> R
                     items.append(ReadinessItem(key,label,False,False,'WB-токен не авторизован'))
                     continue
                 if rate_limited:
-                    items.append(ReadinessItem(key,label,False,False,'не проверялось: действует лимит WB'))
+                    items.append(ReadinessItem(key,label,False,False,'WB временно ограничил запросы; повторите проверку позже'))
                     continue
                 if token_meta['ok'] and token_meta['expired'] is True:
                     items.append(ReadinessItem(key,label,False,False,'срок WB-токена истёк'))
