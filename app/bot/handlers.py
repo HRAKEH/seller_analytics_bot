@@ -1520,8 +1520,8 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
     async def cmd_jobs(message: types.Message):
         if not allowed(message,'operate'): return await denied(message,'operate')
         counts=ctx.repository.retry_job_counts(ctx.shop_id); rows=ctx.repository.recent_retry_jobs(12,shop_id=ctx.shop_id)
-        lines=['🧰 <b>Persistent retry queue</b>','━━━━━━━━━━━━━━━━',
-               f'pending: {counts.get("pending",0)} · running: {counts.get("running",0)} · dead: {counts.get("dead",0)} · success: {counts.get("success",0)}']
+        lines=['🔁 <b>Ошибки и автоматические повторы</b>','━━━━━━━━━━━━━━━━',
+               f'Ждут: {counts.get("pending",0)} · выполняются: {counts.get("running",0)} · исчерпаны: {counts.get("dead",0)} · успешно: {counts.get("success",0)}']
         for r in rows:
             icon={'pending':'⏳','running':'▶️','success':'✅','dead':'❌'}.get(str(r['status']),'•')
             lines.append(f'{icon} #{r["id"]} · <code>{escape(str(r["job_type"]))}</code> · попыток {r["attempts"]}/{r["max_attempts"]}')
@@ -1569,15 +1569,15 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
 
     @dp.message(F.text == MENU_REPORTS)
     async def menu_reports(message: types.Message):
-        await show_submenu(message,'📊 <b>Отчёты</b>\nДень, периоды, история и загрузка данных.',reports_keyboard)
+        await show_submenu(message,'📊 <b>Отчёты</b>\n«Вчера / Неделя / Месяц» читают сохранённые данные без API. «Обновить» и «Догрузить» обращаются к маркетплейсам.',reports_keyboard)
 
     @dp.message(F.text == MENU_PRODUCTS)
     async def menu_products(message: types.Message):
-        await show_submenu(message,'📦 <b>Товары</b>\nПродажи по товарам, остатки и прибыль по SKU.',products_keyboard)
+        await show_submenu(message,'📦 <b>Товары</b>\n«Остатки» показывает последний сохранённый снимок. «Обновить остатки» — отдельный запрос к API.',products_keyboard)
 
     @dp.message(F.text == MENU_MONEY)
     async def menu_money(message: types.Message):
-        await show_submenu(message,'💰 <b>Деньги и реклама</b>\nФинансы, реклама, управленческий результат и сверка.',money_keyboard)
+        await show_submenu(message,'💰 <b>Деньги и реклама</b>\nФинансы, реклама и прибыль показывают сохранённые данные. «Обновить…» вызывает API. «Проверка расхождений» — полная тяжёлая сверка.',money_keyboard)
 
     @dp.message(F.text == MENU_SUPPLY)
     async def menu_supply(message: types.Message):
@@ -1761,11 +1761,20 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
     @dp.message(F.text == COMMAND_BUTTONS['products'])
     async def btn_menu_products_report(message: types.Message): await cmd_products(command_copy(message,'products',''))
     @dp.message(F.text == COMMAND_BUTTONS['finance'])
-    async def btn_menu_finance(message: types.Message): await cmd_finance(command_copy(message,'finance',''))
+    async def btn_menu_finance(message: types.Message):
+        if not allowed(message): return await denied(message)
+        p=pref(); days=p.finance_lookback_days; end=local_now().date()-timedelta(days=1)
+        await send(message,format_finance(build_finance_report(ctx.repository,ctx.shop_id,end,days)))
     @dp.message(F.text == COMMAND_BUTTONS['ads'])
-    async def btn_menu_ads(message: types.Message): await cmd_ads(command_copy(message,'ads',''))
+    async def btn_menu_ads(message: types.Message):
+        if not allowed(message): return await denied(message)
+        p=pref(); days=p.finance_lookback_days; end=local_now().date()-timedelta(days=1)
+        await send(message,format_advertising(build_advertising_report(ctx.repository,ctx.shop_id,end,days)))
     @dp.message(F.text == COMMAND_BUTTONS['management'])
-    async def btn_menu_management(message: types.Message): await cmd_management(command_copy(message,'management',''))
+    async def btn_menu_management(message: types.Message):
+        if not allowed(message): return await denied(message)
+        p=pref(); days=p.finance_lookback_days; end=local_now().date()-timedelta(days=1)
+        await send(message,format_management(build_management_report(ctx.repository,ctx.shop_id,end,days)))
     @dp.message(F.text == COMMAND_BUTTONS['sku_finance'])
     async def btn_menu_sku_finance(message: types.Message): await cmd_sku_finance(command_copy(message,'sku_finance',''))
     @dp.message(F.text == COMMAND_BUTTONS['reconcile'])
@@ -1949,7 +1958,23 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
             days=p.product_report_days,stock_lookback_days=p.stock_velocity_days,stock_risk_days=p.stock_risk_days)))
 
     @dp.message(F.text == '📦 Остатки')
-    async def btn_stocks(message: types.Message): await cmd_stocks(message)
+    async def btn_stocks(message: types.Message):
+        if not allowed(message): return await denied(message)
+        p=pref(); end=local_now().date()-timedelta(days=1)
+        await send(message,format_stock_report(build_product_report(ctx.repository,ctx.shop_id,end,
+            days=p.product_report_days,stock_lookback_days=p.stock_velocity_days,stock_risk_days=p.stock_risk_days)))
+
+    @dp.message(F.text == '🔄 Обновить остатки')
+    async def btn_stocks_refresh(message: types.Message):
+        await cmd_stocks(message)
+
+    @dp.message(F.text == '🔄 Обновить финансы')
+    async def btn_finance_refresh(message: types.Message):
+        await cmd_finance(command_copy(message,'finance',''))
+
+    @dp.message(F.text == '🔄 Обновить рекламу')
+    async def btn_ads_refresh(message: types.Message):
+        await cmd_ads(command_copy(message,'ads',''))
 
     @dp.message(F.text == '🚚 Поставка')
     async def btn_supply(message: types.Message):
