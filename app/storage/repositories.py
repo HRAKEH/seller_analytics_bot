@@ -68,6 +68,53 @@ class Repository:
             rows=c.execute(sql,params).fetchall()
         return [self._shop_from_row(r) for r in rows]
 
+    def archived_shops(self, seller_id: int) -> list[Shop]:
+        with self.db.connect() as c:
+            rows=c.execute("SELECT * FROM shops WHERE seller_id=? AND active=0 ORDER BY id",(int(seller_id),)).fetchall()
+        return [self._shop_from_row(r) for r in rows]
+
+    def archive_shop(self, seller_id: int, shop_id: int) -> Shop:
+        """Soft-delete a shop while preserving all business data and access rows."""
+        with self.db.connect() as c:
+            row=c.execute("SELECT * FROM shops WHERE id=? AND seller_id=?",(int(shop_id),int(seller_id))).fetchone()
+            if not row:
+                raise ValueError("Магазин не найден.")
+            shop=self._shop_from_row(row)
+            if not shop.active:
+                raise ValueError("Магазин уже находится в архиве.")
+            active_count=int(c.execute("SELECT COUNT(*) FROM shops WHERE seller_id=? AND active=1",(int(seller_id),)).fetchone()[0])
+            if active_count <= 1:
+                raise ValueError("Нельзя архивировать последний активный магазин.")
+            c.execute("UPDATE shops SET active=0 WHERE id=?",(int(shop_id),))
+            # A user's selected shop must never point at an archived tenant.
+            c.execute("DELETE FROM user_shop_selection WHERE shop_id=?",(int(shop_id),))
+            row=c.execute("SELECT * FROM shops WHERE id=?",(int(shop_id),)).fetchone()
+        return self._shop_from_row(row)
+
+    def restore_shop(self, seller_id: int, shop_id: int) -> Shop:
+        with self.db.connect() as c:
+            row=c.execute("SELECT * FROM shops WHERE id=? AND seller_id=?",(int(shop_id),int(seller_id))).fetchone()
+            if not row:
+                raise ValueError("Магазин не найден.")
+            shop=self._shop_from_row(row)
+            if shop.active:
+                raise ValueError("Магазин уже активен.")
+            c.execute("UPDATE shops SET active=1 WHERE id=?",(int(shop_id),))
+            row=c.execute("SELECT * FROM shops WHERE id=?",(int(shop_id),)).fetchone()
+        return self._shop_from_row(row)
+
+    def delete_archived_shop(self, seller_id: int, shop_id: int) -> Shop:
+        """Permanently delete an archived shop; FK cascades remove its dependent data."""
+        with self.db.connect() as c:
+            row=c.execute("SELECT * FROM shops WHERE id=? AND seller_id=?",(int(shop_id),int(seller_id))).fetchone()
+            if not row:
+                raise ValueError("Магазин не найден.")
+            shop=self._shop_from_row(row)
+            if shop.active:
+                raise ValueError("Сначала архивируйте магазин. Активный магазин удалить нельзя.")
+            c.execute("DELETE FROM shops WHERE id=?",(int(shop_id),))
+        return shop
+
     def set_shop_credential_profile(self, shop_id: int, profile: str) -> Shop:
         clean=(profile or "DEFAULT").strip().upper()[:64]
         if not clean.replace('_','').isalnum():

@@ -117,6 +117,32 @@ class RuntimeRegistry:
             self.repository.grant_shop_access(uid,shop.id,'owner',display_name='Owner')
         return await self.refresh_shop(shop.id)
 
+    async def archive_shop(self, shop_id: int) -> None:
+        current=self._contexts.get(shop_id)
+        if current is not None and current.job_lock.locked():
+            raise RuntimeError('Нельзя архивировать магазин во время загрузки данных.')
+        # Persist the state change first. Repository guards ensure that the last
+        # active shop cannot be archived, so a failed request leaves runtime intact.
+        self.repository.archive_shop(self.seller_id,shop_id)
+        async with self._lock:
+            current=self._contexts.pop(shop_id,None)
+            if current is not None:
+                await self._close_context(current)
+            active=self.repository.list_shops(self.seller_id)
+            if self.default_shop_id==shop_id or not any(x.id==self.default_shop_id for x in active):
+                self.default_shop_id=active[0].id
+
+    async def restore_shop(self, shop_id: int) -> AppContext:
+        self.repository.restore_shop(self.seller_id,shop_id)
+        for uid in self.settings.owner_ids:
+            self.repository.grant_shop_access(uid,shop_id,'owner',display_name='Owner')
+        return await self.refresh_shop(shop_id)
+
+    async def delete_archived_shop(self, shop_id: int) -> None:
+        if shop_id in self._contexts:
+            raise RuntimeError('Активный runtime магазина нельзя удалить. Сначала архивируйте магазин.')
+        self.repository.delete_archived_shop(self.seller_id,shop_id)
+
     async def set_profile(self, shop_id: int, profile: str) -> AppContext:
         current=self._contexts.get(shop_id)
         if current is not None and current.job_lock.locked():

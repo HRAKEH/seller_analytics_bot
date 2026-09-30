@@ -16,6 +16,10 @@ COMMAND_BUTTONS: dict[str, str] = {
     'shop': '🔁 Выбрать магазин',
     'shop_add': '➕ Добавить магазин',
     'shop_profile': '🔐 Профиль ключей',
+    'shop_archive': '🗄 Архивировать магазин',
+    'shop_archived': '🗂 Архив магазинов',
+    'shop_restore': '♻️ Вернуть магазин',
+    'shop_delete': '🗑 Удалить магазин',
     'profiles': '🗝 Профили окружения',
     'users': '👥 Пользователи',
     'user_add': '➕ Дать доступ',
@@ -166,7 +170,12 @@ def shop_keyboard(role: str | None = 'owner', *, system_owner: bool = False):
             COMMAND_BUTTONS['users'], COMMAND_BUTTONS['user_add'], COMMAND_BUTTONS['user_remove'],
         ]
     if system_owner:
-        buttons += [COMMAND_BUTTONS['shop_add'], COMMAND_BUTTONS['shop_profile'], COMMAND_BUTTONS['profiles']]
+        buttons += [
+            COMMAND_BUTTONS['shop_add'], COMMAND_BUTTONS['shop_profile'],
+            COMMAND_BUTTONS['shop_archive'], COMMAND_BUTTONS['shop_archived'],
+            COMMAND_BUTTONS['shop_restore'], COMMAND_BUTTONS['shop_delete'],
+            COMMAND_BUTTONS['profiles'],
+        ]
     buttons += [BACK, HOME]
     return _build(buttons)
 

@@ -90,3 +90,40 @@ def test_rename_shop_rejects_duplicate_name(repo):
 
     assert repo.get_shop(first.id).name == 'Shop A'
     assert repo.get_shop(second.id).name == 'Shop B'
+
+
+def test_shop_archive_restore_and_delete_lifecycle(repo):
+    seller = repo.ensure_seller(4004, 'Lifecycle Seller')
+    keep = repo.ensure_shop(seller.id, 'Keep')
+    old = repo.ensure_shop(seller.id, 'Old')
+    repo.ensure_shop_preferences(old.id)
+    repo.grant_shop_access(4004, old.id, 'owner')
+    repo.select_shop_for_user(4004, old.id)
+    conn = repo.ensure_connection(old.id, 'ozon', 'Ozon')
+    repo.record_success(conn.id, 'analytics/orders', '2026-09-29', {'x': 1}, [])
+
+    archived = repo.archive_shop(seller.id, old.id)
+    assert archived.active is False
+    assert repo.selected_shop_for_user(4004, None) is None
+    assert [x.id for x in repo.list_shops(seller.id)] == [keep.id]
+    assert [x.id for x in repo.archived_shops(seller.id)] == [old.id]
+
+    restored = repo.restore_shop(seller.id, old.id)
+    assert restored.active is True
+    assert {x.id for x in repo.list_shops(seller.id)} == {keep.id, old.id}
+
+    repo.archive_shop(seller.id, old.id)
+    deleted = repo.delete_archived_shop(seller.id, old.id)
+    assert deleted.id == old.id
+    assert repo.get_shop(old.id) is None
+    assert repo.count('marketplace_connections') == 0
+
+
+def test_shop_lifecycle_guards_last_active_and_active_delete(repo):
+    seller = repo.ensure_seller(5005, 'Guard Seller')
+    only = repo.ensure_shop(seller.id, 'Only')
+
+    with pytest.raises(ValueError, match='последний активный'):
+        repo.archive_shop(seller.id, only.id)
+    with pytest.raises(ValueError, match='Сначала архивируйте'):
+        repo.delete_archived_shop(seller.id, only.id)
