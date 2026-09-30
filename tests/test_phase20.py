@@ -136,11 +136,14 @@ def test_public_health_payload_does_not_expose_runtime_identity():
 def _load_keyboard_module_with_stub(monkeypatch):
     class Builder:
         def __init__(self): self.items=[]
-        def button(self,*,text): self.items.append(text)
+        def button(self,*,text,**kwargs):
+            callback_data=kwargs.get('callback_data')
+            self.items.append((text,callback_data) if callback_data is not None else text)
         def adjust(self,*args): return None
         def as_markup(self,**kwargs): return tuple(self.items)
     aiogram=ModuleType('aiogram'); utils=ModuleType('aiogram.utils'); keyboard=ModuleType('aiogram.utils.keyboard')
     keyboard.ReplyKeyboardBuilder=Builder
+    keyboard.InlineKeyboardBuilder=Builder
     monkeypatch.setitem(sys.modules,'aiogram',aiogram)
     monkeypatch.setitem(sys.modules,'aiogram.utils',utils)
     monkeypatch.setitem(sys.modules,'aiogram.utils.keyboard',keyboard)
@@ -224,3 +227,13 @@ async def test_database_integrity_failure_is_fatal():
         maintenance_lock=Lock()
     with pytest.raises(resilience.DatabaseIntegrityError):
         await asyncio.wait_for(resilience.database_maintenance_loop(Registry()),timeout=1)
+
+
+def test_shop_picker_keyboard_uses_one_tap_callbacks(monkeypatch):
+    kb=_load_keyboard_module_with_stub(monkeypatch)
+    class Shop:
+        def __init__(self,shop_id,name): self.id=shop_id; self.name=name
+    markup=kb.shop_picker_keyboard([Shop(7,'Первый'),Shop(9,'Второй')],'select',current_shop_id=9)
+    assert ('Первый','shop:select:7') in markup
+    assert ('✅ Второй','shop:select:9') in markup
+    assert ('❌ Отмена','shop:cancel') in markup
