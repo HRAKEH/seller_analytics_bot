@@ -46,7 +46,7 @@ def build_management_report(repo: Repository, shop_id: int, end: date, days: int
         marketplace_expenses=sum(float(m.get(k,0)) for k in EXPENSE_KEYS)
         ad_spend=float(m.get('ad_spend',0)); compensation=float(m.get('compensation',0))
         result=None
-        if ordered_revenue and (units<=0 or covered+1e-9>=units):
+        if units<=0 or covered+1e-9>=units:
             result=ordered_revenue-estimated_cogs-marketplace_expenses-ad_spend+compensation
         rows.append(ManagementSource(marketplace,ordered_revenue,estimated_cogs,coverage,
             marketplace_expenses,ad_spend,compensation,result,
