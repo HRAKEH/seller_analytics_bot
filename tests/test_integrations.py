@@ -73,3 +73,29 @@ async def test_ozon_performance_sku_statistics_request_matches_current_schema():
     assert result.ok and result.data['rows'][0]['sku']=='9001'
     assert len(seen)==2
     await client.close()
+
+
+@pytest.mark.asyncio
+async def test_ozon_current_posting_lists_use_conservative_cursor_page_size():
+    import json as jsonlib
+    from app.integrations.ozon import OzonClient
+
+    seen=[]
+    async def handler(request):
+        body=jsonlib.loads(request.content.decode())
+        seen.append((request.url.path,body))
+        assert body['limit']==100
+        assert body['cursor']==''
+        assert body['filter']=={
+            'since':'2026-09-01T00:00:00.000Z',
+            'to':'2026-09-29T23:59:59.999Z',
+        }
+        assert body['sort_dir']=='asc'
+        return httpx.Response(200,json={'postings':[],'has_next':False,'cursor':''})
+
+    client=OzonClient('cid','key',min_interval=0,transport=httpx.MockTransport(handler))
+    fbo=await client.postings_all('FBO','2026-09-01T00:00:00.000Z','2026-09-29T23:59:59.999Z',limit=1000)
+    fbs=await client.postings_all('FBS','2026-09-01T00:00:00.000Z','2026-09-29T23:59:59.999Z',limit=1000)
+    assert fbo.ok and fbs.ok
+    assert [x[0] for x in seen]==['/v3/posting/fbo/list','/v4/posting/fbs/list']
+    await client.close()

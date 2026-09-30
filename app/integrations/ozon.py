@@ -77,16 +77,22 @@ class OzonClient(MarketplaceClient):
     async def fbo_postings(self, payload: dict) -> FetchResult:
         return await self.request('POST', '/v3/posting/fbo/list', json=payload, headers=self._headers(), rate_key='postings', min_interval=1.0)
 
-    async def postings_all(self, scheme: str, since: str, to: str, *, limit: int = 1000,
-                           max_pages: int = 100) -> FetchResult:
-        """Fetch current-version FBO/FBS postings with cursor pagination."""
+    async def postings_all(self, scheme: str, since: str, to: str, *, limit: int = 100,
+                           max_pages: int = 500) -> FetchResult:
+        """Fetch current-version FBO/FBS postings with cursor pagination.
+
+        Ozon's current posting-list examples use pages of 100. Keep that
+        conservative page size even when a larger value is requested; cursor
+        pagination still retrieves the full period without relying on a
+        potentially unsupported large-page limit.
+        """
         scheme=scheme.upper()
         if scheme not in {'FBO','FBS'}:
             raise ValueError("scheme must be 'FBO' or 'FBS'")
         cursor=''; seen:set[str]=set(); all_postings:list[dict]=[]; attempts=0
         for _ in range(max_pages):
             payload={'cursor':cursor,'filter':{'since':since,'to':to},
-                     'limit':min(max(1,int(limit)),1000),'sort_dir':'asc'}
+                     'limit':min(max(1,int(limit)),100),'sort_dir':'asc'}
             result=await (self.fbo_postings(payload) if scheme=='FBO' else self.fbs_postings(payload))
             attempts += result.attempts
             if not result.ok:
