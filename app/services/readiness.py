@@ -102,7 +102,7 @@ async def build_readiness(ctx, *, live: bool = False, persist: bool = True) -> R
             token_meta=decode_wb_token(wb.token)
             if token_meta['ok']:
                 type_name=str(token_meta['type'])
-                type_ok=token_meta['type_code'] in {3,4}
+                type_ok=token_meta['type_code'] in {3,4} and token_meta['expired'] is not True
                 access='RO' if token_meta['read_only'] else 'RW'
                 expiry=''
                 if token_meta['expires_at']:
@@ -117,7 +117,7 @@ async def build_readiness(ctx, *, live: bool = False, persist: bool = True) -> R
                 categories=set(token_meta['categories'])
                 missing=[x for x in WB_BOT_REQUIRED_CATEGORIES if x not in categories]
                 items.append(ReadinessItem(
-                    'wb_categories','WB · категории для функций бота',not missing,False,
+                    'wb_categories','WB · категории для функций бота',not missing and token_meta['expired'] is not True,False,
                     'все 6 категорий доступны' if not missing else 'не хватает: '+', '.join(missing)))
             else:
                 categories=None
@@ -141,7 +141,7 @@ async def build_readiness(ctx, *, live: bool = False, persist: bool = True) -> R
                 items.append(ReadinessItem(key,label,r.ok,False,'доступ есть' if r.ok else (r.error or f'HTTP {r.status_code}')))
 
             if token_meta['ok']:
-                stock_type_ok=token_meta['type_code'] in {3,4}
+                stock_type_ok=token_meta['type_code'] in {3,4} and token_meta['expired'] is not True
                 analytics_ok='Аналитика' in set(token_meta['categories'])
                 items.append(ReadinessItem(
                     'wb_stock_capability','WB · текущие остатки FBW/FBS',
