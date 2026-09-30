@@ -1,6 +1,7 @@
 """Wildberries API client. Raw source responses only."""
 from __future__ import annotations
 import base64
+import hashlib
 import json
 from datetime import datetime, timezone
 
@@ -103,20 +104,28 @@ def decode_wb_token(token: str) -> dict:
 class WildberriesClient(MarketplaceClient):
     def __init__(self, token: str, *, timeout: float = 60, min_interval: float = 1.0,
                  max_retries: int = 3, transport=None):
+        scope='wb:'+hashlib.sha256((token or '').strip().encode('utf-8')).hexdigest()[:24]
         super().__init__('wildberries', 'https://statistics-api.wildberries.ru', timeout=timeout,
-                         min_interval=min_interval, max_retries=max_retries, transport=transport)
+                         min_interval=min_interval, max_retries=max_retries, transport=transport,
+                         rate_scope=scope)
         self.token = token
 
     def _headers(self):
         return {'Authorization': self.token} if self.token else {}
 
-    async def ping(self, base_url: str = 'https://common-api.wildberries.ru') -> FetchResult:
-        return await self.request('GET', base_url.rstrip('/') + '/ping', headers=self._headers(),
-                                  rate_key='ping:'+base_url, min_interval=10.0)
+    async def ping(self, base_url: str = 'https://common-api.wildberries.ru', *,
+                   retry_429: bool = True, fail_fast_rate_limit: bool = False) -> FetchResult:
+        return await self.request(
+            'GET',base_url.rstrip('/')+'/ping',headers=self._headers(),
+            rate_key='ping:'+base_url,min_interval=10.0,
+            retry_429=retry_429,fail_fast_rate_limit=fail_fast_rate_limit)
 
-    async def seller_info(self) -> FetchResult:
-        return await self.request('GET','https://common-api.wildberries.ru/api/v1/seller-info',
-                                  headers=self._headers(),rate_key='seller_info',min_interval=60.0)
+    async def seller_info(self, *, retry_429: bool = True,
+                          fail_fast_rate_limit: bool = False) -> FetchResult:
+        return await self.request(
+            'GET','https://common-api.wildberries.ru/api/v1/seller-info',
+            headers=self._headers(),rate_key='seller_info',min_interval=60.0,
+            retry_429=retry_429,fail_fast_rate_limit=fail_fast_rate_limit)
 
     async def orders(self, date_from: str, *, flag: int = 0) -> FetchResult:
         """Operational orders. flag=1 returns rows whose order date matches date_from."""
