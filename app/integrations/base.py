@@ -75,7 +75,8 @@ class MarketplaceClient:
         await self._client.aclose()
 
     async def request(self, method: str, path: str, *, params=None, json=None, headers=None,
-                      rate_key: str = 'default', min_interval: float | None = None) -> FetchResult:
+                      rate_key: str = 'default', min_interval: float | None = None,
+                      retry_on_429: bool = True) -> FetchResult:
         url = path if path.startswith('https://') else f'{self.base_url}/{path.lstrip("/")}'
         interval = self.min_interval if min_interval is None else max(0.0, float(min_interval))
         lock = self._rate_locks.setdefault(rate_key, asyncio.Lock())
@@ -103,9 +104,12 @@ class MarketplaceClient:
                         except ValueError:
                             return FetchResult.failure(self.source, 'Некорректный JSON', 200, attempt)
                     if response.status_code == 429:
+                        requested=_server_retry_delay(response)
+                        if not retry_on_429:
+                            hint=f' · повторить примерно через {requested:.0f} сек.' if requested is not None else ''
+                            return FetchResult.failure(self.source, f'HTTP 429: лимит запросов{hint}', 429, attempt)
                         if attempt > self.max_retries:
                             return FetchResult.failure(self.source, f'HTTP 429: {response.text[:300]}', 429, attempt)
-                        requested=_server_retry_delay(response)
                         retry_wait=requested if requested is not None else min(120.0, 2 ** attempt * 2)
                         # Never retry earlier than the marketplace explicitly asks.
                         self._rate_next[rate_key] = max(self._rate_next.get(rate_key, 0.0), loop.time() + retry_wait)
