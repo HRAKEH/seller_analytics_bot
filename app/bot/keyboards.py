@@ -115,17 +115,18 @@ def products_keyboard(role: str | None = 'owner', *, system_owner: bool = False)
     role = _role(role)
     buttons = [COMMAND_BUTTONS['products'], COMMAND_BUTTONS['stocks'], COMMAND_BUTTONS['sku_finance']]
     if role in {'analyst', 'owner'}:
-        buttons += [COMMAND_BUTTONS['import_costs']]
+        buttons += ['🔄 Обновить остатки', COMMAND_BUTTONS['import_costs']]
     buttons += [BACK, HOME]
     return _build(buttons)
 
 
 def money_keyboard(role: str | None = 'owner', *, system_owner: bool = False):
-    buttons = [
-        COMMAND_BUTTONS['finance'], COMMAND_BUTTONS['ads'],
-        COMMAND_BUTTONS['management'], COMMAND_BUTTONS['reconcile'],
-        BACK, HOME,
-    ]
+    role = _role(role)
+    buttons = [COMMAND_BUTTONS['finance'], COMMAND_BUTTONS['ads'],
+               COMMAND_BUTTONS['management'], COMMAND_BUTTONS['reconcile']]
+    if role in {'analyst','owner'}:
+        buttons += ['🔄 Обновить финансы', '🔄 Обновить рекламу']
+    buttons += [BACK, HOME]
     return _build(buttons)
 
 
