@@ -34,7 +34,7 @@ from .context import AppContext
 from .keyboards import (
     main_keyboard, reports_keyboard, products_keyboard, money_keyboard, supply_keyboard,
     control_keyboard, shop_keyboard, service_keyboard, input_keyboard, shop_picker_keyboard,
-    shop_confirm_keyboard, COMMAND_BUTTONS,
+    shop_confirm_keyboard, backfill_source_keyboard, backfill_period_keyboard, COMMAND_BUTTONS,
     MENU_REPORTS, MENU_PRODUCTS, MENU_MONEY, MENU_SUPPLY, MENU_CONTROL, MENU_SHOP, MENU_SERVICE,
     HOME, BACK, CANCEL,
 )
@@ -60,6 +60,10 @@ class RestoreStates(StatesGroup):
 class MenuInputStates(StatesGroup):
     """Single-step inputs launched from menu buttons for commands with arguments."""
     waiting_value = State()
+
+
+class BackfillStates(StatesGroup):
+    custom_period = State()
 
 
 def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
@@ -134,6 +138,62 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
 
     def local_now() -> datetime:
         return datetime.now(ZoneInfo(pref().timezone))
+
+    def backfill_source_label(source: str) -> str:
+        return {
+            'ozon':'🟣 Ozon',
+            'wildberries':'🔵 Wildberries',
+            'wb':'🔵 Wildberries',
+            'all':'🟣🔵 Ozon + Wildberries',
+        }.get(source,source)
+
+    async def show_backfill_source_picker(message: types.Message):
+        if not allowed(message,'operate'): return await denied(message,'operate')
+        has_ozon=ctx.ozon_connection_id is not None
+        has_wb=ctx.wb_connection_id is not None
+        if not has_ozon and not has_wb:
+            return await message.answer('⚠️ В текущем магазине не подключены Ozon или Wildberries.')
+        await message.answer(
+            '📥 <b>Загрузка истории</b>\nВыберите источник:',
+            parse_mode='HTML',
+            reply_markup=backfill_source_keyboard(has_ozon=has_ozon,has_wb=has_wb))
+
+    async def execute_backfill(message: types.Message, *, source: str, start: date, end: date):
+        if not allowed(message,'operate'): return await denied(message,'operate')
+        if end < start:
+            return await message.answer('⚠️ Конечная дата раньше начальной.')
+        yesterday=local_now().date()-timedelta(days=1)
+        if end > yesterday:
+            return await message.answer(f'⚠️ История загружается только по завершённым дням. Последняя доступная дата: {yesterday}.')
+        span=(end-start).days+1
+        if span > 90:
+            return await message.answer('⚠️ За один запуск можно загрузить максимум 90 дней.')
+        if ctx.job_lock.locked():
+            return await message.answer('⏳ Уже выполняется другая выгрузка.')
+        label=backfill_source_label(source)
+        wait_hint='\nЕсли WB вернёт 429, бот автоматически дождётся X-Ratelimit-Retry и повторит запрос.' if source in {'wildberries','wb','all'} else ''
+        await message.answer(
+            f'📥 <b>{label}</b>\nЗагружаю {start} — {end} ({span} дн.).'
+            f'{wait_hint}\nОшибки не затирают успешные данные.',
+            parse_mode='HTML')
+        try:
+            outcomes=await ctx.backfill_orders(start,end,marketplace=source)
+        except (RuntimeError,ValueError) as exc:
+            return await message.answer(f'⚠️ {escape(str(exc)[:400])}')
+        core=[x for x in outcomes if x.message=='orders loaded']
+        core_ok=sum(1 for x in core if x.ok)
+        core_failed=sum(1 for x in core if not x.ok)
+        extra=[x for x in outcomes if x.message!='orders loaded']
+        extra_failed=sum(1 for x in extra if not x.ok)
+        lines=[
+            f'✅ <b>Загрузка завершена · {label}</b>',
+            f'Период: {start} — {end}',
+            f'Основных дневных записей: ✅ {core_ok} · ❌ {core_failed}',
+        ]
+        if extra:
+            lines.append(f'Дополнительные источники: {len(extra)-extra_failed} успешно · {extra_failed} ошибок')
+        await message.answer('\n'.join(lines),parse_mode='HTML')
+        await send(message,format_daily(build_daily_report(ctx.repository,ctx.shop_id,end)))
 
     async def collect_and_report(message: types.Message, day: date, force: bool = True):
         if force:
@@ -838,19 +898,115 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
     @dp.message(Command('backfill'))
     async def cmd_backfill(message: types.Message):
         if not allowed(message,'operate'): return await denied(message,'operate')
+        parts=(message.text or '').split()[1:]
+        if not parts:
+            return await show_backfill_source_picker(message)
+        source='all'
+        days=None
+        for part in parts:
+            low=part.strip().lower()
+            if low in {'wb','wildberries'}:
+                source='wildberries'
+            elif low in {'ozon','all','both'}:
+                source='all' if low in {'all','both'} else 'ozon'
+            elif days is None:
+                try: days=int(low)
+                except ValueError:
+                    return await message.answer('Формат: /backfill [7..90] [ozon|wb|all]')
+            else:
+                return await message.answer('Формат: /backfill [7..90] [ozon|wb|all]')
+        days=max(1,min(days if days is not None else ctx.settings.backfill_days,90))
+        end=local_now().date()-timedelta(days=1)
+        start=end-timedelta(days=days-1)
+        await execute_backfill(message,source=source,start=start,end=end)
+
+    @dp.callback_query(F.data == 'backfill:cancel')
+    async def cb_backfill_cancel(callback: types.CallbackQuery, state: FSMContext):
+        await state.clear()
+        await callback.answer('Отменено')
+        if callback.message:
+            await callback.message.edit_text('❌ Загрузка истории отменена.')
+
+    @dp.callback_query(F.data == 'backfill:source_picker')
+    async def cb_backfill_source_picker(callback: types.CallbackQuery):
+        if callback.from_user is None or not ctx.repository.can_user(callback.from_user.id,ctx.shop_id,'operate'):
+            return await callback.answer('Недостаточно прав.',show_alert=True)
+        await callback.answer()
+        if callback.message:
+            await callback.message.edit_text(
+                '📥 <b>Загрузка истории</b>\nВыберите источник:',
+                parse_mode='HTML',
+                reply_markup=backfill_source_keyboard(
+                    has_ozon=ctx.ozon_connection_id is not None,
+                    has_wb=ctx.wb_connection_id is not None))
+
+    @dp.callback_query(F.data.startswith('backfill:source:'))
+    async def cb_backfill_source(callback: types.CallbackQuery):
+        if callback.from_user is None or not ctx.repository.can_user(callback.from_user.id,ctx.shop_id,'operate'):
+            return await callback.answer('Недостаточно прав.',show_alert=True)
+        source=(callback.data or '').rsplit(':',1)[-1]
+        if source=='ozon' and ctx.ozon_connection_id is None:
+            return await callback.answer('Ozon не подключён.',show_alert=True)
+        if source=='wildberries' and ctx.wb_connection_id is None:
+            return await callback.answer('Wildberries не подключён.',show_alert=True)
+        await callback.answer()
+        if callback.message:
+            await callback.message.edit_text(
+                f'📥 <b>{backfill_source_label(source)}</b>\nВыберите период:',
+                parse_mode='HTML',reply_markup=backfill_period_keyboard(source))
+
+    @dp.callback_query(F.data.startswith('backfill:period:'))
+    async def cb_backfill_period(callback: types.CallbackQuery):
+        if callback.from_user is None or not ctx.repository.can_user(callback.from_user.id,ctx.shop_id,'operate'):
+            return await callback.answer('Недостаточно прав.',show_alert=True)
+        parts=(callback.data or '').split(':')
+        if len(parts)!=4:
+            return await callback.answer('Некорректный период.',show_alert=True)
+        source=parts[2]
+        try: days=int(parts[3])
+        except ValueError: return await callback.answer('Некорректный период.',show_alert=True)
+        days=max(1,min(days,90))
+        end=local_now().date()-timedelta(days=1)
+        start=end-timedelta(days=days-1)
+        await callback.answer()
+        if callback.message:
+            await callback.message.edit_text(
+                f'⏳ Запускаю {backfill_source_label(source)} за {days} дн.…',
+                parse_mode='HTML')
+            await execute_backfill(callback.message,source=source,start=start,end=end)
+
+    @dp.callback_query(F.data.startswith('backfill:custom:'))
+    async def cb_backfill_custom(callback: types.CallbackQuery, state: FSMContext):
+        if callback.from_user is None or not ctx.repository.can_user(callback.from_user.id,ctx.shop_id,'operate'):
+            return await callback.answer('Недостаточно прав.',show_alert=True)
+        source=(callback.data or '').rsplit(':',1)[-1]
+        await state.clear()
+        await state.set_state(BackfillStates.custom_period)
+        await state.update_data(backfill_source=source)
+        await callback.answer()
+        if callback.message:
+            await callback.message.edit_text(
+                f'📅 <b>{backfill_source_label(source)} · свой период</b>\n'
+                'Введите две даты через пробел:\n<code>YYYY-MM-DD YYYY-MM-DD</code>\n'
+                'Максимум 90 завершённых дней.',
+                parse_mode='HTML')
+
+    @dp.message(StateFilter(BackfillStates.custom_period), F.text)
+    async def backfill_custom_period(message: types.Message, state: FSMContext):
+        if not allowed(message,'operate'):
+            await state.clear()
+            return await denied(message,'operate')
         parts=(message.text or '').split()
-        try: days=int(parts[1]) if len(parts)>1 else ctx.settings.backfill_days
-        except ValueError: return await message.answer('Формат: /backfill или /backfill 30')
-        days=max(1,min(days,90)); end=local_now().date()-timedelta(days=1); start=end-timedelta(days=days-1)
-        if ctx.job_lock.locked(): return await message.answer('⏳ Уже выполняется другая выгрузка.')
-        await message.answer(f'📥 Загружаю {start} — {end}. Ошибки не затирают успешные данные.')
+        if len(parts)!=2:
+            return await message.answer('⚠️ Введите две даты: <code>YYYY-MM-DD YYYY-MM-DD</code>',parse_mode='HTML')
         try:
-            outcomes=await ctx.backfill_orders(start,end)
-        except RuntimeError as exc:
-            return await message.answer(f'⏳ {escape(str(exc)[:300])}')
-        ok=sum(1 for x in outcomes if x.ok); failed=sum(1 for x in outcomes if not x.ok)
-        await message.answer(f'✅ Backfill завершён: успешных дневных записей {ok}, ошибок {failed}.')
-        await send(message,format_daily(build_daily_report(ctx.repository,ctx.shop_id,end)))
+            start=date.fromisoformat(parts[0]); end=date.fromisoformat(parts[1])
+        except ValueError:
+            return await message.answer('⚠️ Неверный формат даты. Пример: <code>2026-09-01 2026-09-29</code>',parse_mode='HTML')
+        data=await state.get_data()
+        source=str(data.get('backfill_source') or 'all')
+        await state.clear()
+        await execute_backfill(message,source=source,start=start,end=end)
 
     @dp.message(Command('products'))
     async def cmd_products(message: types.Message):
