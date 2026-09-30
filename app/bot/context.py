@@ -103,6 +103,12 @@ class AppContext:
             return out
 
     async def backfill_orders(self, start: date, end: date, marketplace: str = 'all'):
+        """Incrementally load order history, reusing already-complete DB days.
+
+        Marketplace APIs are called only when the requested source has at least
+        one missing day. For range-shaped APIs we start at the earliest gap;
+        already-complete days before that gap are never requested again.
+        """
         if self.demo_mode(): return []
         source=(marketplace or 'all').strip().lower()
         if source not in {'all','ozon','wildberries','wb'}:
@@ -121,10 +127,49 @@ class AppContext:
         if self.backfill_running() and self.active_backfill_task is not task:
             raise RuntimeError('Уже выполняется другая загрузка истории.')
         self.active_backfill_task=task
+
+        async def one_source(connection_id: int, market: str) -> list[CollectionOutcome]:
+            complete=set(self.repository.successful_order_dates(
+                connection_id,start.isoformat(),end.isoformat()))
+            requested=[]
+            current=start
+            while current<=end:
+                requested.append(current.isoformat())
+                current += __import__('datetime').timedelta(days=1)
+            missing=[ds for ds in requested if ds not in complete]
+            if not missing:
+                out=[]
+                for ds in requested:
+                    run=self.repository.last_successful_order_run(connection_id,ds)
+                    out.append(CollectionOutcome(
+                        market,ds,True,run.id if run else 0,'orders already loaded'))
+                return out
+            fetch_start=date.fromisoformat(missing[0])
+            out=[]
+            for ds in requested:
+                if ds>=fetch_start.isoformat():
+                    break
+                run=self.repository.last_successful_order_run(connection_id,ds)
+                out.append(CollectionOutcome(
+                    market,ds,True,run.id if run else 0,'orders already loaded'))
+            if market=='wildberries':
+                out += await self.collector.backfill_orders(
+                    start=fetch_start,end=end,shop_id=self.shop_id,
+                    wb_connection_id=connection_id,ozon_connection_id=None)
+            else:
+                out += await self.collector.backfill_orders(
+                    start=fetch_start,end=end,shop_id=self.shop_id,
+                    wb_connection_id=None,ozon_connection_id=connection_id)
+            return out
+
         try:
             async with self.operation_lock('backfill'):
-                return await self.collector.backfill_orders(start=start,end=end,shop_id=self.shop_id,
-                    wb_connection_id=wb_id,ozon_connection_id=ozon_id)
+                outcomes=[]
+                if wb_id is not None:
+                    outcomes += await one_source(wb_id,'wildberries')
+                if ozon_id is not None:
+                    outcomes += await one_source(ozon_id,'ozon')
+                return outcomes
         finally:
             if self.active_backfill_task is task:
                 self.active_backfill_task=None
