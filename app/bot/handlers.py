@@ -35,7 +35,8 @@ from .context import AppContext
 from .keyboards import (
     main_keyboard, reports_keyboard, products_keyboard, money_keyboard, supply_keyboard,
     control_keyboard, shop_keyboard, service_keyboard, input_keyboard, shop_picker_keyboard,
-    shop_confirm_keyboard, backfill_source_keyboard, backfill_period_keyboard, backfill_running_keyboard, COMMAND_BUTTONS,
+    shop_confirm_keyboard, backfill_source_keyboard, backfill_period_keyboard, backfill_running_keyboard,
+    action_center_keyboard, action_item_keyboard, action_ref, COMMAND_BUTTONS,
     MENU_REPORTS, MENU_PRODUCTS, MENU_MONEY, MENU_SUPPLY, MENU_CONTROL, MENU_SHOP, MENU_SERVICE,
     HOME, BACK, CANCEL,
 )
@@ -1229,11 +1230,89 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
         else: lines += ['', '🟢 Активных проблем нет.']
         await send(message,'\n'.join(lines))
 
+    def current_action_center():
+        end=local_now().date()-timedelta(days=1)
+        return build_action_center(ctx.repository,ctx.shop_id,end,persist=False)
+
+    def find_action_by_ref(ref: str):
+        center=current_action_center()
+        item=next((x for x in center.items if action_ref(str(x.action_key))==ref),None)
+        return center,item
+
     @dp.message(Command('actions'))
     async def cmd_actions(message: types.Message):
         if not allowed(message): return await denied(message)
         end=local_now().date()-timedelta(days=1)
-        await send(message,format_action_center(build_action_center(ctx.repository,ctx.shop_id,end,persist=allowed(message,'operate'))))
+        center=build_action_center(ctx.repository,ctx.shop_id,end,persist=allowed(message,'operate'))
+        await message.answer(
+            format_action_center(center),
+            parse_mode='HTML',
+            reply_markup=action_center_keyboard(center.items) if center.items else keyboard_for(message))
+
+    @dp.callback_query(F.data == 'action:list')
+    async def cb_action_list(callback: types.CallbackQuery):
+        if callback.from_user is None or not ctx.repository.can_user(callback.from_user.id,ctx.shop_id,'view'):
+            return await callback.answer('Недостаточно прав.',show_alert=True)
+        center=current_action_center()
+        await callback.answer()
+        if callback.message:
+            await callback.message.edit_text(
+                format_action_center(center),
+                parse_mode='HTML',
+                reply_markup=action_center_keyboard(center.items) if center.items else None)
+
+    @dp.callback_query(F.data.startswith('action:view:'))
+    async def cb_action_view(callback: types.CallbackQuery):
+        if callback.from_user is None or not ctx.repository.can_user(callback.from_user.id,ctx.shop_id,'view'):
+            return await callback.answer('Недостаточно прав.',show_alert=True)
+        ref=(callback.data or '').rsplit(':',1)[-1]
+        _,item=find_action_by_ref(ref)
+        if item is None:
+            return await callback.answer('Действие уже изменилось или исчезло.',show_alert=True)
+        state=' · ✅ принято' if item.status=='acknowledged' else (' · ⏰ отложено' if item.status=='snoozed' else '')
+        lines=[
+            f'🎯 <b>{escape(item.title)}</b>{state}',
+            escape(item.detail),
+        ]
+        if item.evidence:
+            lines += ['', '<b>Почему:</b>', '• '+escape(' · '.join(item.evidence[:5]))]
+        if item.hint:
+            lines += ['', '<b>Где посмотреть:</b>', escape(item.hint)]
+        await callback.answer()
+        if callback.message:
+            await callback.message.edit_text(
+                '\n'.join(lines),parse_mode='HTML',
+                reply_markup=action_item_keyboard(ref) if ctx.repository.can_user(callback.from_user.id,ctx.shop_id,'operate') else None)
+
+    @dp.callback_query(F.data.startswith('action:ack:'))
+    async def cb_action_ack(callback: types.CallbackQuery):
+        if callback.from_user is None or not ctx.repository.can_user(callback.from_user.id,ctx.shop_id,'operate'):
+            return await callback.answer('Недостаточно прав.',show_alert=True)
+        ref=(callback.data or '').rsplit(':',1)[-1]
+        _,item=find_action_by_ref(ref)
+        if item is None:
+            return await callback.answer('Действие уже изменилось или исчезло.',show_alert=True)
+        ok=ctx.repository.set_action_status(ctx.shop_id,item.action_key,'acknowledged',telegram_user_id=callback.from_user.id)
+        await callback.answer('Принято' if ok else 'Не удалось обновить',show_alert=not ok)
+        if callback.message and ok:
+            await callback.message.edit_reply_markup(reply_markup=action_item_keyboard(ref))
+
+    @dp.callback_query(F.data.startswith('action:snooze:'))
+    async def cb_action_snooze(callback: types.CallbackQuery):
+        if callback.from_user is None or not ctx.repository.can_user(callback.from_user.id,ctx.shop_id,'operate'):
+            return await callback.answer('Недостаточно прав.',show_alert=True)
+        ref=(callback.data or '').rsplit(':',1)[-1]
+        _,item=find_action_by_ref(ref)
+        if item is None:
+            return await callback.answer('Действие уже изменилось или исчезло.',show_alert=True)
+        ok=ctx.repository.set_action_status(
+            ctx.shop_id,item.action_key,'snoozed',
+            telegram_user_id=callback.from_user.id,snooze_hours=24)
+        await callback.answer('Отложено на 24 часа' if ok else 'Не удалось обновить',show_alert=not ok)
+        if callback.message and ok:
+            await callback.message.edit_text(
+                '⏰ <b>Действие отложено на 24 часа.</b>\nОно вернётся, если проблема останется актуальной.',
+                parse_mode='HTML')
 
     @dp.message(Command('action_history'))
     async def cmd_action_history(message: types.Message):
