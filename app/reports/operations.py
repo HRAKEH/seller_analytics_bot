@@ -47,29 +47,32 @@ def format_forecast_quality(report: ForecastQualityReport, limit: int=12) -> str
 
 
 def format_action_center(center: ActionCenter) -> str:
-    lines=[f'🎯 <b>Action Center · {center.as_of.isoformat()}</b>','━━━━━━━━━━━━━━━━']
+    lines=[f'🎯 <b>Что делать сегодня · {center.as_of.isoformat()}</b>','━━━━━━━━━━━━━━━━']
     if not center.items:
-        lines.append('✅ Критичных действий по доступным данным сейчас нет.')
+        lines.append('✅ По доступным данным срочных действий нет.')
         if center.snoozed_count:
             lines.append(f'⏰ Отложено действий: {center.snoozed_count}.')
         return '\n'.join(lines)
     groups={1:('🔴','Срочно'),2:('🟠','Сегодня'),3:('🟡','Планово'),4:('⚪️','Наблюдать')}
+    shown=0
     for priority in (1,2,3,4):
         rows=[x for x in center.items if x.priority==priority]
         if not rows: continue
         icon,label=groups[priority]; lines += ['',f'{icon} <b>{label}</b> · {len(rows)}']
         for item in rows:
+            if shown>=8: break
+            shown+=1
             state=' ✅ принято' if item.status=='acknowledged' else (' ⏰ отложено' if item.status=='snoozed' else '')
-            lines.append(f'• <b>{escape(item.title)}</b>{state}')
+            lines.append(f'{shown}. <b>{escape(item.title)}</b>{state}')
             lines.append(escape(item.detail))
-            if item.evidence:
-                lines.append('  ↳ '+escape(' · '.join(item.evidence[:4])))
-            if item.hint: lines.append(f'  → {escape(item.hint)}')
-            lines.append(f'  <code>{escape(item.action_key)}</code>')
+            if item.hint: lines.append(f'   → {escape(item.hint)}')
+        if shown>=8: break
+    remaining=max(0,len(center.items)-shown)
+    if remaining:
+        lines += ['',f'Ещё действий: {remaining}. Ниже показаны самые приоритетные.']
     if center.snoozed_count:
-        lines += ['',f'⏰ Скрыто отложенных действий: {center.snoozed_count}.']
-    lines += ['','ℹ️ Приоритеты rule-based: P1 — риск остановки/потери продаж; P2 — действие сегодня; P3 — плановая оптимизация; P4 — наблюдение.',
-              '✅ «Принято» не закрывает проблему; она исчезнет только после нормализации фактов.']
+        lines += ['',f'⏰ Отложено и скрыто: {center.snoozed_count}.']
+    lines += ['','Нажмите на нужное действие ниже — откроются детали и кнопки «Принято» / «Отложить».']
     return '\n'.join(lines)
 
 
