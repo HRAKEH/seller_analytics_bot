@@ -59,7 +59,7 @@ def format_period(report) -> str:
     if report.complete_days:
         lines.append(f'🟡 <b>ИТОГО: {num(report.total)} заказанных ед.</b> · {delta(report.total,report.previous_total)}')
     else:
-        lines.append('📭 Нет полностью сопоставимых дней. Запустите /backfill.')
+        lines.append('📭 Нет полностью сопоставимых дней. Откройте «📊 Отчёты» → «📥 Загрузить историю».')
     return '\n'.join(lines)
 
 
@@ -72,7 +72,7 @@ def format_product_report(report) -> str:
     lines=[f'🏆 <b>Товары · {report.start} — {report.end}</b>','━━━━━━━━━━━━━━━━']
     labels={'ozon':'🟣 Ozon','wildberries':'🔵 Wildberries'}
     if not report.top:
-        lines.append('📭 Товарной истории пока нет. Выполните /backfill.')
+        lines.append('📭 Товарной истории пока нет. Откройте «📊 Отчёты» → «📥 Загрузить историю».')
     for market in ('ozon','wildberries'):
         rows=report.top.get(market) or []
         if not rows: continue
@@ -142,7 +142,7 @@ def format_stock_report(report) -> str:
 def format_finance(report) -> str:
     lines=[f'💰 <b>Финансы · {report.start} — {report.end}</b>','━━━━━━━━━━━━━━━━']
     if not report.sources:
-        return '\n'.join(lines+['📭 Финансовые данные ещё не загружены. Используйте /finance.'])
+        return '\n'.join(lines+['📭 Финансовые данные ещё не загружены. Откройте «💰 Деньги и реклама» → «💰 Финансы».'])
     for s in report.sources:
         m=s.metrics
         lines.append(f'\n{source_name(s.marketplace)}')
@@ -163,7 +163,7 @@ def format_finance(report) -> str:
             cov=f'{s.cogs_coverage_pct:.0f}%' if s.cogs_coverage_pct is not None else '—'
             lines.append(f'  оценка себестоимости заказанных ед.: {money(s.estimated_order_cogs)} · покрытие {cov}')
     if report.missing_cost_products:
-        lines.append(f'\n⚠️ Без себестоимости: {report.missing_cost_products} товаров. /cost <wb|ozon> <sku> <руб>')
+        lines.append(f'\n⚠️ Без себестоимости: {report.missing_cost_products} товаров. Откройте «📦 Товары» → «📥 Импорт себестоимости».')
     lines.append('\n<i>Финансовые данные приходят с задержкой. Продажи, начисления и банковская выплата — разные показатели.</i>')
     lines.append('<i>Себестоимость здесь относится к заказанным единицам и является оценкой, а не бухгалтерской прибылью.</i>')
     return '\n'.join(lines)
