@@ -82,6 +82,7 @@ MENU_SUPPLY = '🚚 Поставки'
 MENU_CONTROL = '🚨 Проблемы'
 MENU_SHOP = '🏪 Магазин'
 MENU_SERVICE = '🛠 Ещё'
+MENU_TECH = '🧰 Техническое'
 
 
 def _role(role: str | None) -> str:
@@ -183,8 +184,15 @@ def shop_keyboard(role: str | None = 'owner', *, system_owner: bool = False):
 def service_keyboard(role: str | None = 'owner', *, system_owner: bool = False):
     role = _role(role)
     buttons = ['📤 Экспорт']
-    if role in {'analyst','owner'}:
-        buttons += [COMMAND_BUTTONS['health'], COMMAND_BUTTONS['diagnostics'], COMMAND_BUTTONS['jobs']]
+    if role in {'analyst','owner'} or system_owner:
+        buttons += [MENU_TECH]
+    buttons += [BACK, HOME]
+    return _build(buttons)
+
+
+def technical_keyboard(role: str | None = 'owner', *, system_owner: bool = False):
+    role = _role(role)
+    buttons = [COMMAND_BUTTONS['health'], COMMAND_BUTTONS['diagnostics'], COMMAND_BUTTONS['jobs']]
     if system_owner:
         buttons += [
             COMMAND_BUTTONS['backup'], COMMAND_BUTTONS['backups'], COMMAND_BUTTONS['restore'],
