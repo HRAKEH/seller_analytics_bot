@@ -10,6 +10,7 @@ from app.services.product_analytics import (
     normalize_wb_stocks, normalize_ozon_stocks,
 )
 from app.reports.products import build_product_report
+from app.reports.formatter import format_product_report
 from app.storage import Database, Repository, MetricPoint, ProductMetricPoint, InventoryPoint
 
 
@@ -92,6 +93,31 @@ def test_product_report_uses_successful_days_for_stock_runway(tmp_path):
     assert report.stock_risks[0].coverage_days==14
     assert report.stock_risks[0].avg_daily_units==2
     assert report.stock_risks[0].days_left==5
+
+
+def test_product_growth_is_hidden_when_period_coverage_is_incomplete(tmp_path):
+    repo,shop=make_repo(tmp_path); conn=repo.ensure_connection(shop.id,'ozon','Ozon')
+    product=repo.ensure_product(shop.id,'ozon:gap','Gap'); listing=repo.ensure_listing(product.id,conn.id,'gap')
+    end=date(2026,9,28)
+    for i in range(14):
+        d=end-timedelta(days=13-i); ds=d.isoformat()
+        rid=repo.record_success(conn.id,'analytics/orders',ds,{'day':ds},[
+            MetricPoint(conn.id,ds,'ordered_units',2,'units',True,ds),
+            MetricPoint(conn.id,ds,'ordered_revenue',200,'RUB',True,ds),
+        ])
+        repo.save_product_metrics(rid,[
+            ProductMetricPoint(listing.id,ds,'ordered_units',2,'units','ALL',True,ds),
+            ProductMetricPoint(listing.id,ds,'ordered_revenue',200,'RUB','ALL',True,ds),
+        ])
+    with repo.db.connect() as c:
+        run=c.execute("""SELECT id FROM source_runs WHERE connection_id=? AND data_date='2026-09-27'
+                         AND endpoint='analytics/orders' LIMIT 1""",(conn.id,)).fetchone()
+        assert run is not None
+        c.execute('DELETE FROM source_runs WHERE id=?',(int(run['id']),))
+    report=build_product_report(repo,shop.id,end,days=7)
+    assert report.comparison_complete is False
+    assert report.growth==[] and report.decline==[]
+    assert 'Сравнение роста/просадки скрыто' in format_product_report(report)
 
 
 @pytest.mark.asyncio
