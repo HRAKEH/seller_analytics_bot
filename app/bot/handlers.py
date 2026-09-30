@@ -34,12 +34,12 @@ from app.services.demo import enable_demo, disable_demo
 from .context import AppContext
 from .keyboards import (
     main_keyboard, reports_keyboard, products_keyboard, money_keyboard, supply_keyboard,
-    control_keyboard, shop_keyboard, service_keyboard, input_keyboard, shop_picker_keyboard,
+    control_keyboard, shop_keyboard, service_keyboard, technical_keyboard, input_keyboard, shop_picker_keyboard,
     shop_confirm_keyboard, backfill_source_keyboard, backfill_period_keyboard, backfill_running_keyboard,
     action_center_keyboard, action_item_keyboard, action_ref,
     report_date_keyboard, export_period_keyboard, export_format_keyboard,
     users_admin_keyboard, retry_jobs_keyboard, COMMAND_BUTTONS,
-    MENU_REPORTS, MENU_PRODUCTS, MENU_MONEY, MENU_SUPPLY, MENU_CONTROL, MENU_SHOP, MENU_SERVICE,
+    MENU_REPORTS, MENU_PRODUCTS, MENU_MONEY, MENU_SUPPLY, MENU_CONTROL, MENU_SHOP, MENU_SERVICE, MENU_TECH,
     HOME, BACK, CANCEL,
 )
 
@@ -1522,9 +1522,12 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
         counts=ctx.repository.retry_job_counts(ctx.shop_id); rows=ctx.repository.recent_retry_jobs(12,shop_id=ctx.shop_id)
         lines=['🔁 <b>Ошибки и автоматические повторы</b>','━━━━━━━━━━━━━━━━',
                f'Ждут: {counts.get("pending",0)} · выполняются: {counts.get("running",0)} · исчерпаны: {counts.get("dead",0)} · успешно: {counts.get("success",0)}']
+        job_labels={'daily':'ежедневный отчёт','inventory':'остатки','reconciliation':'сверка',
+                    'advertising':'реклама','promotions':'акции','inbound':'поставки'}
         for r in rows:
             icon={'pending':'⏳','running':'▶️','success':'✅','dead':'❌'}.get(str(r['status']),'•')
-            lines.append(f'{icon} #{r["id"]} · <code>{escape(str(r["job_type"]))}</code> · попыток {r["attempts"]}/{r["max_attempts"]}')
+            job_type=str(r['job_type'])
+            lines.append(f'{icon} #{r["id"]} · {escape(job_labels.get(job_type,job_type))} · попыток {r["attempts"]}/{r["max_attempts"]}')
             if r.get('last_error'): lines.append(f'  {escape(str(r["last_error"])[:140])}')
         markup=retry_jobs_keyboard(rows) if allowed(message,'manage') else None
         await message.answer('\n'.join(lines),parse_mode='HTML',reply_markup=markup or keyboard_for(message))
@@ -1593,7 +1596,13 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
 
     @dp.message(F.text == MENU_SERVICE)
     async def menu_service(message: types.Message):
-        await show_submenu(message,'🛠 <b>Ещё</b>\nЭкспорт, диагностика и служебные функции.',service_keyboard)
+        await show_submenu(message,'🛠 <b>Ещё</b>\nЭкспорт и редкие служебные функции.',service_keyboard)
+
+    @dp.message(F.text == MENU_TECH)
+    async def menu_technical(message: types.Message):
+        await show_submenu(message,
+            '🧰 <b>Техническое</b>\nЭтот раздел нужен редко: диагностика, автоматические повторы, backup и профили ключей.',
+            technical_keyboard)
 
     @dp.message(F.text == BACK)
     async def menu_back(message: types.Message, state: FSMContext):
