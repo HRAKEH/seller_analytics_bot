@@ -1753,7 +1753,7 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
             telegram_user_id=callback.from_user.id,snooze_hours=hours)
         await callback.answer(f'Отложено на {hours} ч.' if ok else 'Действие уже недоступно.',show_alert=not ok)
         if callback.message:
-            await render_action_center(callback.message,page=0,edit=True)
+            await render_action_center(command_copy(callback.message,'actions','',actor_user=callback.from_user),page=0,edit=True)
 
     @dp.callback_query(F.data == 'quick:actions')
     async def cb_quick_actions(callback: types.CallbackQuery):
