@@ -248,6 +248,86 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
         if creds.has_ozon: sources.append('Ozon')
         await message.answer(f'✅ Профиль магазина изменён на <code>{escape(profile)}</code>. API: {" + ".join(sources) or "не найдены в окружении"}.',parse_mode='HTML')
 
+    @dp.message(Command('shop_archive'))
+    async def cmd_shop_archive(message: types.Message):
+        if not allowed(message,'manage'): return await denied(message,'manage')
+        if not is_system_owner(message): return await system_denied(message)
+        if registry is None: return await message.answer('Multi-shop runtime не подключён.')
+        parts=(message.text or '').split(maxsplit=1)
+        if len(parts)<2: return await message.answer('Формат: /shop_archive ID')
+        try: shop_id=int(parts[1])
+        except ValueError: return await message.answer('ID магазина должен быть числом.')
+        shop=registry.repository.get_shop(shop_id)
+        if not shop or shop.seller_id!=registry.seller_id:
+            return await message.answer('⚠️ Магазин не найден.')
+        if shop_id==ctx.shop_id:
+            note='\nТекущий магазин будет переключён при следующем сообщении.'
+        else:
+            note=''
+        try:
+            await registry.archive_shop(shop_id)
+        except Exception as exc:
+            return await message.answer(f'⚠️ Не удалось архивировать магазин: {escape(str(exc)[:300])}')
+        await message.answer(
+            f'🗄 Магазин <b>#{shop.id} {escape(shop.name)}</b> перемещён в архив.\n'
+            'Его данные сохранены, scheduler и API-запросы для него остановлены.'
+            + note, parse_mode='HTML', reply_markup=keyboard_for(message))
+
+    @dp.message(Command('shop_archived'))
+    async def cmd_shop_archived(message: types.Message):
+        if not allowed(message,'manage'): return await denied(message,'manage')
+        if not is_system_owner(message): return await system_denied(message)
+        if registry is None: return await message.answer('Multi-shop runtime не подключён.')
+        shops=registry.repository.archived_shops(registry.seller_id)
+        lines=['🗂 <b>Архив магазинов</b>','━━━━━━━━━━━━━━━━']
+        if not shops:
+            lines.append('Архив пуст.')
+        else:
+            for shop in shops:
+                lines.append(f'• <b>#{shop.id} {escape(shop.name)}</b> · <code>{escape(shop.credential_profile)}</code>')
+            lines += ['', 'Вернуть: «♻️ Вернуть магазин».',
+                      'Удалить навсегда: «🗑 Удалить магазин».']
+        await send(message,'\n'.join(lines))
+
+    @dp.message(Command('shop_restore'))
+    async def cmd_shop_restore(message: types.Message):
+        if not allowed(message,'manage'): return await denied(message,'manage')
+        if not is_system_owner(message): return await system_denied(message)
+        if registry is None: return await message.answer('Multi-shop runtime не подключён.')
+        parts=(message.text or '').split(maxsplit=1)
+        if len(parts)<2: return await message.answer('Формат: /shop_restore ID')
+        try: shop_id=int(parts[1])
+        except ValueError: return await message.answer('ID магазина должен быть числом.')
+        try:
+            ctx2=await registry.restore_shop(shop_id)
+        except Exception as exc:
+            return await message.answer(f'⚠️ Не удалось вернуть магазин: {escape(str(exc)[:300])}')
+        shop=registry.repository.get_shop(ctx2.shop_id)
+        await message.answer(f'♻️ Магазин <b>#{shop.id} {escape(shop.name)}</b> восстановлен и снова участвует в scheduler.',parse_mode='HTML')
+
+    @dp.message(Command('shop_delete'))
+    async def cmd_shop_delete(message: types.Message):
+        if not allowed(message,'manage'): return await denied(message,'manage')
+        if not is_system_owner(message): return await system_denied(message)
+        if registry is None: return await message.answer('Multi-shop runtime не подключён.')
+        parts=(message.text or '').split()
+        if len(parts)<3 or parts[2].upper()!='DELETE':
+            return await message.answer(
+                '⚠️ Безвозвратное удаление. Сначала магазин должен быть в архиве.\n'
+                'Формат: <code>/shop_delete ID DELETE</code>', parse_mode='HTML')
+        try: shop_id=int(parts[1])
+        except ValueError: return await message.answer('ID магазина должен быть числом.')
+        shop=registry.repository.get_shop(shop_id)
+        if not shop or shop.seller_id!=registry.seller_id:
+            return await message.answer('⚠️ Магазин не найден.')
+        try:
+            await registry.delete_archived_shop(shop_id)
+        except Exception as exc:
+            return await message.answer(f'⚠️ Не удалось удалить магазин: {escape(str(exc)[:300])}')
+        await message.answer(
+            f'🗑 Магазин <b>#{shop.id} {escape(shop.name)}</b> удалён безвозвратно вместе с его данными.',
+            parse_mode='HTML')
+
     @dp.message(Command('profiles'))
     async def cmd_profiles(message: types.Message):
         if not allowed(message,'manage'): return await denied(message,'manage')
@@ -1065,6 +1145,9 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
         'shop': ('shop', cmd_shop),
         'shop_add': ('shop_add', cmd_shop_add),
         'shop_profile': ('shop_profile', cmd_shop_profile),
+        'shop_archive': ('shop_archive', cmd_shop_archive),
+        'shop_restore': ('shop_restore', cmd_shop_restore),
+        'shop_delete': ('shop_delete', cmd_shop_delete),
         'user_add': ('user_add', cmd_user_add),
         'user_remove': ('user_remove', cmd_user_remove),
         'export': ('export', cmd_export),
@@ -1083,6 +1166,9 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
         'shop': '🔁 <b>Выбор магазина</b>\nВведите ID магазина. Его можно посмотреть кнопкой «🏪 Список магазинов».',
         'shop_add': '➕ <b>Новый магазин</b>\nВведите: <code>Название | PROFILE</code>\nПример: <code>Мой второй магазин | SHOP2</code>',
         'shop_profile': '🔐 <b>Профиль ключей</b>\nВведите имя профиля окружения, например <code>SHOP2</code>.',
+        'shop_archive': '🗄 <b>Архивировать магазин</b>\nВведите ID магазина. Данные сохранятся, scheduler и API-запросы остановятся.',
+        'shop_restore': '♻️ <b>Вернуть магазин</b>\nВведите ID магазина из «🗂 Архив магазинов».',
+        'shop_delete': '🗑 <b>Удалить магазин</b>\nБезвозвратно удаляет только архивный магазин. Введите: <code>ID DELETE</code>.',
         'user_add': '➕ <b>Дать доступ</b>\nВведите: <code>TELEGRAM_ID viewer|analyst|owner [Имя]</code>',
         'user_remove': '➖ <b>Отозвать доступ</b>\nВведите Telegram ID пользователя.',
         'export': '📤 <b>Экспорт</b>\nВведите: <code>дней формат</code>\nНапример: <code>30 xlsx</code> или <code>90 csv</code>.',
@@ -1099,6 +1185,7 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
 
     permissions = {
         'shop': 'view', 'shop_add': 'manage', 'shop_profile': 'manage',
+        'shop_archive': 'manage', 'shop_restore': 'manage', 'shop_delete': 'manage',
         'user_add': 'manage', 'user_remove': 'manage', 'export': 'view',
         'day': 'operate', 'link': 'operate', 'cost': 'operate',
         'supply_sku': 'view', 'supply_defaults': 'manage', 'supply_set': 'manage',
@@ -1108,7 +1195,7 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
     async def launch_input_action(message: types.Message, state: FSMContext, action: str):
         permission=permissions[action]
         if not allowed(message,permission): return await denied(message,permission)
-        if action in {'shop_add','shop_profile'} and not is_system_owner(message):
+        if action in {'shop_add','shop_profile','shop_archive','shop_restore','shop_delete'} and not is_system_owner(message):
             return await system_denied(message)
         await start_menu_input(message,state,action,prompts[action])
 
@@ -1118,6 +1205,12 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
     async def btn_menu_shop_add(message: types.Message,state: FSMContext): await launch_input_action(message,state,'shop_add')
     @dp.message(F.text == COMMAND_BUTTONS['shop_profile'])
     async def btn_menu_shop_profile(message: types.Message,state: FSMContext): await launch_input_action(message,state,'shop_profile')
+    @dp.message(F.text == COMMAND_BUTTONS['shop_archive'])
+    async def btn_menu_shop_archive(message: types.Message,state: FSMContext): await launch_input_action(message,state,'shop_archive')
+    @dp.message(F.text == COMMAND_BUTTONS['shop_restore'])
+    async def btn_menu_shop_restore(message: types.Message,state: FSMContext): await launch_input_action(message,state,'shop_restore')
+    @dp.message(F.text == COMMAND_BUTTONS['shop_delete'])
+    async def btn_menu_shop_delete(message: types.Message,state: FSMContext): await launch_input_action(message,state,'shop_delete')
     @dp.message(F.text == COMMAND_BUTTONS['user_add'])
     async def btn_menu_user_add(message: types.Message,state: FSMContext): await launch_input_action(message,state,'user_add')
     @dp.message(F.text == COMMAND_BUTTONS['user_remove'])
@@ -1159,6 +1252,8 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
     async def btn_menu_shops(message: types.Message): await cmd_shops(message)
     @dp.message(F.text == COMMAND_BUTTONS['profiles'])
     async def btn_menu_profiles(message: types.Message): await cmd_profiles(message)
+    @dp.message(F.text == COMMAND_BUTTONS['shop_archived'])
+    async def btn_menu_shop_archived(message: types.Message): await cmd_shop_archived(message)
     @dp.message(F.text == COMMAND_BUTTONS['users'])
     async def btn_menu_users(message: types.Message): await cmd_users(message)
     @dp.message(F.text == COMMAND_BUTTONS['my_access'])
