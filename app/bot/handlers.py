@@ -1825,9 +1825,8 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
 
     @dp.callback_query(F.data.startswith('shopadmin:'))
     async def cb_shop_admin(callback: types.CallbackQuery, state: FSMContext):
-        if callback.from_user is None or not is_system_owner(callback.message):
-            if callback.from_user is None or callback.from_user.id not in ctx.settings.owner_ids:
-                return await callback.answer('Только system owner.',show_alert=True)
+        if callback.from_user is None or callback.from_user.id not in ctx.settings.owner_ids:
+            return await callback.answer('Только system owner.',show_alert=True)
         action=(callback.data or '').split(':',1)[1]
         if action=='cancel':
             await callback.answer('Закрыто')
