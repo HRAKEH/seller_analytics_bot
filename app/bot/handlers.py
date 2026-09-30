@@ -186,7 +186,8 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
         except asyncio.CancelledError:
             return await message.answer(
                 '🛑 <b>Загрузка истории остановлена.</b>\n'
-                'Уже сохранённые данные остались в БД. Повторный запуск можно сделать сразу.',
+                'Уже сохранённые данные остались в БД. Отмена не сбрасывает лимит WB: '
+                'если API уже вернул 429, при новом запуске нужно учитывать его cooldown.',
                 parse_mode='HTML')
         except (RuntimeError,ValueError) as exc:
             return await message.answer(f'⚠️ {escape(str(exc)[:400])}')
