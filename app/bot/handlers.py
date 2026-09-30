@@ -1185,13 +1185,21 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
                 order_lookback_days=p.alert_order_lookback_days,api_stale_hours=p.alert_api_stale_hours,
                 drr_pct=p.alert_drr_pct,stock_risk_days=p.stock_risk_days,stock_velocity_days=p.stock_velocity_days)
         active=ctx.repository.active_alert_states(ctx.shop_id); lines=[]
-        lines += ['🚨 <b>Изменения алертов</b>']+['• '+escape(n.message) for n in notes] if notes else ['✅ Новых изменений алертов нет.']
+        lines += ['🚨 <b>Проблемы магазина</b>']
+        if notes:
+            lines += ['','<b>Что изменилось</b>']+['• '+escape(n.message) for n in notes]
         if active:
-            lines += ['', '<b>Активные проблемы</b>']
-            for row in active[:20]:
-                value='' if row.get('last_value') is None else f" · значение {float(row['last_value']):.1f}"
-                lines.append(f"• {escape(str(row['rule_key']))} · {escape(str(row['subject_key']))}{value}")
-        else: lines += ['', '🟢 Активных проблем нет.']
+            lines += ['', '<b>Сейчас требуют внимания</b>']
+            labels={'api_stale':'Источник давно не обновлялся','order_drop':'Падение заказов','high_drr':'Высокий ДРР','low_stock':'Мало остатка'}
+            for row in active[:12]:
+                rule=str(row['rule_key']); subject=str(row['subject_key'])
+                value='' if row.get('last_value') is None else f" · {float(row['last_value']):.1f}"
+                market='Wildberries' if subject=='wildberries' else ('Ozon' if subject=='ozon' else subject)
+                lines.append(f"• <b>{escape(labels.get(rule,rule))}</b> · {escape(market)}{value}")
+                if rule=='api_stale':
+                    lines.append('  → Сначала «⚙️ Магазин» → «🔌 Проверить API». Для истории: «📊 Отчёты» → «📥 Догрузить данные».')
+        else:
+            lines += ['', '🟢 Активных проблем нет.']
         await send(message,'\n'.join(lines))
 
     @dp.message(Command('actions'))
@@ -1409,8 +1417,8 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
             icon={'pending':'⏳','running':'▶️','success':'✅','dead':'❌'}.get(str(r['status']),'•')
             lines.append(f'{icon} #{r["id"]} · <code>{escape(str(r["job_type"]))}</code> · попыток {r["attempts"]}/{r["max_attempts"]}')
             if r.get('last_error'): lines.append(f'  {escape(str(r["last_error"])[:140])}')
-        if allowed(message,'manage'): lines += ['', 'Повторить вручную: кнопка «🔁 Повторить retry-задачу».']
-        await send(message,'\n'.join(lines))
+        markup=retry_jobs_keyboard(rows) if allowed(message,'manage') else None
+        await message.answer('\n'.join(lines),parse_mode='HTML',reply_markup=markup or keyboard_for(message))
 
     @dp.message(Command('job_retry'))
     async def cmd_job_retry(message: types.Message):
@@ -1934,9 +1942,6 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
 
     @dp.message(F.text == '🏪 Магазины')
     async def btn_shops(message: types.Message): await cmd_shops(message)
-
-    @dp.message(F.text == '📤 Экспорт')
-    async def btn_export(message: types.Message): await cmd_export(message)
 
     @dp.message(F.text == '💾 Backup')
     async def btn_backup(message: types.Message): await cmd_backup(message)
