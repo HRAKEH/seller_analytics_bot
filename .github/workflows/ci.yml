@@ -16,6 +16,8 @@ jobs:
       LOG_FORMAT: "json"
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: 013ed48f1aeb1864c020343feb56d929510567b0
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
@@ -36,3 +38,12 @@ jobs:
         run: python scripts/release_audit.py
       - name: Deployment preflight
         run: python scripts/preflight.py
+
+      - name: Package current stage
+        run: zip -qr seller_analytics_bot_current_stage.zip . -x '.git/*' 'seller_analytics_bot_current_stage.zip'
+      - name: Upload current stage
+        uses: actions/upload-artifact@v4
+        with:
+          name: seller_analytics_bot_current_stage
+          path: seller_analytics_bot_current_stage.zip
+          if-no-files-found: error
