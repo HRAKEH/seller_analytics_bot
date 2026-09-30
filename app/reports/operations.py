@@ -46,30 +46,30 @@ def format_forecast_quality(report: ForecastQualityReport, limit: int=12) -> str
     return '\n'.join(lines)
 
 
-def format_action_center(center: ActionCenter) -> str:
-    lines=[f'🎯 <b>Action Center · {center.as_of.isoformat()}</b>','━━━━━━━━━━━━━━━━']
-    if not center.items:
-        lines.append('✅ Критичных действий по доступным данным сейчас нет.')
+def format_action_center(center: ActionCenter, limit: int=12) -> str:
+    shown=center.items[:max(1,limit)]
+    lines=[f'🎯 <b>Что делать · {center.as_of.isoformat()}</b>','━━━━━━━━━━━━━━━━']
+    if not shown:
+        lines.append('✅ По доступным данным действий сейчас нет.')
         if center.snoozed_count:
             lines.append(f'⏰ Отложено действий: {center.snoozed_count}.')
         return '\n'.join(lines)
     groups={1:('🔴','Срочно'),2:('🟠','Сегодня'),3:('🟡','Планово'),4:('⚪️','Наблюдать')}
     for priority in (1,2,3,4):
-        rows=[x for x in center.items if x.priority==priority]
+        rows=[x for x in shown if x.priority==priority]
         if not rows: continue
-        icon,label=groups[priority]; lines += ['',f'{icon} <b>{label}</b> · {len(rows)}']
+        icon,label=groups[priority]; lines += ['',f'{icon} <b>{label}</b>']
         for item in rows:
             state=' ✅ принято' if item.status=='acknowledged' else (' ⏰ отложено' if item.status=='snoozed' else '')
             lines.append(f'• <b>{escape(item.title)}</b>{state}')
-            lines.append(escape(item.detail))
-            if item.evidence:
-                lines.append('  ↳ '+escape(' · '.join(item.evidence[:4])))
+            lines.append('  '+escape(item.detail))
             if item.hint: lines.append(f'  → {escape(item.hint)}')
-            lines.append(f'  <code>{escape(item.action_key)}</code>')
+    hidden=max(0,len(center.items)-len(shown))
+    if hidden:
+        lines += ['',f'… ещё действий: {hidden}. Показаны самые приоритетные.']
     if center.snoozed_count:
-        lines += ['',f'⏰ Скрыто отложенных действий: {center.snoozed_count}.']
-    lines += ['','ℹ️ Приоритеты rule-based: P1 — риск остановки/потери продаж; P2 — действие сегодня; P3 — плановая оптимизация; P4 — наблюдение.',
-              '✅ «Принято» не закрывает проблему; она исчезнет только после нормализации фактов.']
+        lines += [f'⏰ Скрыто отложенных действий: {center.snoozed_count}.']
+    lines += ['','ℹ️ Здесь только приоритетные действия простым списком; технические коды скрыты.']
     return '\n'.join(lines)
 
 
