@@ -1,11 +1,15 @@
 """Shared async HTTP primitives for marketplace integrations."""
 from __future__ import annotations
 import asyncio
+import logging
 import random
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from typing import Any
 import httpx
+
+log=logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class FetchResult:
@@ -24,6 +28,32 @@ class FetchResult:
     @classmethod
     def failure(cls, source: str, error: str, status_code: int | None, attempts: int):
         return cls(source, False, None, error, status_code, None, attempts)
+
+def _server_retry_delay(response: httpx.Response) -> float | None:
+    """Return the server-requested retry delay in seconds.
+
+    WB documents X-Ratelimit-Retry as the safe retry delay for 429 responses.
+    Retry-After is supported as seconds or an HTTP date for other APIs.
+    X-Ratelimit-Reset is a conservative fallback when Retry is absent.
+    """
+    for name in ('X-Ratelimit-Retry','Retry-After','X-Ratelimit-Reset'):
+        raw=response.headers.get(name)
+        if not raw:
+            continue
+        try:
+            return max(1.0,float(raw))
+        except (TypeError,ValueError):
+            if name!='Retry-After':
+                continue
+            try:
+                target=parsedate_to_datetime(raw)
+                if target.tzinfo is None:
+                    target=target.replace(tzinfo=timezone.utc)
+                return max(1.0,(target-datetime.now(timezone.utc)).total_seconds())
+            except (TypeError,ValueError,OverflowError):
+                continue
+    return None
+
 
 class MarketplaceClient:
     def __init__(self, source: str, base_url: str, *, timeout: float = 60,
@@ -72,14 +102,20 @@ class MarketplaceClient:
                             return FetchResult.success(self.source, response.json(), 200, attempt)
                         except ValueError:
                             return FetchResult.failure(self.source, 'Некорректный JSON', 200, attempt)
-                    if response.status_code == 429 or 500 <= response.status_code < 600:
+                    if response.status_code == 429:
+                        if attempt > self.max_retries:
+                            return FetchResult.failure(self.source, f'HTTP 429: {response.text[:300]}', 429, attempt)
+                        requested=_server_retry_delay(response)
+                        retry_wait=requested if requested is not None else min(120.0, 2 ** attempt * 2)
+                        # Never retry earlier than the marketplace explicitly asks.
+                        self._rate_next[rate_key] = max(self._rate_next.get(rate_key, 0.0), loop.time() + retry_wait)
+                        log.warning(
+                            'Rate limited by %s; retrying in %.1f seconds (attempt %s/%s, rate_key=%s)',
+                            self.source,retry_wait,attempt,self.max_retries+1,rate_key)
+                    elif 500 <= response.status_code < 600:
                         if attempt > self.max_retries:
                             return FetchResult.failure(self.source, f'HTTP {response.status_code}: {response.text[:300]}', response.status_code, attempt)
-                        raw = response.headers.get('Retry-After') or response.headers.get('X-Ratelimit-Retry')
-                        try:
-                            retry_wait = min(600.0, max(1.0, float(raw))) if raw else min(120.0, 2 ** attempt * 2)
-                        except ValueError:
-                            retry_wait = min(120.0, 2 ** attempt * 2)
+                        retry_wait=min(120.0, 2 ** attempt * 2)
                         self._rate_next[rate_key] = max(self._rate_next.get(rate_key, 0.0), loop.time() + retry_wait)
                     else:
                         return FetchResult.failure(self.source, f'HTTP {response.status_code}: {response.text[:300]}', response.status_code, attempt)

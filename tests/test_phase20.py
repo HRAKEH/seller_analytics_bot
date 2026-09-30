@@ -237,3 +237,25 @@ def test_shop_picker_keyboard_uses_one_tap_callbacks(monkeypatch):
     assert ('Первый','shop:select:7') in markup
     assert ('✅ Второй','shop:select:9') in markup
     assert ('❌ Отмена','shop:cancel') in markup
+
+
+def test_backfill_picker_uses_marketplace_and_period_callbacks(monkeypatch):
+    kb=_load_keyboard_module_with_stub(monkeypatch)
+    sources=kb.backfill_source_keyboard(has_ozon=True,has_wb=True)
+    assert ('🟣 Ozon','backfill:source:ozon') in sources
+    assert ('🔵 Wildberries','backfill:source:wildberries') in sources
+    assert ('🟣🔵 Оба маркетплейса','backfill:source:all') in sources
+    period=kb.backfill_period_keyboard('wildberries')
+    assert ('7 дней','backfill:period:wildberries:7') in period
+    assert ('30 дней','backfill:period:wildberries:30') in period
+    assert ('📅 Свой период','backfill:custom:wildberries') in period
+
+
+def test_context_backfill_routes_selected_marketplace():
+    src=(ROOT/'app/bot/context.py').read_text(encoding='utf-8')
+    start=src.index('    async def backfill_orders')
+    end=src.index('    async def collect_inventory',start)
+    block=src[start:end]
+    assert "source in {'all','wildberries','wb'}" in block
+    assert "source in {'all','ozon'}" in block
+    assert 'wb_connection_id=wb_id,ozon_connection_id=ozon_id' in block

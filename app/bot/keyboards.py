@@ -216,3 +216,28 @@ def shop_confirm_keyboard(action: str, shop_id: int):
     kb.button(text='❌ Отмена',callback_data='shop:cancel')
     kb.adjust(1)
     return kb.as_markup()
+
+
+def backfill_source_keyboard(*, has_ozon: bool, has_wb: bool):
+    kb=InlineKeyboardBuilder()
+    if has_ozon:
+        kb.button(text='🟣 Ozon',callback_data='backfill:source:ozon')
+    if has_wb:
+        kb.button(text='🔵 Wildberries',callback_data='backfill:source:wildberries')
+    if has_ozon and has_wb:
+        kb.button(text='🟣🔵 Оба маркетплейса',callback_data='backfill:source:all')
+    kb.button(text='❌ Отмена',callback_data='backfill:cancel')
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+def backfill_period_keyboard(source: str):
+    clean=(source or 'all').strip().lower()
+    kb=InlineKeyboardBuilder()
+    for days in (7,30,60,90):
+        kb.button(text=f'{days} дней',callback_data=f'backfill:period:{clean}:{days}')
+    kb.button(text='📅 Свой период',callback_data=f'backfill:custom:{clean}')
+    kb.button(text='⬅️ Назад',callback_data='backfill:source_picker')
+    kb.button(text='❌ Отмена',callback_data='backfill:cancel')
+    kb.adjust(2,2,1,2)
+    return kb.as_markup()

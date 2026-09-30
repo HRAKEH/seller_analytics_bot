@@ -89,11 +89,22 @@ class AppContext:
                 out.append(item)
             return out
 
-    async def backfill_orders(self, start: date, end: date):
+    async def backfill_orders(self, start: date, end: date, marketplace: str = 'all'):
         if self.demo_mode(): return []
+        source=(marketplace or 'all').strip().lower()
+        if source not in {'all','ozon','wildberries','wb'}:
+            raise ValueError('marketplace must be all, ozon or wildberries')
+        wb_id=self.wb_connection_id if source in {'all','wildberries','wb'} else None
+        ozon_id=self.ozon_connection_id if source in {'all','ozon'} else None
+        if source in {'wildberries','wb'} and wb_id is None:
+            raise ValueError('Wildberries не подключён к текущему магазину.')
+        if source=='ozon' and ozon_id is None:
+            raise ValueError('Ozon не подключён к текущему магазину.')
+        if source=='all' and wb_id is None and ozon_id is None:
+            raise ValueError('К текущему магазину не подключены маркетплейсы.')
         async with self.operation_lock('backfill'):
             return await self.collector.backfill_orders(start=start,end=end,shop_id=self.shop_id,
-                wb_connection_id=self.wb_connection_id,ozon_connection_id=self.ozon_connection_id)
+                wb_connection_id=wb_id,ozon_connection_id=ozon_id)
 
     async def collect_inventory(self, day: date | None = None) -> list[CollectionOutcome]:
         if self.demo_mode(): return []
