@@ -387,6 +387,14 @@ def test_normal_report_buttons_are_cached_and_refresh_is_explicit(monkeypatch):
     assert "@dp.message(F.text == '🔄 Обновить остатки')" in src
 
 
+def test_finance_refresh_does_not_refresh_advertising():
+    src=(ROOT/'app/bot/handlers.py').read_text(encoding='utf-8')
+    block=src[src.index("    @dp.message(Command('finance'))"):src.index("    @dp.message(Command('ads'))")]
+    assert 'collect_finance' in block
+    assert 'collect_advertising' not in block
+    assert 'Финансы обновились не полностью' in block
+
+
 def test_wb_connection_check_fails_fast_and_stops_extra_probes_after_429():
     wb=(ROOT/'app/integrations/wildberries.py').read_text(encoding='utf-8')
     probe=wb[wb.index('    async def ping'):wb.index('    async def orders')]
