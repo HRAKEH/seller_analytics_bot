@@ -321,3 +321,20 @@ def test_wb_readiness_probes_do_not_sleep_on_429():
     src=(ROOT/'app/integrations/wildberries.py').read_text(encoding='utf-8')
     seller=src[src.index('    async def seller_info'):src.index('    async def orders')]
     assert 'retry_on_429=False' in seller
+
+
+def test_normal_report_buttons_do_not_implicitly_refresh_marketplace_apis():
+    src=(ROOT/'app/bot/handlers.py').read_text(encoding='utf-8')
+    finance=src[src.index("@dp.message(F.text == COMMAND_BUTTONS['finance'])"):src.index("@dp.message(F.text == COMMAND_BUTTONS['ads'])")]
+    assert 'ctx.collect_finance' not in finance
+    ads=src[src.index("@dp.message(F.text == COMMAND_BUTTONS['ads'])"):src.index("@dp.message(F.text == COMMAND_BUTTONS['management'])")]
+    assert 'ctx.collect_advertising' not in ads
+    stocks=src[src.index("@dp.message(F.text == '📦 Остатки')"):src.index("@dp.message(F.text == '🔄 Обновить остатки')")]
+    assert 'collect_inventory' not in stocks
+    assert "@dp.message(F.text == '🔄 Обновить финансы')" in src
+    assert "@dp.message(F.text == '🔄 Обновить рекламу')" in src
+
+
+def test_root_menu_finance_label_does_not_collide_with_finance_report_button(monkeypatch):
+    kb=_load_keyboard_module_with_stub(monkeypatch)
+    assert kb.MENU_MONEY != kb.COMMAND_BUTTONS['finance']
