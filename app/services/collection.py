@@ -55,7 +55,7 @@ class CollectionService:
         # endpoint again in the same process.
         if wildberries is not None:
             self._auto_disabled_endpoints=self._shared_wb_auto_disabled.setdefault(
-                wildberries.rate_scope,set())
+                getattr(wildberries,'rate_scope',f'instance:{id(wildberries)}'),set())
         else:
             self._auto_disabled_endpoints=set()
 
