@@ -35,7 +35,9 @@ from .context import AppContext
 from .keyboards import (
     main_keyboard, reports_keyboard, products_keyboard, money_keyboard, supply_keyboard,
     control_keyboard, shop_keyboard, service_keyboard, input_keyboard, shop_picker_keyboard,
-    shop_confirm_keyboard, backfill_source_keyboard, backfill_period_keyboard, backfill_running_keyboard, COMMAND_BUTTONS,
+    shop_confirm_keyboard, backfill_source_keyboard, backfill_period_keyboard, backfill_running_keyboard,
+    date_picker_keyboard, export_picker_keyboard, retry_jobs_keyboard, action_center_keyboard,
+    alert_actions_keyboard, action_token, COMMAND_BUTTONS,
     MENU_REPORTS, MENU_PRODUCTS, MENU_MONEY, MENU_SUPPLY, MENU_CONTROL, MENU_SHOP, MENU_SERVICE,
     HOME, BACK, CANCEL,
 )
@@ -95,9 +97,10 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
     async def show_main_menu(message: types.Message, *, text: str | None = None):
         shop=ctx.repository.get_shop(ctx.shop_id)
         title=text or (
-            f'🏠 <b>Главное меню</b>\n'
-            f'🏪 {escape(shop.name if shop else "Магазин")}\n'
-            f'Выберите раздел:'
+            f'🏠 <b>{escape(shop.name if shop else "Магазин")}</b>\n'
+            'Выберите, что хотите посмотреть.\n\n'
+            'ℹ️ Обычные отчёты читают уже сохранённые данные. '
+            'Кнопки «Обновить», «Догрузить» и «Проверить API» обращаются к маркетплейсам.'
         )
         await message.answer(title,parse_mode='HTML',reply_markup=main_keyboard(role_for(message)))
 
@@ -1182,21 +1185,50 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
             notes=engine.evaluate(ctx.shop_id,today=local_now().date(),order_drop_pct=p.alert_order_drop_pct,
                 order_lookback_days=p.alert_order_lookback_days,api_stale_hours=p.alert_api_stale_hours,
                 drr_pct=p.alert_drr_pct,stock_risk_days=p.stock_risk_days,stock_velocity_days=p.stock_velocity_days)
-        active=ctx.repository.active_alert_states(ctx.shop_id); lines=[]
-        lines += ['🚨 <b>Изменения алертов</b>']+['• '+escape(n.message) for n in notes] if notes else ['✅ Новых изменений алертов нет.']
+        active=ctx.repository.active_alert_states(ctx.shop_id)
+        lines=['🚨 <b>Проблемы магазина</b>','━━━━━━━━━━━━━━━━']
         if active:
-            lines += ['', '<b>Активные проблемы</b>']
-            for row in active[:20]:
-                value='' if row.get('last_value') is None else f" · значение {float(row['last_value']):.1f}"
-                lines.append(f"• {escape(str(row['rule_key']))} · {escape(str(row['subject_key']))}{value}")
-        else: lines += ['', '🟢 Активных проблем нет.']
-        await send(message,'\n'.join(lines))
+            for row in active[:12]:
+                rule=str(row.get('rule_key') or '')
+                subject=str(row.get('subject_key') or '')
+                value=row.get('last_value')
+                market={'wildberries':'Wildberries','ozon':'Ozon'}.get(subject,subject)
+                if rule=='api_stale':
+                    age='нет успешной загрузки' if value is None else f'нет свежей загрузки уже {float(value):.1f} ч.'
+                    lines.append(f'• 🔌 <b>{escape(market)}</b>: {escape(age)}')
+                elif rule=='order_drop':
+                    pct='' if value is None else f' · {float(value):.1f}%'
+                    lines.append(f'• 📉 <b>Падение заказов</b>{pct}')
+                elif rule=='low_stock':
+                    lines.append(f'• 📦 <b>Низкий остаток</b> · {escape(subject)}')
+                elif rule=='high_drr':
+                    pct='' if value is None else f' · {float(value):.1f}%'
+                    lines.append(f'• 📣 <b>Высокий ДРР</b> · {escape(market)}{pct}')
+                else:
+                    lines.append(f'• ⚠️ {escape(rule)} · {escape(subject)}')
+            lines += ['', 'Нажмите «🎯 Что делать», чтобы увидеть конкретные действия по приоритету.']
+        else:
+            lines.append('🟢 Активных проблем нет.')
+        await message.answer('\n'.join(lines),parse_mode='HTML',
+            reply_markup=alert_actions_keyboard(can_operate=allowed(message,'operate')))
+
+    async def render_action_center(message: types.Message, *, page: int=0, edit: bool=False):
+        end=local_now().date()-timedelta(days=1)
+        can_operate=bool(message.from_user and ctx.repository.can_user(message.from_user.id,ctx.shop_id,'operate'))
+        center=build_action_center(ctx.repository,ctx.shop_id,end,persist=can_operate)
+        text=format_action_center(center,page=page,per_page=5)
+        markup=action_center_keyboard(center,page=page,per_page=5,can_operate=can_operate)
+        if edit:
+            try:
+                return await message.edit_text(text,parse_mode='HTML',reply_markup=markup)
+            except Exception:
+                pass
+        return await message.answer(text,parse_mode='HTML',reply_markup=markup)
 
     @dp.message(Command('actions'))
     async def cmd_actions(message: types.Message):
         if not allowed(message): return await denied(message)
-        end=local_now().date()-timedelta(days=1)
-        await send(message,format_action_center(build_action_center(ctx.repository,ctx.shop_id,end,persist=allowed(message,'operate'))))
+        await render_action_center(message)
 
     @dp.message(Command('action_history'))
     async def cmd_action_history(message: types.Message):
@@ -1401,14 +1433,21 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
     async def cmd_jobs(message: types.Message):
         if not allowed(message,'operate'): return await denied(message,'operate')
         counts=ctx.repository.retry_job_counts(ctx.shop_id); rows=ctx.repository.recent_retry_jobs(12,shop_id=ctx.shop_id)
-        lines=['🧰 <b>Persistent retry queue</b>','━━━━━━━━━━━━━━━━',
-               f'pending: {counts.get("pending",0)} · running: {counts.get("running",0)} · dead: {counts.get("dead",0)} · success: {counts.get("success",0)}']
-        for r in rows:
-            icon={'pending':'⏳','running':'▶️','success':'✅','dead':'❌'}.get(str(r['status']),'•')
-            lines.append(f'{icon} #{r["id"]} · <code>{escape(str(r["job_type"]))}</code> · попыток {r["attempts"]}/{r["max_attempts"]}')
-            if r.get('last_error'): lines.append(f'  {escape(str(r["last_error"])[:140])}')
-        if allowed(message,'manage'): lines += ['', 'Повторить вручную: кнопка «🔁 Повторить retry-задачу».']
-        await send(message,'\n'.join(lines))
+        lines=['🔁 <b>Ошибки и автоматические повторы</b>','━━━━━━━━━━━━━━━━',
+               f'Ждут: {counts.get("pending",0)} · выполняются: {counts.get("running",0)} · исчерпаны: {counts.get("dead",0)}']
+        for r in rows[:8]:
+            status=str(r['status'])
+            icon={'pending':'⏳','running':'▶️','success':'✅','dead':'❌'}.get(status,'•')
+            labels={'daily':'ежедневный отчёт','inventory':'остатки','reconciliation':'сверка',
+                    'advertising':'реклама','promotions':'акции','inbound':'поставки'}
+            kind=labels.get(str(r.get('job_type')),str(r.get('job_type')))
+            lines.append(f'{icon} #{r["id"]} · {escape(kind)} · попыток {r["attempts"]}/{r["max_attempts"]}')
+            if status=='dead' and r.get('last_error'):
+                lines.append(f'  ↳ {escape(str(r["last_error"])[:120])}')
+        if not rows:
+            lines.append('✅ Очередь пуста.')
+        markup=retry_jobs_keyboard(rows) if allowed(message,'manage') else None
+        await message.answer('\n'.join(lines),parse_mode='HTML',reply_markup=markup)
 
     @dp.message(Command('job_retry'))
     async def cmd_job_retry(message: types.Message):
@@ -1450,31 +1489,50 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
 
     @dp.message(F.text == MENU_REPORTS)
     async def menu_reports(message: types.Message):
-        await show_submenu(message,'📊 <b>Отчёты</b>\nДень, периоды, история и загрузка данных.',reports_keyboard)
+        await show_submenu(message,
+            '📊 <b>Продажи и отчёты</b>\n'
+            '«Вчера / Неделя / Месяц» — быстро из БД, без новых API-запросов.\n'
+            '«Обновить / Сегодня / Догрузить историю» — запрашивают маркетплейсы.',reports_keyboard)
 
     @dp.message(F.text == MENU_PRODUCTS)
     async def menu_products(message: types.Message):
-        await show_submenu(message,'📦 <b>Товары и SKU</b>\nАссортимент, остатки, себестоимость и связка листингов.',products_keyboard)
+        await show_submenu(message,
+            '📦 <b>Товары и остатки</b>\n'
+            '«Товары» — продажи по SKU. «Остатки» — текущий запас. '
+            '«Экономика SKU» — выручка/расходы по товарам.',products_keyboard)
 
     @dp.message(F.text == MENU_MONEY)
     async def menu_money(message: types.Message):
-        await show_submenu(message,'💰 <b>Деньги и реклама</b>\nФинансы, реклама, управленческий результат и сверка.',money_keyboard)
+        await show_submenu(message,
+            '💰 <b>Финансы</b>\n'
+            'Финансы — начисления и расходы. Реклама — затраты и ДРР. '
+            'Результат бизнеса — сводная оценка. Сверка — проверка цепочки данных.',money_keyboard)
 
     @dp.message(F.text == MENU_SUPPLY)
     async def menu_supply(message: types.Message):
-        await show_submenu(message,'🚚 <b>Поставки</b>\nABC/XYZ, прогноз спроса и параметры пополнения.',supply_keyboard)
+        await show_submenu(message,
+            '🚚 <b>Поставки</b>\n'
+            'План поставок показывает, что и сколько заказать. '
+            'Поставки в пути и акции влияют на рекомендацию.',supply_keyboard)
 
     @dp.message(F.text == MENU_CONTROL)
     async def menu_control(message: types.Message):
-        await show_submenu(message,'🚨 <b>Контроль</b>\nАлерты, состояние API, health-check и retry-очередь.',control_keyboard)
+        await show_submenu(message,
+            '🎯 <b>Что требует внимания</b>\n'
+            'Начните с «🎯 Что делать»: бот соберёт проблемы и покажет конкретные действия. '
+            '«Проблемы» — только активные предупреждения.',control_keyboard)
 
     @dp.message(F.text == MENU_SHOP)
     async def menu_shop(message: types.Message):
-        await show_submenu(message,'🏪 <b>Магазин и доступ</b>\nМагазины, роли сотрудников, профили ключей и настройки.',shop_keyboard)
+        await show_submenu(message,
+            '⚙️ <b>Магазин</b>\n'
+            'Смена магазина, настройки и проверка API. '
+            'Технические профили и архив вынесены в «🛠 Ещё».',shop_keyboard)
 
     @dp.message(F.text == MENU_SERVICE)
     async def menu_service(message: types.Message):
-        await show_submenu(message,'🛠 <b>Сервис</b>\nЭкспорт и резервное копирование.',service_keyboard)
+        await show_submenu(message,
+            '🛠 <b>Ещё</b>\nЭкспорт и технические функции, которые не нужны в ежедневной работе.',service_keyboard)
 
     @dp.message(F.text == BACK)
     async def menu_back(message: types.Message, state: FSMContext):
@@ -1566,9 +1624,15 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
     @dp.message(F.text == COMMAND_BUTTONS['user_remove'])
     async def btn_menu_user_remove(message: types.Message,state: FSMContext): await launch_input_action(message,state,'user_remove')
     @dp.message(F.text == COMMAND_BUTTONS['export'])
-    async def btn_menu_export(message: types.Message,state: FSMContext): await launch_input_action(message,state,'export')
+    async def btn_menu_export(message: types.Message,state: FSMContext):
+        if not allowed(message): return await denied(message)
+        await state.clear()
+        await message.answer('📤 <b>Скачать данные</b>\nВыберите формат и период:',parse_mode='HTML',reply_markup=export_picker_keyboard())
     @dp.message(F.text == COMMAND_BUTTONS['day'])
-    async def btn_menu_day(message: types.Message,state: FSMContext): await launch_input_action(message,state,'day')
+    async def btn_menu_day(message: types.Message,state: FSMContext):
+        if not allowed(message,'operate'): return await denied(message,'operate')
+        await state.clear()
+        await message.answer('🗓 <b>Отчёт за другой день</b>\nВыберите дату:',parse_mode='HTML',reply_markup=date_picker_keyboard())
     @dp.message(F.text == COMMAND_BUTTONS['link'])
     async def btn_menu_link(message: types.Message,state: FSMContext): await launch_input_action(message,state,'link')
     @dp.message(F.text == COMMAND_BUTTONS['cost'])
@@ -1580,11 +1644,126 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
     @dp.message(F.text == COMMAND_BUTTONS['supply_set'])
     async def btn_menu_supply_set(message: types.Message,state: FSMContext): await launch_input_action(message,state,'supply_set')
     @dp.message(F.text == COMMAND_BUTTONS['job_retry'])
-    async def btn_menu_job_retry(message: types.Message,state: FSMContext): await launch_input_action(message,state,'job_retry')
+    async def btn_menu_job_retry(message: types.Message,state: FSMContext):
+        await state.clear(); await cmd_jobs(message)
     @dp.message(F.text == COMMAND_BUTTONS['action_ack'])
-    async def btn_menu_action_ack(message: types.Message,state: FSMContext): await launch_input_action(message,state,'action_ack')
+    async def btn_menu_action_ack(message: types.Message,state: FSMContext):
+        await state.clear(); await cmd_actions(message)
     @dp.message(F.text == COMMAND_BUTTONS['action_snooze'])
-    async def btn_menu_action_snooze(message: types.Message,state: FSMContext): await launch_input_action(message,state,'action_snooze')
+    async def btn_menu_action_snooze(message: types.Message,state: FSMContext):
+        await state.clear(); await cmd_actions(message)
+
+    @dp.callback_query(F.data == 'flow:cancel')
+    async def cb_flow_cancel(callback: types.CallbackQuery, state: FSMContext):
+        await state.clear()
+        await callback.answer('Закрыто')
+        if callback.message:
+            try: await callback.message.edit_reply_markup(reply_markup=None)
+            except Exception: pass
+
+    @dp.callback_query(F.data.startswith('day:relative:'))
+    async def cb_day_relative(callback: types.CallbackQuery):
+        if callback.from_user is None or not ctx.repository.can_user(callback.from_user.id,ctx.shop_id,'operate'):
+            return await callback.answer('Недостаточно прав.',show_alert=True)
+        try: days=int((callback.data or '').rsplit(':',1)[-1])
+        except ValueError: return await callback.answer('Некорректная дата.',show_alert=True)
+        await callback.answer()
+        if callback.message:
+            target=local_now().date()-timedelta(days=max(1,days))
+            await collect_and_report(callback.message,target,True)
+
+    @dp.callback_query(F.data == 'day:custom')
+    async def cb_day_custom(callback: types.CallbackQuery, state: FSMContext):
+        if callback.from_user is None or not ctx.repository.can_user(callback.from_user.id,ctx.shop_id,'operate'):
+            return await callback.answer('Недостаточно прав.',show_alert=True)
+        await callback.answer()
+        if callback.message:
+            await start_menu_input(callback.message,state,'day',prompts['day'])
+
+    @dp.callback_query(F.data.startswith('export:'))
+    async def cb_export(callback: types.CallbackQuery):
+        if callback.from_user is None or not ctx.repository.can_user(callback.from_user.id,ctx.shop_id,'view'):
+            return await callback.answer('Недостаточно прав.',show_alert=True)
+        parts=(callback.data or '').split(':')
+        if len(parts)!=3: return await callback.answer('Некорректный экспорт.',show_alert=True)
+        try: days=int(parts[1])
+        except ValueError: return await callback.answer('Некорректный период.',show_alert=True)
+        fmt=parts[2]
+        await callback.answer('Готовлю файл…')
+        if callback.message:
+            await cmd_export(command_copy(callback.message,'export',f'{days} {fmt}'))
+
+    @dp.callback_query(F.data.startswith('job:retry:'))
+    async def cb_job_retry(callback: types.CallbackQuery):
+        if callback.from_user is None or not ctx.repository.can_user(callback.from_user.id,ctx.shop_id,'manage'):
+            return await callback.answer('Недостаточно прав.',show_alert=True)
+        try: job_id=int((callback.data or '').rsplit(':',1)[-1])
+        except ValueError: return await callback.answer('Некорректная задача.',show_alert=True)
+        ok=ctx.repository.requeue_retry_job(job_id,shop_id=ctx.shop_id)
+        await callback.answer('Задача возвращена в очередь.' if ok else 'Задача уже недоступна.',show_alert=not ok)
+        if callback.message:
+            await cmd_jobs(callback.message)
+
+    def find_action_by_token(token: str):
+        end=local_now().date()-timedelta(days=1)
+        center=build_action_center(ctx.repository,ctx.shop_id,end,persist=False)
+        return next((item for item in center.items if action_token(item.action_key)==token),None)
+
+    @dp.callback_query(F.data.startswith('actions:page:'))
+    async def cb_actions_page(callback: types.CallbackQuery):
+        if callback.from_user is None or not ctx.repository.can_user(callback.from_user.id,ctx.shop_id,'view'):
+            return await callback.answer('Недостаточно прав.',show_alert=True)
+        try: page=max(0,int((callback.data or '').rsplit(':',1)[-1]))
+        except ValueError: page=0
+        await callback.answer()
+        if callback.message:
+            await render_action_center(callback.message,page=page,edit=True)
+
+    @dp.callback_query(F.data.startswith('action:ack:'))
+    async def cb_action_ack(callback: types.CallbackQuery):
+        if callback.from_user is None or not ctx.repository.can_user(callback.from_user.id,ctx.shop_id,'operate'):
+            return await callback.answer('Недостаточно прав.',show_alert=True)
+        token=(callback.data or '').split(':',2)[-1]
+        item=find_action_by_token(token)
+        if item is None:
+            return await callback.answer('Действие уже изменилось. Обновите список.',show_alert=True)
+        ok=ctx.repository.set_action_status(ctx.shop_id,item.action_key,'acknowledged',telegram_user_id=callback.from_user.id)
+        await callback.answer('Отмечено как принято.' if ok else 'Действие уже недоступно.',show_alert=not ok)
+        if callback.message:
+            await render_action_center(callback.message,page=0,edit=True)
+
+    @dp.callback_query(F.data.startswith('action:snooze:'))
+    async def cb_action_snooze(callback: types.CallbackQuery):
+        if callback.from_user is None or not ctx.repository.can_user(callback.from_user.id,ctx.shop_id,'operate'):
+            return await callback.answer('Недостаточно прав.',show_alert=True)
+        parts=(callback.data or '').split(':')
+        if len(parts)!=4:
+            return await callback.answer('Некорректное действие.',show_alert=True)
+        token=parts[2]
+        try: hours=max(1,min(int(parts[3]),720))
+        except ValueError: hours=24
+        item=find_action_by_token(token)
+        if item is None:
+            return await callback.answer('Действие уже изменилось. Обновите список.',show_alert=True)
+        ok=ctx.repository.set_action_status(ctx.shop_id,item.action_key,'snoozed',
+            telegram_user_id=callback.from_user.id,snooze_hours=hours)
+        await callback.answer(f'Отложено на {hours} ч.' if ok else 'Действие уже недоступно.',show_alert=not ok)
+        if callback.message:
+            await render_action_center(callback.message,page=0,edit=True)
+
+    @dp.callback_query(F.data == 'quick:actions')
+    async def cb_quick_actions(callback: types.CallbackQuery):
+        if callback.from_user is None or not ctx.repository.can_user(callback.from_user.id,ctx.shop_id,'view'):
+            return await callback.answer('Недостаточно прав.',show_alert=True)
+        await callback.answer()
+        if callback.message: await render_action_center(callback.message)
+
+    @dp.callback_query(F.data == 'quick:connect')
+    async def cb_quick_connect(callback: types.CallbackQuery):
+        if callback.from_user is None or not ctx.repository.can_user(callback.from_user.id,ctx.shop_id,'operate'):
+            return await callback.answer('Недостаточно прав.',show_alert=True)
+        await callback.answer('Проверяю API…')
+        if callback.message: await cmd_connect_check(callback.message)
 
     @dp.message(StateFilter(MenuInputStates.waiting_value), F.text)
     async def menu_input_value(message: types.Message,state: FSMContext):
