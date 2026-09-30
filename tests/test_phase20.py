@@ -329,4 +329,6 @@ def test_context_backfill_routes_selected_marketplace():
     block=src[start:end]
     assert "source in {'all','wildberries','wb'}" in block
     assert "source in {'all','ozon'}" in block
-    assert 'wb_connection_id=wb_id,ozon_connection_id=ozon_id' in block
+    assert "one_source(wb_id,'wildberries')" in block
+    assert "one_source(ozon_id,'ozon')" in block
+    assert 'orders already loaded' in block
