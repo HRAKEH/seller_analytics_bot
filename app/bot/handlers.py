@@ -86,7 +86,29 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
         return main_keyboard(ctx.repository.role_for_user(uid,ctx.shop_id))
 
     async def send(message: types.Message, text: str):
-        await message.answer(text, parse_mode='HTML', reply_markup=keyboard_for(message))
+        # Telegram rejects messages over 4096 chars. Most report formatters place
+        # HTML tags within individual lines, so line-based chunking keeps markup valid.
+        limit=3900
+        lines=(text or '').split('\n')
+        chunks=[]; current=''
+        for line in lines:
+            candidate=line if not current else current+'\n'+line
+            if len(candidate)<=limit:
+                current=candidate
+                continue
+            if current:
+                chunks.append(current)
+            current=line
+            while len(current)>limit:
+                chunks.append(current[:limit])
+                current=current[limit:]
+        if current or not chunks:
+            chunks.append(current)
+        for idx,chunk in enumerate(chunks):
+            await message.answer(
+                chunk or '—',
+                parse_mode='HTML',
+                reply_markup=keyboard_for(message) if idx==len(chunks)-1 else None)
 
     def role_for(message: types.Message) -> str:
         uid=message.from_user.id if message.from_user else 0
@@ -95,9 +117,8 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
     async def show_main_menu(message: types.Message, *, text: str | None = None):
         shop=ctx.repository.get_shop(ctx.shop_id)
         title=text or (
-            f'🏠 <b>Главное меню</b>\n'
-            f'🏪 {escape(shop.name if shop else "Магазин")}\n'
-            f'Выберите раздел:'
+            f'🏠 <b>{escape(shop.name if shop else "Магазин")}</b>\n'
+            'Выберите, что хотите сделать:'
         )
         await message.answer(title,parse_mode='HTML',reply_markup=main_keyboard(role_for(message)))
 
@@ -1186,9 +1207,25 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
         lines += ['🚨 <b>Изменения алертов</b>']+['• '+escape(n.message) for n in notes] if notes else ['✅ Новых изменений алертов нет.']
         if active:
             lines += ['', '<b>Активные проблемы</b>']
+            rule_labels={
+                'api_stale':'Данные давно не обновлялись',
+                'order_drop':'Падение заказов',
+                'low_stock':'Мало остатка',
+                'high_drr':'Высокий ДРР',
+            }
+            subject_labels={'wildberries':'Wildberries','wb':'Wildberries','ozon':'Ozon'}
             for row in active[:20]:
+                rule=str(row.get('rule_key') or '')
+                subject=str(row.get('subject_key') or '')
+                label=rule_labels.get(rule,rule.replace('_',' '))
+                subject_label=subject_labels.get(subject.lower(),subject)
                 value='' if row.get('last_value') is None else f" · значение {float(row['last_value']):.1f}"
-                lines.append(f"• {escape(str(row['rule_key']))} · {escape(str(row['subject_key']))}{value}")
+                if rule=='api_stale':
+                    lines.append(f"• ⚠️ <b>{escape(subject_label)}</b>: {escape(label.lower())}.")
+                else:
+                    lines.append(f"• {escape(label)} · {escape(subject_label)}{value}")
+            if any(str(x.get('rule_key'))=='api_stale' for x in active):
+                lines += ['', 'Что делать: откройте «📡 Состояние данных». Если нужно обновить данные — «📊 Отчёты» → «🔄 Обновить вчера».']
         else: lines += ['', '🟢 Активных проблем нет.']
         await send(message,'\n'.join(lines))
 
@@ -1454,7 +1491,7 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
 
     @dp.message(F.text == MENU_PRODUCTS)
     async def menu_products(message: types.Message):
-        await show_submenu(message,'📦 <b>Товары и SKU</b>\nАссортимент, остатки, себестоимость и связка листингов.',products_keyboard)
+        await show_submenu(message,'📦 <b>Товары</b>\nПродажи по товарам, остатки и прибыль по SKU.',products_keyboard)
 
     @dp.message(F.text == MENU_MONEY)
     async def menu_money(message: types.Message):
@@ -1466,15 +1503,15 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
 
     @dp.message(F.text == MENU_CONTROL)
     async def menu_control(message: types.Message):
-        await show_submenu(message,'🚨 <b>Контроль</b>\nАлерты, состояние API, health-check и retry-очередь.',control_keyboard)
+        await show_submenu(message,'🚨 <b>Проблемы</b>\nЧто требует внимания, активные предупреждения и состояние данных.',control_keyboard)
 
     @dp.message(F.text == MENU_SHOP)
     async def menu_shop(message: types.Message):
-        await show_submenu(message,'🏪 <b>Магазин и доступ</b>\nМагазины, роли сотрудников, профили ключей и настройки.',shop_keyboard)
+        await show_submenu(message,'🏪 <b>Магазин</b>\nВыбор магазина, настройки и подключения.',shop_keyboard)
 
     @dp.message(F.text == MENU_SERVICE)
     async def menu_service(message: types.Message):
-        await show_submenu(message,'🛠 <b>Сервис</b>\nЭкспорт и резервное копирование.',service_keyboard)
+        await show_submenu(message,'🛠 <b>Ещё</b>\nЭкспорт, диагностика и служебные функции.',service_keyboard)
 
     @dp.message(F.text == BACK)
     async def menu_back(message: types.Message, state: FSMContext):
