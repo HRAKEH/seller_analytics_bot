@@ -30,7 +30,7 @@ COMMAND_BUTTONS: dict[str, str] = {
     'backups': '🗂 История backup',
     'restore': '♻️ Восстановить backup',
     'setup': '🧩 Мастер настройки',
-    'readiness': '✅ Готовность магазина',
+    'readiness': '✅ Что настроено',
     'connect_check': '🔌 Проверить подключения',
     'help': '🧭 Как подключить магазин',
     'demo_on': '🧪 Включить демо',
@@ -44,9 +44,9 @@ COMMAND_BUTTONS: dict[str, str] = {
     'stocks': '📦 Остатки',
     'finance': '💰 Финансы',
     'ads': '📣 Реклама',
-    'management': '📈 Управленческий результат',
-    'sku_finance': '🧾 SKU-экономика',
-    'reconcile': '🔎 Сверка данных',
+    'management': '📈 Прибыль магазина',
+    'sku_finance': '🧾 Прибыль по товарам',
+    'reconcile': '🔎 Проверка расхождений',
     'cost': '💲 Задать себестоимость',
     'alerts': '🚨 Алерты',
     'actions': '🎯 Что делать сегодня',
@@ -66,7 +66,7 @@ COMMAND_BUTTONS: dict[str, str] = {
     'supply_settings': '⚙️ Настройки поставок',
     'supply_defaults': '🧰 Defaults поставок',
     'supply_set': '✏️ Настроить SKU',
-    'status': '⚙️ Статус источников',
+    'status': '📡 Состояние данных',
     'health': '❤️ Health-check',
     'jobs': '🧰 Retry-очередь',
     'job_retry': '🔁 Повторить retry-задачу',
@@ -74,12 +74,12 @@ COMMAND_BUTTONS: dict[str, str] = {
 }
 
 MENU_REPORTS = '📊 Отчёты'
-MENU_PRODUCTS = '📦 Товары и SKU'
+MENU_PRODUCTS = '📦 Товары'
 MENU_MONEY = '💰 Деньги и реклама'
 MENU_SUPPLY = '🚚 Поставки'
-MENU_CONTROL = '🚨 Контроль'
-MENU_SHOP = '🏪 Магазин и доступ'
-MENU_SERVICE = '🛠 Сервис'
+MENU_CONTROL = '🚨 Проблемы'
+MENU_SHOP = '🏪 Магазин'
+MENU_SERVICE = '🛠 Ещё'
 
 
 def _role(role: str | None) -> str:
@@ -105,11 +105,10 @@ def reports_keyboard(role: str | None = 'owner', *, system_owner: bool = False):
     role = _role(role)
     buttons = [
         '📊 Вчера', '📅 Неделя',
-        '📅 Месяц', COMMAND_BUTTONS['day'],
-        '📜 История',
+        '📅 Месяц', '📜 История',
     ]
     if role in {'analyst', 'owner'}:
-        buttons += ['📊 Сегодня', '🔄 Обновить вчера', COMMAND_BUTTONS['backfill']]
+        buttons += ['🔄 Обновить вчера', COMMAND_BUTTONS['backfill']]
     buttons += [BACK, HOME]
     return _build(buttons)
 
@@ -121,7 +120,7 @@ def products_keyboard(role: str | None = 'owner', *, system_owner: bool = False)
         COMMAND_BUTTONS['sku_finance'],
     ]
     if role in {'analyst', 'owner'}:
-        buttons += [COMMAND_BUTTONS['cost'], COMMAND_BUTTONS['import_costs'], COMMAND_BUTTONS['link']]
+        buttons += [COMMAND_BUTTONS['import_costs']]
     buttons += [BACK, HOME]
     return _build(buttons)
 
@@ -137,44 +136,39 @@ def money_keyboard(role: str | None = 'owner', *, system_owner: bool = False):
 
 def supply_keyboard(role: str | None = 'owner', *, system_owner: bool = False):
     role = _role(role)
-    buttons = [COMMAND_BUTTONS['supply'], COMMAND_BUTTONS['inbound'], COMMAND_BUTTONS['forecast_quality'],
-               COMMAND_BUTTONS['supply_calibration'], COMMAND_BUTTONS['promotions'], COMMAND_BUTTONS['supply_sku'], COMMAND_BUTTONS['supply_settings']]
+    buttons = [
+        COMMAND_BUTTONS['supply'], COMMAND_BUTTONS['inbound'],
+        COMMAND_BUTTONS['promotions'], COMMAND_BUTTONS['forecast_quality'],
+    ]
     if role in {'analyst', 'owner'}:
-        buttons += [COMMAND_BUTTONS['supply_refresh'], COMMAND_BUTTONS['supply_calibration_refresh'], COMMAND_BUTTONS['inbound_refresh'], COMMAND_BUTTONS['promotions_refresh']]
-    if role == 'owner':
-        buttons += [COMMAND_BUTTONS['supply_set'], COMMAND_BUTTONS['supply_defaults']]
+        buttons += [COMMAND_BUTTONS['inbound_refresh'], COMMAND_BUTTONS['promotions_refresh']]
     buttons += [BACK, HOME]
     return _build(buttons)
 
 
 def control_keyboard(role: str | None = 'owner', *, system_owner: bool = False):
-    role = _role(role)
-    buttons = [COMMAND_BUTTONS['actions'], COMMAND_BUTTONS['action_history'], COMMAND_BUTTONS['alerts'], COMMAND_BUTTONS['status'], COMMAND_BUTTONS['health'], COMMAND_BUTTONS['diagnostics']]
-    if role in {'analyst', 'owner'}:
-        buttons += [COMMAND_BUTTONS['action_ack'], COMMAND_BUTTONS['action_snooze'], COMMAND_BUTTONS['jobs']]
-    if role == 'owner':
-        buttons += [COMMAND_BUTTONS['job_retry']]
-    buttons += [BACK, HOME]
+    buttons = [
+        COMMAND_BUTTONS['actions'], COMMAND_BUTTONS['alerts'],
+        COMMAND_BUTTONS['status'], COMMAND_BUTTONS['action_history'],
+        BACK, HOME,
+    ]
     return _build(buttons)
 
 
 def shop_keyboard(role: str | None = 'owner', *, system_owner: bool = False):
     role = _role(role)
-    buttons = [COMMAND_BUTTONS['shops'], COMMAND_BUTTONS['shop'], COMMAND_BUTTONS['my_access'],
-               COMMAND_BUTTONS['settings'], COMMAND_BUTTONS['readiness'], COMMAND_BUTTONS['help']]
+    buttons = [
+        COMMAND_BUTTONS['shops'], COMMAND_BUTTONS['shop'],
+        COMMAND_BUTTONS['settings'], COMMAND_BUTTONS['readiness'],
+    ]
     if role in {'analyst','owner'}:
         buttons += [COMMAND_BUTTONS['connect_check']]
     if role == 'owner':
-        buttons += [
-            COMMAND_BUTTONS['setup'], COMMAND_BUTTONS['demo_on'], COMMAND_BUTTONS['demo_off'],
-            COMMAND_BUTTONS['users'], COMMAND_BUTTONS['user_add'], COMMAND_BUTTONS['user_remove'],
-        ]
+        buttons += [COMMAND_BUTTONS['setup'], COMMAND_BUTTONS['users']]
     if system_owner:
         buttons += [
-            COMMAND_BUTTONS['shop_add'], COMMAND_BUTTONS['shop_profile'],
             COMMAND_BUTTONS['shop_archive'], COMMAND_BUTTONS['shop_archived'],
             COMMAND_BUTTONS['shop_restore'], COMMAND_BUTTONS['shop_delete'],
-            COMMAND_BUTTONS['profiles'],
         ]
     buttons += [BACK, HOME]
     return _build(buttons)
@@ -183,8 +177,13 @@ def shop_keyboard(role: str | None = 'owner', *, system_owner: bool = False):
 def service_keyboard(role: str | None = 'owner', *, system_owner: bool = False):
     role = _role(role)
     buttons = [COMMAND_BUTTONS['export']]
+    if role in {'analyst','owner'}:
+        buttons += [COMMAND_BUTTONS['health'], COMMAND_BUTTONS['diagnostics'], COMMAND_BUTTONS['jobs']]
     if system_owner:
-        buttons += [COMMAND_BUTTONS['backup'], COMMAND_BUTTONS['backups'], COMMAND_BUTTONS['restore']]
+        buttons += [
+            COMMAND_BUTTONS['backup'], COMMAND_BUTTONS['backups'], COMMAND_BUTTONS['restore'],
+            COMMAND_BUTTONS['profiles'],
+        ]
     buttons += [BACK, HOME]
     return _build(buttons)
 
