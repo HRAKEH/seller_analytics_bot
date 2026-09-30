@@ -21,18 +21,18 @@ class OzonClient(MarketplaceClient):
     def _headers(self):
         return {'Content-Type': 'application/json', 'Client-Id': self.client_id, 'Api-Key': self.api_key}
 
-    async def seller_info(self, *, retry_429: bool = True,
+    async def seller_info(self, *, retry_on_429: bool = True,
                           fail_fast_rate_limit: bool = False) -> FetchResult:
         return await self.request(
             'POST','/v1/seller/info',json={},headers=self._headers(),
-            rate_key='seller_info',min_interval=1.0,retry_429=retry_429,
+            rate_key='seller_info',min_interval=1.0,retry_on_429=retry_on_429,
             fail_fast_rate_limit=fail_fast_rate_limit)
 
-    async def api_roles(self, *, retry_429: bool = True,
+    async def api_roles(self, *, retry_on_429: bool = True,
                         fail_fast_rate_limit: bool = False) -> FetchResult:
         return await self.request(
             'POST','/v1/roles',json={},headers=self._headers(),
-            rate_key='roles',min_interval=1.0,retry_429=retry_429,
+            rate_key='roles',min_interval=1.0,retry_on_429=retry_on_429,
             fail_fast_rate_limit=fail_fast_rate_limit)
 
     async def analytics(self, payload: dict) -> FetchResult:
