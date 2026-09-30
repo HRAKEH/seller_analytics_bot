@@ -74,12 +74,12 @@ COMMAND_BUTTONS: dict[str, str] = {
 }
 
 MENU_REPORTS = '📊 Отчёты'
-MENU_PRODUCTS = '📦 Товары и SKU'
-MENU_MONEY = '💰 Деньги и реклама'
+MENU_PRODUCTS = '📦 Товары'
+MENU_MONEY = '💰 Финансы'
 MENU_SUPPLY = '🚚 Поставки'
-MENU_CONTROL = '🚨 Контроль'
-MENU_SHOP = '🏪 Магазин и доступ'
-MENU_SERVICE = '🛠 Сервис'
+MENU_CONTROL = '🚨 Проблемы'
+MENU_SHOP = '⚙️ Настройки'
+MENU_SERVICE = '🛠 Ещё'
 
 
 def _role(role: str | None) -> str:
@@ -103,13 +103,9 @@ def main_keyboard(role: str | None = 'owner'):
 
 def reports_keyboard(role: str | None = 'owner', *, system_owner: bool = False):
     role = _role(role)
-    buttons = [
-        '📊 Вчера', '📅 Неделя',
-        '📅 Месяц', COMMAND_BUTTONS['day'],
-        '📜 История',
-    ]
+    buttons = ['📊 Вчера', '📅 Неделя', '📅 Месяц', '🗓 Другая дата', '📜 Что уже загружено']
     if role in {'analyst', 'owner'}:
-        buttons += ['📊 Сегодня', '🔄 Обновить вчера', COMMAND_BUTTONS['backfill']]
+        buttons += ['🔄 Обновить вчера', '📥 Догрузить данные']
     buttons += [BACK, HOME]
     return _build(buttons)
 
@@ -149,42 +145,31 @@ def supply_keyboard(role: str | None = 'owner', *, system_owner: bool = False):
 
 def control_keyboard(role: str | None = 'owner', *, system_owner: bool = False):
     role = _role(role)
-    buttons = [COMMAND_BUTTONS['actions'], COMMAND_BUTTONS['action_history'], COMMAND_BUTTONS['alerts'], COMMAND_BUTTONS['status'], COMMAND_BUTTONS['health'], COMMAND_BUTTONS['diagnostics']]
+    buttons = ['🚨 Активные проблемы', '🎯 Что делать сегодня', '⚙️ Состояние источников']
     if role in {'analyst', 'owner'}:
-        buttons += [COMMAND_BUTTONS['action_ack'], COMMAND_BUTTONS['action_snooze'], COMMAND_BUTTONS['jobs']]
-    if role == 'owner':
-        buttons += [COMMAND_BUTTONS['job_retry']]
+        buttons += ['📋 История рекомендаций']
     buttons += [BACK, HOME]
     return _build(buttons)
 
 
 def shop_keyboard(role: str | None = 'owner', *, system_owner: bool = False):
     role = _role(role)
-    buttons = [COMMAND_BUTTONS['shops'], COMMAND_BUTTONS['shop'], COMMAND_BUTTONS['my_access'],
-               COMMAND_BUTTONS['settings'], COMMAND_BUTTONS['readiness'], COMMAND_BUTTONS['help']]
-    if role in {'analyst','owner'}:
-        buttons += [COMMAND_BUTTONS['connect_check']]
+    buttons = ['⚙️ Параметры отчётов', '🔌 Проверить API', '🏪 Магазины']
     if role == 'owner':
-        buttons += [
-            COMMAND_BUTTONS['setup'], COMMAND_BUTTONS['demo_on'], COMMAND_BUTTONS['demo_off'],
-            COMMAND_BUTTONS['users'], COMMAND_BUTTONS['user_add'], COMMAND_BUTTONS['user_remove'],
-        ]
+        buttons += ['👥 Доступ пользователей']
     if system_owner:
-        buttons += [
-            COMMAND_BUTTONS['shop_add'], COMMAND_BUTTONS['shop_profile'],
-            COMMAND_BUTTONS['shop_archive'], COMMAND_BUTTONS['shop_archived'],
-            COMMAND_BUTTONS['shop_restore'], COMMAND_BUTTONS['shop_delete'],
-            COMMAND_BUTTONS['profiles'],
-        ]
+        buttons += ['🗄 Управление магазинами']
     buttons += [BACK, HOME]
     return _build(buttons)
 
 
 def service_keyboard(role: str | None = 'owner', *, system_owner: bool = False):
     role = _role(role)
-    buttons = [COMMAND_BUTTONS['export']]
+    buttons = ['📤 Экспорт', '❤️ Проверка системы', '🧪 Диагностика']
+    if role in {'analyst','owner'}:
+        buttons += ['🧰 Ошибки и повторы']
     if system_owner:
-        buttons += [COMMAND_BUTTONS['backup'], COMMAND_BUTTONS['backups'], COMMAND_BUTTONS['restore']]
+        buttons += ['💾 Резервные копии']
     buttons += [BACK, HOME]
     return _build(buttons)
 
@@ -215,6 +200,59 @@ def shop_confirm_keyboard(action: str, shop_id: int):
     kb.button(text=labels.get(action,'✅ Подтвердить'),callback_data=f'shop:{action}_confirm:{int(shop_id)}')
     kb.button(text='❌ Отмена',callback_data='shop:cancel')
     kb.adjust(1)
+    return kb.as_markup()
+
+
+def report_date_keyboard():
+    kb=InlineKeyboardBuilder()
+    kb.button(text='Вчера',callback_data='report_date:1')
+    kb.button(text='2 дня назад',callback_data='report_date:2')
+    kb.button(text='7 дней назад',callback_data='report_date:7')
+    kb.button(text='14 дней назад',callback_data='report_date:14')
+    kb.button(text='✍️ Ввести дату',callback_data='report_date:custom')
+    kb.button(text='❌ Отмена',callback_data='report_date:cancel')
+    kb.adjust(2,2,1,1)
+    return kb.as_markup()
+
+
+def export_period_keyboard():
+    kb=InlineKeyboardBuilder()
+    for days in (7,30,90):
+        kb.button(text=f'{days} дней',callback_data=f'export:period:{days}')
+    kb.button(text='❌ Отмена',callback_data='export:cancel')
+    kb.adjust(3,1)
+    return kb.as_markup()
+
+
+def export_format_keyboard(days: int):
+    kb=InlineKeyboardBuilder()
+    kb.button(text='📊 Excel',callback_data=f'export:run:{int(days)}:xlsx')
+    kb.button(text='🗂 CSV ZIP',callback_data=f'export:run:{int(days)}:csv')
+    kb.button(text='⬅️ Назад',callback_data='export:back')
+    kb.button(text='❌ Отмена',callback_data='export:cancel')
+    kb.adjust(2,2)
+    return kb.as_markup()
+
+
+def shop_admin_keyboard():
+    kb=InlineKeyboardBuilder()
+    kb.button(text='➕ Добавить',callback_data='shopadmin:add')
+    kb.button(text='🔐 Профиль ключей',callback_data='shopadmin:profile')
+    kb.button(text='🗄 Архивировать',callback_data='shopadmin:archive')
+    kb.button(text='♻️ Восстановить',callback_data='shopadmin:restore')
+    kb.button(text='🗑 Удалить',callback_data='shopadmin:delete')
+    kb.button(text='❌ Закрыть',callback_data='shopadmin:cancel')
+    kb.adjust(2,2,1,1)
+    return kb.as_markup()
+
+
+def backups_menu_keyboard():
+    kb=InlineKeyboardBuilder()
+    kb.button(text='💾 Создать backup',callback_data='backups:create')
+    kb.button(text='🗂 История backup',callback_data='backups:list')
+    kb.button(text='♻️ Восстановить',callback_data='backups:restore')
+    kb.button(text='❌ Закрыть',callback_data='backups:cancel')
+    kb.adjust(2,1,1)
     return kb.as_markup()
 
 
