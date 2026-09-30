@@ -197,10 +197,10 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
         if ctx.job_lock.locked():
             return await message.answer('⏳ Уже выполняется другая выгрузка.')
         label=backfill_source_label(source)
-        wait_hint='\nЕсли WB вернёт 429, бот автоматически дождётся X-Ratelimit-Retry и повторит запрос.' if source in {'wildberries','wb','all'} else ''
+        wait_hint='\nЕсли WB вернёт 429, бот дождётся разрешённого времени повтора.' if source in {'wildberries','wb','all'} else ''
         progress=await message.answer(
             f'📥 <b>{label}</b>\nЗагружаю {start} — {end} ({span} дн.).'
-            f'{wait_hint}\nОшибки не затирают успешные данные.',
+            f'{wait_hint}\nУже загруженные дни берутся из БД и повторно не запрашиваются без необходимости.',
             parse_mode='HTML',
             reply_markup=backfill_running_keyboard())
         try:
@@ -209,7 +209,7 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
             return await message.answer(
                 '🛑 <b>Загрузка истории остановлена.</b>\n'
                 'Уже сохранённые данные остались в БД. Отмена не сбрасывает лимит WB: '
-                'если API уже вернул 429, при новом запуске нужно учитывать его cooldown.',
+                'если API уже вернул 429, его время ожидания продолжает действовать.',
                 parse_mode='HTML')
         except (RuntimeError,ValueError) as exc:
             return await message.answer(f'⚠️ {escape(str(exc)[:400])}')
@@ -218,7 +218,8 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
                 await progress.edit_reply_markup(reply_markup=None)
             except Exception:
                 pass
-        core_ok=sum(1 for x in outcomes if x.ok and x.message=='orders loaded')
+        core_ok=sum(1 for x in outcomes if x.ok and x.message in {'orders loaded','orders already loaded'})
+        reused=sum(1 for x in outcomes if x.ok and x.message=='orders already loaded')
         total_failed=sum(1 for x in outcomes if not x.ok)
         source_count=2 if source=='all' and ctx.wb_connection_id is not None and ctx.ozon_connection_id is not None else 1
         expected_core=span*source_count
@@ -226,6 +227,7 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
             f'✅ <b>Загрузка завершена · {label}</b>',
             f'Период: {start} — {end}',
             f'Основные заказы по дням: {core_ok}/{expected_core}',
+            f'Взято из БД без API: {reused}',
             f'Ошибок API/доп. источников: {total_failed}',
         ]
         await message.answer('\n'.join(lines),parse_mode='HTML')
