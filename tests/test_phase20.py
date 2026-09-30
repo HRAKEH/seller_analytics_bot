@@ -155,8 +155,16 @@ def _load_keyboard_module_with_stub(monkeypatch):
 
 def test_global_database_and_credential_buttons_are_system_owner_only(monkeypatch):
     kb=_load_keyboard_module_with_stub(monkeypatch)
-    delegated_shop_owner=set(kb.service_keyboard('owner',system_owner=False)) | set(kb.shop_keyboard('owner',system_owner=False))
-    system_owner=set(kb.service_keyboard('owner',system_owner=True)) | set(kb.shop_keyboard('owner',system_owner=True))
+    delegated_shop_owner=(
+        set(kb.service_keyboard('owner',system_owner=False))
+        | set(kb.technical_keyboard('owner',system_owner=False))
+        | set(kb.shop_keyboard('owner',system_owner=False))
+    )
+    system_owner=(
+        set(kb.service_keyboard('owner',system_owner=True))
+        | set(kb.technical_keyboard('owner',system_owner=True))
+        | set(kb.shop_keyboard('owner',system_owner=True))
+    )
     global_buttons={kb.COMMAND_BUTTONS[x] for x in ('backup','backups','restore','shop_add','shop_profile','shop_archive','shop_archived','shop_restore','shop_delete','profiles')}
     assert delegated_shop_owner.isdisjoint(global_buttons)
     assert global_buttons <= system_owner
@@ -221,6 +229,31 @@ def test_simplified_user_menus_hide_manual_and_technical_actions(monkeypatch):
     assert kb.COMMAND_BUTTONS['diagnostics'] not in control
     assert kb.COMMAND_BUTTONS['supply_set'] not in supply
     assert kb.COMMAND_BUTTONS['supply_defaults'] not in supply
+
+
+def test_common_report_export_and_retry_flows_are_button_driven(monkeypatch):
+    kb=_load_keyboard_module_with_stub(monkeypatch)
+    reports=set(kb.reports_keyboard('owner'))
+    assert {'🗓 Другая дата','📥 Догрузить данные','📜 Что уже загружено'} <= reports
+    assert ('Вчера','report_date:1') in kb.report_date_keyboard()
+    assert ('30 дней','export:period:30') in kb.export_period_keyboard()
+    assert ('📊 Excel','export:run:30:xlsx') in kb.export_format_keyboard(30)
+    users=kb.users_admin_keyboard()
+    assert ('➕ Дать доступ','users:add') in users
+    retry=kb.retry_jobs_keyboard([{'id':7,'status':'dead'},{'id':8,'status':'success'}])
+    assert ('🔁 Повторить #7','retry:run:7') in retry
+    assert all(not (isinstance(x,tuple) and x[1]=='retry:run:8') for x in retry)
+
+
+def test_report_date_button_reads_database_without_forcing_api_refresh():
+    src=(ROOT/'app/bot/handlers.py').read_text(encoding='utf-8')
+    assert "F.data.startswith('report_date:')" in src
+    assert "menu_action='day_view'" in src
+    start=src.index("if action=='day_view':")
+    end=src.index('pair=input_actions.get(action)',start)
+    block=src[start:end]
+    assert 'build_daily_report' in block
+    assert 'collect_day' not in block
 
 
 def test_action_center_has_inline_button_flow(monkeypatch):
@@ -332,3 +365,46 @@ def test_context_backfill_routes_selected_marketplace():
     assert "one_source(wb_id,'wildberries')" in block
     assert "one_source(ozon_id,'ozon')" in block
     assert 'orders already loaded' in block
+
+
+def test_normal_report_buttons_are_cached_and_refresh_is_explicit(monkeypatch):
+    kb=_load_keyboard_module_with_stub(monkeypatch)
+    products=set(kb.products_keyboard('owner'))
+    money=set(kb.money_keyboard('owner'))
+    assert '🔄 Обновить остатки' in products
+    assert '🔄 Обновить финансы' in money
+    assert '🔄 Обновить рекламу' in money
+
+    src=(ROOT/'app/bot/handlers.py').read_text(encoding='utf-8')
+    finance=src[src.index("@dp.message(F.text == COMMAND_BUTTONS['finance'])"):src.index("@dp.message(F.text == COMMAND_BUTTONS['ads'])")]
+    ads=src[src.index("@dp.message(F.text == COMMAND_BUTTONS['ads'])"):src.index("@dp.message(F.text == COMMAND_BUTTONS['management'])")]
+    stocks=src[src.index("@dp.message(F.text == '📦 Остатки')"):src.index("@dp.message(F.text == '🔄 Обновить остатки')")]
+    assert 'collect_finance' not in finance
+    assert 'collect_advertising' not in ads
+    assert 'collect_inventory' not in stocks
+    assert "@dp.message(F.text == '🔄 Обновить финансы')" in src
+    assert "@dp.message(F.text == '🔄 Обновить рекламу')" in src
+    assert "@dp.message(F.text == '🔄 Обновить остатки')" in src
+
+
+def test_wb_connection_check_fails_fast_and_stops_extra_probes_after_429():
+    wb=(ROOT/'app/integrations/wildberries.py').read_text(encoding='utf-8')
+    probe=wb[wb.index('    async def ping'):wb.index('    async def orders')]
+    assert probe.count('retry_on_429: bool = False') >= 2
+    assert probe.count('fail_fast_rate_limit: bool = True') >= 2
+
+    readiness=(ROOT/'app/services/readiness.py').read_text(encoding='utf-8')
+    assert "rate_limited=(not info.ok and info.status_code==429)" in readiness
+    assert 'WB временно ограничил запросы; повторите проверку позже' in readiness
+
+
+def test_rare_service_controls_are_grouped_under_technical_menu(monkeypatch):
+    kb=_load_keyboard_module_with_stub(monkeypatch)
+    service=set(kb.service_keyboard('owner',system_owner=True))
+    assert kb.MENU_TECH in service
+    for key in ('health','diagnostics','jobs','backup','backups','restore','profiles'):
+        assert kb.COMMAND_BUTTONS[key] not in service
+    technical=set(kb.technical_keyboard('owner',system_owner=True))
+    assert kb.COMMAND_BUTTONS['health'] in technical
+    assert kb.COMMAND_BUTTONS['jobs'] in technical
+    assert kb.COMMAND_BUTTONS['backup'] in technical
