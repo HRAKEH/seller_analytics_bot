@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import Iterable
 import json
+import logging
 
 from app.integrations import OzonClient, WildberriesClient, OzonPerformanceClient, FetchResult
 from app.storage import Repository, MetricPoint, ProductMetricPoint, InventoryPoint, CommerceEventPoint
@@ -30,6 +31,8 @@ from .advertising import (
 from .inbound import normalize_wb_supply, normalize_ozon_order
 from .promotions import normalize_wb_promotions, normalize_ozon_promotions, PromotionNormalizationError
 
+log=logging.getLogger(__name__)
+
 
 @dataclass(frozen=True)
 class CollectionOutcome:
@@ -44,6 +47,10 @@ class CollectionService:
     def __init__(self, repository: Repository, *, ozon: OzonClient | None = None,
                  wildberries: WildberriesClient | None = None, ozon_performance: OzonPerformanceClient | None = None):
         self.repo, self.ozon, self.wb, self.ozon_performance = repository, ozon, wildberries, ozon_performance
+        # Authorization failures on optional WB stock endpoints are usually not
+        # transient. Keep them out of the hourly alert loop until restart or a
+        # successful manual refresh proves access is available again.
+        self._auto_disabled_endpoints: set[str] = set()
 
     async def _ozon_analytics_all(self, payload: dict) -> FetchResult:
         if self.ozon is None:
@@ -378,14 +385,22 @@ class CollectionService:
 
     async def collect_inventory(self, *, shop_id: int, wb_connection_id: int | None = None,
                                 ozon_connection_id: int | None = None,
-                                data_date: date | None = None) -> list[CollectionOutcome]:
-        """Refresh current stock snapshots. Each stock family is an independent run."""
+                                data_date: date | None = None,
+                                automatic: bool = False) -> list[CollectionOutcome]:
+        """Refresh current stock snapshots. Each stock family is an independent run.
+
+        Automatic refreshes skip WB stock endpoints that returned 401/403 earlier
+        in this process. Manual refreshes still probe them; a successful manual
+        probe clears the suppression immediately.
+        """
         ds=(data_date or date.today()).isoformat()
         outcomes: list[CollectionOutcome] = []
 
         if wb_connection_id is not None:
             for kind, scheme in (('wb','FBW'),('seller','FBS')):
                 endpoint=f'analytics/stocks/{kind}-warehouses'
+                if automatic and endpoint in self._auto_disabled_endpoints:
+                    continue
                 if self.wb is None:
                     rid=self.repo.record_failure(wb_connection_id,endpoint,ds,'WB client is not configured')
                     outcomes.append(CollectionOutcome('wildberries',ds,False,rid,'WB client is not configured'))
@@ -393,7 +408,14 @@ class CollectionService:
                 result=await self.wb.stock_report_all(kind)
                 if not result.ok:
                     outcomes.append(self._failure(wb_connection_id,endpoint,ds,'wildberries',result))
+                    if result.status_code in {401,403}:
+                        if endpoint not in self._auto_disabled_endpoints:
+                            log.warning(
+                                'Suppressing automatic WB inventory endpoint after HTTP %s until restart or manual success: %s',
+                                result.status_code,endpoint)
+                        self._auto_disabled_endpoints.add(endpoint)
                     continue
+                self._auto_disabled_endpoints.discard(endpoint)
                 try:
                     observations=normalize_wb_stocks(result.data,fulfillment_scheme=scheme)
                     rid=self.repo.record_success(wb_connection_id,endpoint,ds,result.data,[],attempts=result.attempts,store_raw=False)

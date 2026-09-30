@@ -110,7 +110,7 @@ async def alerts_loop(bot: Bot, ctx: AppContext):
             pref=ctx.preferences(); tz=ZoneInfo(pref.timezone)
             engine=AlertEngine(ctx.repository,cooldown_minutes=pref.alert_cooldown_minutes)
             if not ctx.job_lock.locked():
-                await ctx.collect_inventory(datetime.now(tz).date())
+                await ctx.collect_inventory(datetime.now(tz).date(),automatic=True)
             notes=engine.evaluate(ctx.shop_id,today=datetime.now(tz).date(),
                 order_drop_pct=pref.alert_order_drop_pct,
                 order_lookback_days=pref.alert_order_lookback_days,
@@ -186,7 +186,7 @@ async def multi_alerts_loop(bot: Bot, registry):
                     tz=ZoneInfo(pref.timezone); today=datetime.now(tz).date()
                     engine=AlertEngine(ctx.repository,cooldown_minutes=pref.alert_cooldown_minutes)
                     if not ctx.job_lock.locked():
-                        try: await ctx.collect_inventory(today)
+                        try: await ctx.collect_inventory(today,automatic=True)
                         except Exception as exc:
                             queue_retry(ctx.repository,ctx.settings,ctx.shop_id,'inventory',today.isoformat(),
                                 {'day':today.isoformat()},error=str(exc),delay_seconds=300)

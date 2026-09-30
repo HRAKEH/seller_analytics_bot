@@ -106,12 +106,12 @@ class AppContext:
             return await self.collector.backfill_orders(start=start,end=end,shop_id=self.shop_id,
                 wb_connection_id=wb_id,ozon_connection_id=ozon_id)
 
-    async def collect_inventory(self, day: date | None = None) -> list[CollectionOutcome]:
+    async def collect_inventory(self, day: date | None = None, *, automatic: bool = False) -> list[CollectionOutcome]:
         if self.demo_mode(): return []
         async with self.operation_lock('inventory'):
             return await self.collector.collect_inventory(
                 shop_id=self.shop_id, wb_connection_id=self.wb_connection_id,
-                ozon_connection_id=self.ozon_connection_id, data_date=day)
+                ozon_connection_id=self.ozon_connection_id, data_date=day, automatic=automatic)
 
     async def collect_finance(self, start: date, end: date):
         if self.demo_mode(): return []

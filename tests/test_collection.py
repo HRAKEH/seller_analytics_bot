@@ -93,3 +93,38 @@ async def test_wb_sales_collection_persists_sale_and_return(ctx):
     assert all(x.ok for x in out)
     counts=repo.commerce_event_counts(shop.id,'2026-09-28','2026-09-29')['wildberries']
     assert counts['sale']==1 and counts['return']==1
+
+
+class FakeWBStocks:
+    def __init__(self, result):
+        self.result=result
+        self.calls=[]
+
+    async def stock_report_all(self, kind):
+        self.calls.append(kind)
+        return self.result
+
+
+@pytest.mark.asyncio
+async def test_automatic_inventory_suppresses_wb_401_403_until_manual_probe(ctx):
+    repo, wbconn, _ = ctx
+    shop=repo.get_shop(wbconn.shop_id)
+    wb=FakeWBStocks(FetchResult.failure('wildberries','HTTP 403: forbidden',403,1))
+    service=CollectionService(repo,wildberries=wb)
+
+    first=await service.collect_inventory(
+        shop_id=shop.id,wb_connection_id=wbconn.id,automatic=True,data_date=date(2026,9,30))
+    assert len(first)==2 and all(not x.ok for x in first)
+    assert wb.calls==['wb','seller']
+
+    # Next hourly/automatic cycle must not hit the same forbidden endpoints again.
+    second=await service.collect_inventory(
+        shop_id=shop.id,wb_connection_id=wbconn.id,automatic=True,data_date=date(2026,9,30))
+    assert second==[]
+    assert wb.calls==['wb','seller']
+
+    # Manual refresh remains a deliberate re-check and may recover after token/scope changes.
+    third=await service.collect_inventory(
+        shop_id=shop.id,wb_connection_id=wbconn.id,automatic=False,data_date=date(2026,9,30))
+    assert len(third)==2 and all(not x.ok for x in third)
+    assert wb.calls==['wb','seller','wb','seller']
