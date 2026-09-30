@@ -110,18 +110,22 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
         await state.update_data(menu_action=action)
         await message.answer(prompt,parse_mode='HTML',reply_markup=input_keyboard())
 
-    def command_copy(message: types.Message, command: str, value: str):
+    def command_copy(message: types.Message, command: str, value: str, *, actor_user=None):
         text=f'/{command}' + (f' {value.strip()}' if value.strip() else '')
 
         class MessageTextProxy:
             # Keep the original aiogram Message (and therefore its Bot binding)
-            # intact; only override .text for reuse of the slash-command parser.
-            def __init__(self, base, overridden_text):
-                self._base=base; self.text=overridden_text
+            # intact; override only command text and, for callback-driven flows,
+            # the human actor because callback.message.from_user is the bot itself.
+            def __init__(self, base, overridden_text, overridden_user):
+                self._base=base; self.text=overridden_text; self._actor=overridden_user
+            @property
+            def from_user(self):
+                return self._actor if self._actor is not None else self._base.from_user
             def __getattr__(self, name):
                 return getattr(self._base,name)
 
-        return MessageTextProxy(message,text)
+        return MessageTextProxy(message,text,actor_user)
 
     # Global navigation is registered before wizard state handlers so menu
     # buttons can never be accidentally consumed as a shop name/date/etc.
@@ -1670,7 +1674,7 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
         await callback.answer()
         if callback.message:
             target=local_now().date()-timedelta(days=max(1,days))
-            await collect_and_report(callback.message,target,True)
+            await collect_and_report(command_copy(callback.message,'day',target.isoformat(),actor_user=callback.from_user),target,True)
 
     @dp.callback_query(F.data == 'day:custom')
     async def cb_day_custom(callback: types.CallbackQuery, state: FSMContext):
@@ -1691,7 +1695,7 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
         fmt=parts[2]
         await callback.answer('Готовлю файл…')
         if callback.message:
-            await cmd_export(command_copy(callback.message,'export',f'{days} {fmt}'))
+            await cmd_export(command_copy(callback.message,'export',f'{days} {fmt}',actor_user=callback.from_user))
 
     @dp.callback_query(F.data.startswith('job:retry:'))
     async def cb_job_retry(callback: types.CallbackQuery):
@@ -1702,7 +1706,7 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
         ok=ctx.repository.requeue_retry_job(job_id,shop_id=ctx.shop_id)
         await callback.answer('Задача возвращена в очередь.' if ok else 'Задача уже недоступна.',show_alert=not ok)
         if callback.message:
-            await cmd_jobs(callback.message)
+            await cmd_jobs(command_copy(callback.message,'jobs','',actor_user=callback.from_user))
 
     def find_action_by_token(token: str):
         end=local_now().date()-timedelta(days=1)
@@ -1717,7 +1721,7 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
         except ValueError: page=0
         await callback.answer()
         if callback.message:
-            await render_action_center(callback.message,page=page,edit=True)
+            await render_action_center(command_copy(callback.message,'actions','',actor_user=callback.from_user),page=page,edit=True)
 
     @dp.callback_query(F.data.startswith('action:ack:'))
     async def cb_action_ack(callback: types.CallbackQuery):
@@ -1730,7 +1734,7 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
         ok=ctx.repository.set_action_status(ctx.shop_id,item.action_key,'acknowledged',telegram_user_id=callback.from_user.id)
         await callback.answer('Отмечено как принято.' if ok else 'Действие уже недоступно.',show_alert=not ok)
         if callback.message:
-            await render_action_center(callback.message,page=0,edit=True)
+            await render_action_center(command_copy(callback.message,'actions','',actor_user=callback.from_user),page=0,edit=True)
 
     @dp.callback_query(F.data.startswith('action:snooze:'))
     async def cb_action_snooze(callback: types.CallbackQuery):
@@ -1756,14 +1760,14 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
         if callback.from_user is None or not ctx.repository.can_user(callback.from_user.id,ctx.shop_id,'view'):
             return await callback.answer('Недостаточно прав.',show_alert=True)
         await callback.answer()
-        if callback.message: await render_action_center(callback.message)
+        if callback.message: await render_action_center(command_copy(callback.message,'actions','',actor_user=callback.from_user))
 
     @dp.callback_query(F.data == 'quick:connect')
     async def cb_quick_connect(callback: types.CallbackQuery):
         if callback.from_user is None or not ctx.repository.can_user(callback.from_user.id,ctx.shop_id,'operate'):
             return await callback.answer('Недостаточно прав.',show_alert=True)
         await callback.answer('Проверяю API…')
-        if callback.message: await cmd_connect_check(callback.message)
+        if callback.message: await cmd_connect_check(command_copy(callback.message,'connect_check','',actor_user=callback.from_user))
 
     @dp.message(StateFilter(MenuInputStates.waiting_value), F.text)
     async def menu_input_value(message: types.Message,state: FSMContext):
