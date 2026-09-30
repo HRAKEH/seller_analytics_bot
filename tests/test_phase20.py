@@ -157,9 +157,10 @@ def test_global_database_and_credential_buttons_are_system_owner_only(monkeypatc
     kb=_load_keyboard_module_with_stub(monkeypatch)
     delegated_shop_owner=set(kb.service_keyboard('owner',system_owner=False)) | set(kb.shop_keyboard('owner',system_owner=False))
     system_owner=set(kb.service_keyboard('owner',system_owner=True)) | set(kb.shop_keyboard('owner',system_owner=True))
-    global_buttons={kb.COMMAND_BUTTONS[x] for x in ('backup','backups','restore','shop_add','shop_profile','shop_archive','shop_archived','shop_restore','shop_delete','profiles')}
-    assert delegated_shop_owner.isdisjoint(global_buttons)
-    assert global_buttons <= system_owner
+    assert '🗄 Управление магазинами' not in delegated_shop_owner
+    assert '💾 Резервные копии' not in delegated_shop_owner
+    assert '🗄 Управление магазинами' in system_owner
+    assert '💾 Резервные копии' in system_owner
 
 
 def test_global_slash_handlers_enforce_system_owner():
@@ -237,6 +238,29 @@ def test_shop_picker_keyboard_uses_one_tap_callbacks(monkeypatch):
     assert ('Первый','shop:select:7') in markup
     assert ('✅ Второй','shop:select:9') in markup
     assert ('❌ Отмена','shop:cancel') in markup
+
+
+def test_button_first_common_workflows(monkeypatch):
+    kb=_load_keyboard_module_with_stub(monkeypatch)
+    reports=set(kb.reports_keyboard('owner'))
+    assert {'🗓 Другая дата','📥 Догрузить данные','📜 Что уже загружено'} <= reports
+    control=set(kb.control_keyboard('owner'))
+    assert {'🚨 Активные проблемы','🎯 Что делать сегодня','⚙️ Состояние источников'} <= control
+    assert ('Вчера','report_date:1') in kb.report_date_keyboard()
+    assert ('30 дней','export:period:30') in kb.export_period_keyboard()
+    assert ('📊 Excel','export:run:30:xlsx') in kb.export_format_keyboard(30)
+
+
+def test_startup_reuses_existing_active_shop_instead_of_recreating_default():
+    src=(ROOT/'main.py').read_text(encoding='utf-8')
+    assert 'active_shops=repo.list_shops(seller.id)' in src
+    assert "shop=active_shops[0] if active_shops else repo.ensure_shop(" in src
+
+
+def test_action_center_is_limited_for_telegram():
+    src=(ROOT/'app/reports/operations.py').read_text(encoding='utf-8')
+    assert 'def format_action_center(center: ActionCenter, limit: int=12)' in src
+    assert 'Показаны самые приоритетные' in src
 
 
 def test_backfill_picker_uses_marketplace_and_period_callbacks(monkeypatch):
