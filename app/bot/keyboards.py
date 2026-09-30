@@ -78,7 +78,7 @@ MENU_PRODUCTS = '📦 Товары'
 MENU_MONEY = '💰 Финансы'
 MENU_SUPPLY = '🚚 Поставки'
 MENU_CONTROL = '🚨 Проблемы'
-MENU_SHOP = '⚙️ Настройки'
+MENU_SHOP = '⚙️ Магазин'
 MENU_SERVICE = '🛠 Ещё'
 
 
