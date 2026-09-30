@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from app.storage.models import AdCampaignPoint, AdProductPoint
+from .numeric import finite_number
 
 
 class AdvertisingNormalizationError(ValueError):
@@ -11,14 +12,10 @@ class AdvertisingNormalizationError(ValueError):
 
 
 def _num(value: Any) -> float:
-    if value is None or value == '':
-        return 0.0
-    if isinstance(value, dict):
-        value = value.get('amount', value.get('value', 0))
     try:
-        return float(str(value).replace(' ', '').replace(',', '.'))
-    except (TypeError, ValueError):
-        return 0.0
+        return finite_number(value)
+    except (TypeError, ValueError) as exc:
+        raise AdvertisingNormalizationError('Advertising metric is not a finite number') from exc
 
 
 def _first(row: dict[str, Any], *names: str, default=None):

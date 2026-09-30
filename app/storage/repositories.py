@@ -10,6 +10,7 @@ from .models import (Seller, Shop, MarketplaceConnection, MetricPoint, SourceRun
                      Product, ProductListing, ProductMetricPoint, InventoryPoint,
                      ShopPreferences, CommerceEventPoint, AdCampaignPoint, AdProductPoint)
 from app.services.metrics import definition
+from app.services.numeric import finite_number
 
 
 def utcnow() -> str:
@@ -405,6 +406,7 @@ class Repository:
         digest = hashlib.sha256(body.encode("utf-8")).hexdigest()
         points = list(metrics)
         for p in points:
+            finite_number(p.value)
             if p.connection_id != connection_id or p.data_date != data_date:
                 raise ValueError("MetricPoint belongs to another connection/date")
             known = definition(p.metric_key)
@@ -414,10 +416,18 @@ class Repository:
         with self.db.connect() as c:
             c.execute("BEGIN IMMEDIATE")
             if status == "success":
-                previous = c.execute("""SELECT id FROM source_runs WHERE connection_id=? AND endpoint=?
-                    AND data_date=? AND status='success' AND payload_hash=?""",
-                    (connection_id, endpoint, data_date, digest)).fetchone()
-                if previous:
+                # A -> B -> A must create a new version. Daily/backfill orders
+                # share a metric basis and therefore one version sequence.
+                order_endpoints = ('statistics/orders', 'statistics/orders/backfill',
+                                   'analytics/orders', 'analytics/orders/backfill')
+                endpoints = order_endpoints if endpoint in order_endpoints else (endpoint,)
+                placeholders = ','.join('?' for _ in endpoints)
+                previous = c.execute(f"""SELECT id,status,payload_hash FROM source_runs
+                    WHERE connection_id=? AND endpoint IN ({placeholders}) AND data_date=?
+                      AND status IN ('success','partial') ORDER BY id DESC LIMIT 1""",
+                    (connection_id, *endpoints, data_date)).fetchone()
+                if previous and previous['status'] == 'success' and previous['payload_hash'] == digest:
+                    c.execute('UPDATE source_runs SET finished_at=? WHERE id=?', (now, previous['id']))
                     c.commit()
                     return int(previous["id"])
             cur = c.execute("""INSERT INTO source_runs
@@ -500,6 +510,8 @@ class Repository:
 
     # --- products / listings ----------------------------------------------
     def ensure_product(self, shop_id: int, internal_sku: str, name: str, cost_price: float | None = None) -> Product:
+        if cost_price is not None and finite_number(cost_price)<0:
+            raise ValueError('cost_price must be >= 0')
         now = utcnow()
         clean_name = (name or internal_sku).strip()[:500]
         with self.db.connect() as c:
@@ -607,16 +619,44 @@ class Repository:
             r=c.execute('SELECT * FROM products WHERE id=?',(canonical.id,)).fetchone()
         return Product(r['id'],r['shop_id'],r['internal_sku'],r['name'],r['cost_price'],bool(r['active']))
 
-    def save_product_metrics(self, source_run_id: int, points: Iterable[ProductMetricPoint]) -> int:
+    def save_product_metrics(self, source_run_id: int, points: Iterable[ProductMetricPoint], *,
+                             replace_order_snapshot: bool = False,
+                             replace_finance_snapshot: bool = False) -> int:
         now=utcnow(); rows=list(points)
-        if not rows: return 0
+        if not rows and not (replace_order_snapshot or replace_finance_snapshot): return 0
         with self.db.connect() as c:
-            run=c.execute("SELECT connection_id,status FROM source_runs WHERE id=?",(source_run_id,)).fetchone()
+            run=c.execute("SELECT connection_id,status,data_date,endpoint FROM source_runs WHERE id=?",(source_run_id,)).fetchone()
             if not run or run['status'] not in ('success','partial'):
                 raise ValueError('Product metrics require a successful/partial source run')
             c.execute('BEGIN IMMEDIATE')
+            if replace_order_snapshot or replace_finance_snapshot:
+                if replace_order_snapshot and replace_finance_snapshot:
+                    raise ValueError('Cannot replace unrelated snapshots together')
+                endpoints=('statistics/orders','statistics/orders/backfill','analytics/orders','analytics/orders/backfill') if replace_order_snapshot else ('finance/accrual/by-day',)
+                keys=('ordered_units','ordered_revenue','cancellations_units','fulfillment_units') if replace_order_snapshot else (
+                    'financial_sales','goods_payable','bank_payment','marketplace_net','commission','logistics',
+                    'storage','acceptance','acquiring','services','penalties','compensation','returns_amount','payout')
+                if run['status'] != 'success' or run['endpoint'] not in endpoints:
+                    raise ValueError('Snapshot replacement requires a complete source run')
+                if any(p.data_date != run['data_date'] for p in rows):
+                    raise ValueError('Snapshot belongs to another date')
+                if any(p.metric_key not in keys for p in rows):
+                    raise ValueError('Snapshot contains unrelated metrics')
+                present={(p.listing_id,p.metric_key,p.fulfillment_scheme) for p in rows}
+                old=c.execute(f"""SELECT DISTINCT pm.listing_id,pm.metric_key,pm.unit,pm.fulfillment_scheme
+                    FROM product_metric_values pm JOIN product_listings pl ON pl.id=pm.listing_id
+                    JOIN source_runs sr ON sr.id=pm.source_run_id
+                    WHERE pl.connection_id=? AND pm.data_date=?
+                      AND sr.endpoint IN ({','.join('?' for _ in endpoints)})
+                      AND pm.metric_key IN ({','.join('?' for _ in keys)})""",
+                    (run['connection_id'],run['data_date'],*endpoints,*keys)).fetchall()
+                for p in old:
+                    if (p['listing_id'],p['metric_key'],p['fulfillment_scheme']) not in present:
+                        rows.append(ProductMetricPoint(p['listing_id'],run['data_date'],p['metric_key'],
+                                                       0.0,p['unit'],p['fulfillment_scheme'],replace_order_snapshot,now))
             saved=0
             for p in rows:
+                finite_number(p.value)
                 listing=c.execute("SELECT connection_id FROM product_listings WHERE id=?",(p.listing_id,)).fetchone()
                 if not listing or int(listing['connection_id']) != int(run['connection_id']):
                     raise ValueError('ProductMetricPoint belongs to another connection')
@@ -717,7 +757,7 @@ class Repository:
               SELECT p.id product_id,p.internal_sku,p.name,pl.id listing_id,pl.marketplace_sku,pl.offer_id,
                      pl.connection_id,mc.marketplace,
                      SUM(i.available_units) available_units,SUM(i.reserved_units) reserved_units,
-                     MAX(i.captured_at) captured_at
+                     MIN(i.captured_at) captured_at
               FROM latest_run lr JOIN inventory_snapshots i ON i.listing_id=lr.listing_id
                 AND i.fulfillment_scheme=lr.fulfillment_scheme AND i.source_run_id=lr.source_run_id
               JOIN product_listings pl ON pl.id=i.listing_id JOIN products p ON p.id=pl.product_id
@@ -754,7 +794,7 @@ class Repository:
         with self.db.connect() as c:
             rows=c.execute("""SELECT DISTINCT data_date FROM source_runs
                 WHERE connection_id=? AND data_date BETWEEN ? AND ?
-                  AND status IN ('success','partial')
+                  AND status='success'
                   AND (endpoint='statistics/orders' OR endpoint='statistics/orders/backfill'
                        OR endpoint='analytics/orders' OR endpoint='analytics/orders/backfill')
                 ORDER BY data_date""",(connection_id,start_date,end_date)).fetchall()
@@ -816,7 +856,7 @@ class Repository:
     # --- finance / costs -------------------------------------------------
     def set_product_cost(self, product_id: int, cost_price: float, *, effective_date: str,
                          source: str = 'manual', import_batch_id: int | None = None) -> bool:
-        if cost_price < 0: raise ValueError('cost_price must be >= 0')
+        if finite_number(cost_price) < 0: raise ValueError('cost_price must be >= 0')
         # ISO date validation without importing app-level timezone rules.
         try: datetime.fromisoformat(effective_date)
         except ValueError as exc: raise ValueError('effective_date must be YYYY-MM-DD') from exc
@@ -919,18 +959,33 @@ class Repository:
                 WHERE p.shop_id=? AND pm.data_date BETWEEN ? AND ? AND pm.metric_key='ordered_units'
                   AND pm.fulfillment_scheme='ALL' AND sr.status IN ('success','partial')),
               costed AS (
-                SELECT r.*,pl.product_id,mc.marketplace,
+                SELECT r.*,pl.product_id,pl.connection_id,mc.marketplace,
                   (SELECT h.cost_price FROM product_cost_history h
                    WHERE h.product_id=pl.product_id AND h.effective_date<=r.data_date
                    ORDER BY h.effective_date DESC,h.id DESC LIMIT 1) effective_cost
                 FROM ranked r JOIN product_listings pl ON pl.id=r.listing_id
                 JOIN marketplace_connections mc ON mc.id=pl.connection_id WHERE r.rn=1)
-              SELECT marketplace,SUM(value) units,
+              SELECT marketplace,connection_id,data_date,SUM(value) units,
                      SUM(CASE WHEN effective_cost IS NOT NULL THEN value ELSE 0 END) covered_units,
                      SUM(CASE WHEN effective_cost IS NOT NULL THEN value*effective_cost ELSE 0 END) estimated_cost
-              FROM costed GROUP BY marketplace''',(shop_id,start_date,end_date)).fetchall()
-        return {r['marketplace']:{'units':float(r['units'] or 0),'covered_units':float(r['covered_units'] or 0),
-                                  'estimated_cost':float(r['estimated_cost'] or 0)} for r in rows}
+              FROM costed GROUP BY marketplace,connection_id,data_date''',(shop_id,start_date,end_date)).fetchall()
+        out={}; daily={}
+        for r in rows:
+            bucket=out.setdefault(r['marketplace'],{'units':0.0,'covered_units':0.0,'estimated_cost':0.0,'basis_complete':True})
+            for key in ('units','covered_units','estimated_cost'): bucket[key]+=float(r[key] or 0)
+            daily[(int(r['connection_id']),r['data_date'])]=float(r['units'] or 0)
+        for conn in self.list_connections(shop_id):
+            expected=self.metric_series(conn.id,start_date,end_date,'ordered_units')
+            revenue=self.metric_series(conn.id,start_date,end_date,'ordered_revenue')
+            # An explicit all-zero order series is a valid zero-cost basis.
+            if expected and all(v==0 for v in expected.values()):
+                out.setdefault(conn.marketplace,{'units':0.0,'covered_units':0.0,'estimated_cost':0.0,'basis_complete':True})
+            bucket=out.get(conn.marketplace)
+            if bucket is not None and any(
+                abs(daily.get((conn.id,day),0.0)-value)>1e-9 or day not in revenue
+                for day,value in expected.items()):
+                bucket['basis_complete']=False
+        return out
 
     def sku_economics(self, shop_id: int, start_date: str, end_date: str) -> list[dict[str,Any]]:
         """Order-level SKU economics using marketplace order amount and historical cost.
@@ -959,6 +1014,7 @@ class Repository:
                 JOIN marketplace_connections mc ON mc.id=pl.connection_id)
               SELECT product_id,internal_sku,name,marketplace,marketplace_sku,offer_id,
                      SUM(COALESCE(units,0)) units,SUM(COALESCE(revenue,0)) order_revenue,
+                     MIN(CASE WHEN units IS NOT NULL AND revenue IS NOT NULL THEN 1 ELSE 0 END) data_complete,
                      SUM(CASE WHEN effective_cost IS NOT NULL THEN COALESCE(units,0)*effective_cost ELSE 0 END) estimated_cost,
                      SUM(CASE WHEN effective_cost IS NOT NULL THEN COALESCE(units,0) ELSE 0 END) covered_units
               FROM costed GROUP BY marketplace,marketplace_sku ORDER BY order_revenue DESC''',
@@ -966,7 +1022,7 @@ class Repository:
         return [dict(r) for r in rows]
 
     def sku_financial_totals(self, shop_id: int, start_date: str, end_date: str) -> dict[tuple[str,str],dict[str,float]]:
-        keys=('financial_sales','goods_payable','commission','logistics','storage','acceptance','services','penalties','compensation')
+        keys=('financial_sales','goods_payable','commission','logistics','storage','acceptance','acquiring','services','penalties','compensation')
         placeholders=','.join('?' for _ in keys)
         with self.db.connect() as c:
             rows=c.execute(f'''WITH ranked AS (
@@ -1069,17 +1125,31 @@ class Repository:
 
 
     # --- order/sale/finance reconciliation ------------------------------
-    def save_commerce_events(self, source_run_id: int, points: Iterable[CommerceEventPoint]) -> int:
+    def save_commerce_events(self, source_run_id: int, points: Iterable[CommerceEventPoint], *,
+                             replace_finance_snapshot: bool = False) -> int:
         rows=list(points)
-        if not rows:
+        if not rows and not replace_finance_snapshot:
             return 0
         allowed={'order','cancel','posting','sale','return','finance'}
         now=utcnow()
         with self.db.connect() as c:
-            run=c.execute('SELECT connection_id,status FROM source_runs WHERE id=?',(source_run_id,)).fetchone()
+            run=c.execute('SELECT connection_id,status,endpoint,data_date FROM source_runs WHERE id=?',(source_run_id,)).fetchone()
             if not run or run['status'] not in ('success','partial'):
                 raise ValueError('Commerce events require a successful/partial source run')
             c.execute('BEGIN IMMEDIATE')
+            if replace_finance_snapshot:
+                if run['status']!='success' or run['endpoint']!='finance/accrual/by-day':
+                    raise ValueError('Finance replacement requires a complete Ozon finance day')
+                if any(p.data_date!=run['data_date'] or p.source_name!='ozon_finance' or p.event_kind!='finance' for p in rows):
+                    raise ValueError('Finance snapshot contains unrelated events')
+                fingerprints={p.fingerprint for p in rows}
+                existing=c.execute("""SELECT id,fingerprint FROM commerce_events WHERE connection_id=?
+                    AND data_date=? AND source_name='ozon_finance' AND event_kind='finance'""",
+                    (run['connection_id'],run['data_date'])).fetchall()
+                # Full daily finance is a snapshot, including explicit empty
+                # days. Remove obsolete values and old positional fingerprints.
+                c.executemany('DELETE FROM commerce_events WHERE id=?',
+                              ((p['id'],) for p in existing if p['fingerprint'] not in fingerprints))
             saved=0
             for p in rows:
                 if p.event_kind not in allowed:
@@ -1915,9 +1985,9 @@ class Repository:
                 bucket.append((float(r['predicted_units'] or 0),float(r['actual_units'] or 0)))
         out={}
         for pid,vals in grouped.items():
-            usable=[x for x in vals if x[1]>0]
-            if len(usable)<3: continue
-            predicted=sum(x[0] for x in usable); actual=sum(x[1] for x in usable)
+            # Zero-actual horizons still contribute forecast overshoot to bias.
+            if len(vals)<3: continue
+            predicted=sum(x[0] for x in vals); actual=sum(x[1] for x in vals)
             if actual<=0: continue
             bias=(predicted-actual)/actual
             # Correct only half of the observed systematic bias, bounded to ±15%.
@@ -1986,4 +2056,3 @@ class Repository:
                 WHERE h.shop_id=? AND h.as_of_date BETWEEN ? AND ?
                 ORDER BY h.as_of_date DESC,h.priority,h.id DESC LIMIT ?""",(shop_id,start_date,end_date,limit)).fetchall()
         return [dict(r) for r in rows]
-

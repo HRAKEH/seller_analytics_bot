@@ -42,7 +42,8 @@ class AlertEngine:
         self.repo.record_alert_event(shop_id,n.rule_key,n.subject_key,n.severity,n.message,n.value,fp)
         return n
 
-    def _resolve_missing(self, shop_id: int, active_keys: set[tuple[str,str]], rules: set[str]) -> list[AlertNotification]:
+    def _resolve_missing(self, shop_id: int, active_keys: set[tuple[str,str]], rules: set[str], *,
+                         subjects: dict[str,set[str]] | None = None) -> list[AlertNotification]:
         # Resolve only rules that were actually evaluated this cycle. Emit one recovery event
         # on the active -> resolved transition so owners know the situation normalised.
         now=datetime.now(timezone.utc).isoformat(timespec='seconds')
@@ -52,6 +53,8 @@ class AlertEngine:
         labels={'low_stock':'остаток','order_drop':'падение заказов','api_stale':'доступность API','high_drr':'ДРР'}
         for r in rows:
             key=(str(r['rule_key']),str(r['subject_key']))
+            if subjects is not None and key[0] in subjects and key[1] not in subjects[key[0]]:
+                continue
             if key[0] in rules and key not in active_keys:
                 msg=f'✅ Восстановлено: {labels.get(key[0], key[0])} · {key[1]}'
                 fp=self._fingerprint(key[0],key[1],msg)
@@ -64,6 +67,7 @@ class AlertEngine:
                  api_stale_hours: float, drr_pct: float, stock_risk_days: int,
                  stock_velocity_days: int) -> list[AlertNotification]:
         candidates: list[AlertNotification]=[]; active:set[tuple[str,str]]=set(); evaluated:set[str]=set()
+        subjects={'low_stock':set(),'high_drr':set()}
 
         # 1) Low stock. Uses only successful operational-order days for velocity.
         end=today-timedelta(days=1)
@@ -71,6 +75,8 @@ class AlertEngine:
                                     stock_lookback_days=stock_velocity_days,stock_risk_days=stock_risk_days)
         evaluated.add('low_stock')
         for r in report.stock_risks:
+            if r.available_units<=0 or r.avg_daily_units is not None:
+                subjects['low_stock'].add(f'{r.marketplace}:{r.sku}')
             risky=r.available_units<=0 or (r.days_left is not None and r.days_left<=stock_risk_days)
             if not risky: continue
             subject=f'{r.marketplace}:{r.sku}'; active.add(('low_stock',subject))
@@ -79,18 +85,17 @@ class AlertEngine:
                 f'📦 {r.name}: {state}, доступно {r.available_units:g} шт.',r.days_left))
 
         # 2) Order drop only when yesterday is complete for all enabled marketplaces.
-        evaluated.add('order_drop')
-        recent=self.repo.recent_metric_days(shop_id,'ordered_units',limit=order_lookback_days+3)
-        completeness={d:(got,total) for d,got,total in recent}
+        start=today-timedelta(days=order_lookback_days+1)
         y=(today-timedelta(days=1)).isoformat()
-        if y in completeness and completeness[y][0]==completeness[y][1]:
-            start=today-timedelta(days=order_lookback_days+1)
+        complete=set(self.repo.complete_order_dates(shop_id,start.isoformat(),y))
+        if y in complete:
             series=self.repo.daily_shop_metric(shop_id,start.isoformat(),y,'ordered_units')
             baselines=[]
             for i in range(2,order_lookback_days+2):
                 d=(today-timedelta(days=i)).isoformat()
-                if d in completeness and completeness[d][0]==completeness[d][1] and d in series: baselines.append(series[d])
-            if baselines:
+                if d in complete and d in series: baselines.append(series[d])
+            if baselines and y in series:
+                evaluated.add('order_drop')
                 avg=sum(baselines)/len(baselines); cur=series.get(y,0.0)
                 drop=((avg-cur)/avg*100) if avg>0 else 0
                 if avg>0 and drop>=order_drop_pct:
@@ -122,6 +127,8 @@ class AlertEngine:
         fin=self.repo.financial_metric_totals(shop_id,ad_start.isoformat(),y)
         for market,m in fin.items():
             spend=m.get('ad_spend',0.0); sales=m.get('ad_attributed_sales',0.0)
+            if 'ad_spend' in m and 'ad_attributed_sales' in m and (sales>0 or spend==0):
+                subjects['high_drr'].add(market)
             if spend>0 and sales>0:
                 drr=spend/sales*100
                 if drr>=drr_pct:
@@ -129,7 +136,7 @@ class AlertEngine:
                     candidates.append(AlertNotification('high_drr',market,'warning',
                         f'📣 {market}: ДРР {drr:.1f}% за последние 7 дней, порог {drr_pct:.1f}%.',drr))
 
-        resolved=self._resolve_missing(shop_id,active,evaluated)
+        resolved=self._resolve_missing(shop_id,active,evaluated,subjects=subjects)
         result=list(resolved)
         for n in candidates:
             sent=self._emit(shop_id,n)

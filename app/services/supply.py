@@ -15,8 +15,8 @@ from typing import Any
 from app.storage import Repository
 from .promotions import historical_promo_factor
 
-METHOD_VERSION='calibrated-promo-bias-wma-v4'
-QUALITY_METHOD_VERSION='seasonal-wma-v2-backtest'
+METHOD_VERSION='calibrated-promo-bias-wma-v5'
+QUALITY_METHOD_VERSION='seasonal-wma-v3-backtest'
 CALIBRATION_METHOD_VERSION='risk-buffer-v1'
 
 
@@ -293,7 +293,8 @@ def build_supply_plan(repo: Repository, shop_id: int, as_of: date, *, lookback_d
     for row in inventory_rows:
         pid=int(row['product_id']); x=inventory.setdefault(pid,{'available':0.0,'as_of':None})
         x['available']+=float(row['available_units'] or 0); ts=row.get('captured_at')
-        if ts and (x['as_of'] is None or str(ts)>str(x['as_of'])): x['as_of']=str(ts)
+        # The oldest contributing inventory limits freshness of the total.
+        if ts and (x['as_of'] is None or str(ts)<str(x['as_of'])): x['as_of']=str(ts)
 
     inbound_by_product: dict[int,list[dict[str,Any]]]={}
     for row in repo.active_inbound_items(shop_id):
@@ -320,9 +321,13 @@ def build_supply_plan(repo: Repository, shop_id: int, as_of: date, *, lookback_d
     seasonality_enabled=bool(pref.get('seasonality_enabled',1))
     for p,eligible,values,total in prepared:
         pid=int(p['product_id']); avg=(sum(values)/len(values)) if values else 0.0
-        raw_baseline=_weighted_forecast(values); bias_correction=float(bias_corrections.get(pid,1.0))
-        baseline=max(0.0,raw_baseline*bias_correction); factors=_weekday_factors(eligible,values,enabled=seasonality_enabled)
         promo_factor=historical_promo_factor(daily.get(pid,{}),historical_promo_dates.get(pid,set()),eligible)
+        # Remove the learned promotion uplift from training observations before
+        # applying it to future promotion days; otherwise it is counted twice.
+        historical_promos=historical_promo_dates.get(pid,set())
+        baseline_values=[v/promo_factor if d in historical_promos else v for d,v in zip(eligible,values)]
+        raw_baseline=_weighted_forecast(baseline_values); bias_correction=float(bias_corrections.get(pid,1.0))
+        baseline=max(0.0,raw_baseline*bias_correction); factors=_weekday_factors(eligible,baseline_values,enabled=seasonality_enabled)
         promo_dates=future_promo_dates.get(pid,set())
         next7_dates=_future_dates(as_of,7)
         next7=_demand_for_dates(baseline,next7_dates,factors,promo_dates=promo_dates,promo_factor=promo_factor)
@@ -342,7 +347,7 @@ def build_supply_plan(repo: Repository, shop_id: int, as_of: date, *, lookback_d
         reorder_cutoff=as_of+timedelta(days=effective_lead+effective_safety); target_cutoff=as_of+timedelta(days=effective_lead+effective_safety+target)
         for item in inbound_by_product.get(pid,[]):
             eta=_planned_day(item.get('planned_at'))
-            if eta is None: continue
+            if eta is None or eta<as_of: continue
             qty=float(item.get('remaining_units') or 0)
             if eta<=target_cutoff: inbound_target += qty
             if eta<=reorder_cutoff: inbound_reorder += qty
@@ -392,11 +397,15 @@ def evaluate_forecast_quality(repo: Repository, shop_id: int, as_of: date, *, ho
     persisted=[]
     for pid,p in products.items():
         series=daily.get(pid,{})
+        starts=[d for d in (min(series) if series else None,
+                           str(p['first_listing_at'])[:10] if p.get('first_listing_at') else None) if d]
+        first_active=min(starts) if starts else None
         item_samples=[]
         for n in range(samples,0,-1):
             cutoff=as_of-timedelta(days=n*horizon)
             future=[d for d in complete if cutoff.isoformat()<d<=(cutoff+timedelta(days=horizon)).isoformat()]
-            history=[d for d in complete if (cutoff-timedelta(days=lookback-1)).isoformat()<=d<=cutoff.isoformat()]
+            history=[d for d in complete if (cutoff-timedelta(days=lookback-1)).isoformat()<=d<=cutoff.isoformat()
+                     and (first_active is None or d>=first_active)]
             # A horizon sample is valid only when every calendar day in that
             # horizon is complete across all enabled marketplaces. Otherwise the
             # backtest would silently score a 7-day forecast on fewer than 7 days.

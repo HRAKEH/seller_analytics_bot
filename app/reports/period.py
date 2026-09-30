@@ -25,6 +25,7 @@ class PeriodReport:
 
 
 def build_period_report(repo: Repository, shop_id: int, end: date, days: int, label: str) -> PeriodReport:
+    if days<1: raise ValueError('days must be positive')
     start=end-timedelta(days=days-1)
     prev_end=start-timedelta(days=1)
     prev_start=prev_end-timedelta(days=days-1)
