@@ -158,8 +158,11 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
             parse_mode='HTML',
             reply_markup=backfill_source_keyboard(has_ozon=has_ozon,has_wb=has_wb))
 
-    async def execute_backfill(message: types.Message, *, source: str, start: date, end: date):
-        if not allowed(message,'operate'): return await denied(message,'operate')
+    async def execute_backfill(message: types.Message, *, source: str, start: date, end: date,
+                               actor_user_id: int | None = None):
+        uid=actor_user_id if actor_user_id is not None else (message.from_user.id if message.from_user else 0)
+        if not ctx.repository.can_user(uid,ctx.shop_id,'operate'):
+            return await message.answer('⛔ Недостаточно прав: требуется доступ «аналитика/обновление данных».')
         if end < start:
             return await message.answer('⚠️ Конечная дата раньше начальной.')
         yesterday=local_now().date()-timedelta(days=1)
@@ -193,7 +196,10 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
         if extra:
             lines.append(f'Дополнительные источники: {len(extra)-extra_failed} успешно · {extra_failed} ошибок')
         await message.answer('\n'.join(lines),parse_mode='HTML')
-        await send(message,format_daily(build_daily_report(ctx.repository,ctx.shop_id,end)))
+        role=ctx.repository.role_for_user(uid,ctx.shop_id) or 'viewer'
+        await message.answer(
+            format_daily(build_daily_report(ctx.repository,ctx.shop_id,end)),
+            parse_mode='HTML',reply_markup=main_keyboard(role))
 
     async def collect_and_report(message: types.Message, day: date, force: bool = True):
         if force:
@@ -973,7 +979,7 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
             await callback.message.edit_text(
                 f'⏳ Запускаю {backfill_source_label(source)} за {days} дн.…',
                 parse_mode='HTML')
-            await execute_backfill(callback.message,source=source,start=start,end=end)
+            await execute_backfill(callback.message,source=source,start=start,end=end,actor_user_id=callback.from_user.id)
 
     @dp.callback_query(F.data.startswith('backfill:custom:'))
     async def cb_backfill_custom(callback: types.CallbackQuery, state: FSMContext):
