@@ -1,5 +1,6 @@
 from __future__ import annotations
 from datetime import date, datetime, timedelta
+import asyncio
 from html import escape
 from pathlib import Path
 import tempfile
@@ -34,7 +35,7 @@ from .context import AppContext
 from .keyboards import (
     main_keyboard, reports_keyboard, products_keyboard, money_keyboard, supply_keyboard,
     control_keyboard, shop_keyboard, service_keyboard, input_keyboard, shop_picker_keyboard,
-    shop_confirm_keyboard, backfill_source_keyboard, backfill_period_keyboard, COMMAND_BUTTONS,
+    shop_confirm_keyboard, backfill_source_keyboard, backfill_period_keyboard, backfill_running_keyboard, COMMAND_BUTTONS,
     MENU_REPORTS, MENU_PRODUCTS, MENU_MONEY, MENU_SUPPLY, MENU_CONTROL, MENU_SHOP, MENU_SERVICE,
     HOME, BACK, CANCEL,
 )
@@ -175,14 +176,25 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
             return await message.answer('⏳ Уже выполняется другая выгрузка.')
         label=backfill_source_label(source)
         wait_hint='\nЕсли WB вернёт 429, бот автоматически дождётся X-Ratelimit-Retry и повторит запрос.' if source in {'wildberries','wb','all'} else ''
-        await message.answer(
+        progress=await message.answer(
             f'📥 <b>{label}</b>\nЗагружаю {start} — {end} ({span} дн.).'
             f'{wait_hint}\nОшибки не затирают успешные данные.',
-            parse_mode='HTML')
+            parse_mode='HTML',
+            reply_markup=backfill_running_keyboard())
         try:
             outcomes=await ctx.backfill_orders(start,end,marketplace=source)
+        except asyncio.CancelledError:
+            return await message.answer(
+                '🛑 <b>Загрузка истории остановлена.</b>\n'
+                'Уже сохранённые данные остались в БД. Повторный запуск можно сделать сразу.',
+                parse_mode='HTML')
         except (RuntimeError,ValueError) as exc:
             return await message.answer(f'⚠️ {escape(str(exc)[:400])}')
+        finally:
+            try:
+                await progress.edit_reply_markup(reply_markup=None)
+            except Exception:
+                pass
         core_ok=sum(1 for x in outcomes if x.ok and x.message=='orders loaded')
         total_failed=sum(1 for x in outcomes if not x.ok)
         source_count=2 if source=='all' and ctx.wb_connection_id is not None and ctx.ozon_connection_id is not None else 1
@@ -923,6 +935,21 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
         end=local_now().date()-timedelta(days=1)
         start=end-timedelta(days=days-1)
         await execute_backfill(message,source=source,start=start,end=end)
+
+    @dp.callback_query(F.data == 'backfill:stop')
+    async def cb_backfill_stop(callback: types.CallbackQuery):
+        if callback.from_user is None or not ctx.repository.can_user(callback.from_user.id,ctx.shop_id,'operate'):
+            return await callback.answer('Недостаточно прав.',show_alert=True)
+        if not ctx.cancel_backfill():
+            return await callback.answer('Активной загрузки уже нет.',show_alert=True)
+        await callback.answer('Останавливаю загрузку…')
+        if callback.message:
+            try:
+                await callback.message.edit_text(
+                    '🛑 <b>Останавливаю загрузку истории…</b>',
+                    parse_mode='HTML')
+            except Exception:
+                pass
 
     @dp.callback_query(F.data == 'backfill:cancel')
     async def cb_backfill_cancel(callback: types.CallbackQuery, state: FSMContext):
