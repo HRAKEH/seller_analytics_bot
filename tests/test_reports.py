@@ -50,3 +50,24 @@ def test_period_uses_only_days_complete_for_all_sources(tmp_path):
     assert report.complete_days==1
     assert report.total==20
     assert 'Полных дней: 1/2' in format_period(report)
+
+
+def test_daily_report_does_not_label_partial_marketplace_data_as_total(tmp_path):
+    repo,shop,wb,oz=setup_repo(tmp_path)
+    save(repo,wb,'2026-09-28',10,10000,1,{'x':'wb-only'})
+    report=build_daily_report(repo,shop.id,date(2026,9,28))
+    assert report.total_units is None
+    assert report.available_units==10
+    text=format_daily(report)
+    assert 'неполные данные' in text
+    assert 'ИТОГО: 10 заказанных' not in text
+
+
+def test_daily_warning_uses_latest_attempt_across_backfill_and_daily(tmp_path):
+    repo,shop,wb,_=setup_repo(tmp_path)
+    save(repo,wb,'2026-09-28',10,10000,1,{'x':'daily-success'})
+    repo.record_failure(wb.id,'statistics/orders','2026-09-28','old failure',http_status=500)
+    repo.record_success(wb.id,'statistics/orders/backfill','2026-09-28',{'new':'success'},[])
+    report=build_daily_report(repo,shop.id,date(2026,9,28))
+    row=next(x for x in report.sources if x.marketplace=='wildberries')
+    assert row.warning is None

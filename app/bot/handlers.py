@@ -201,10 +201,10 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
         if ctx.job_lock.locked():
             return await message.answer('⏳ Уже выполняется другая выгрузка.')
         label=backfill_source_label(source)
-        wait_hint='\nЕсли WB вернёт 429, бот автоматически дождётся X-Ratelimit-Retry и повторит запрос.' if source in {'wildberries','wb','all'} else ''
+        wait_hint='\nЕсли WB вернёт 429, бот дождётся разрешённого времени повтора.' if source in {'wildberries','wb','all'} else ''
         progress=await message.answer(
             f'📥 <b>{label}</b>\nЗагружаю {start} — {end} ({span} дн.).'
-            f'{wait_hint}\nОшибки не затирают успешные данные.',
+            f'{wait_hint}\nУже загруженные дни берутся из БД и повторно не запрашиваются без необходимости.',
             parse_mode='HTML',
             reply_markup=backfill_running_keyboard())
         try:
@@ -213,7 +213,7 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
             return await message.answer(
                 '🛑 <b>Загрузка истории остановлена.</b>\n'
                 'Уже сохранённые данные остались в БД. Отмена не сбрасывает лимит WB: '
-                'если API уже вернул 429, при новом запуске нужно учитывать его cooldown.',
+                'если API уже вернул 429, его время ожидания продолжает действовать.',
                 parse_mode='HTML')
         except (RuntimeError,ValueError) as exc:
             return await message.answer(f'⚠️ {escape(str(exc)[:400])}')
@@ -222,7 +222,8 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
                 await progress.edit_reply_markup(reply_markup=None)
             except Exception:
                 pass
-        core_ok=sum(1 for x in outcomes if x.ok and x.message=='orders loaded')
+        core_ok=sum(1 for x in outcomes if x.ok and x.message in {'orders loaded','orders already loaded'})
+        reused=sum(1 for x in outcomes if x.ok and x.message=='orders already loaded')
         total_failed=sum(1 for x in outcomes if not x.ok)
         source_count=2 if source=='all' and ctx.wb_connection_id is not None and ctx.ozon_connection_id is not None else 1
         expected_core=span*source_count
@@ -230,6 +231,7 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
             f'✅ <b>Загрузка завершена · {label}</b>',
             f'Период: {start} — {end}',
             f'Основные заказы по дням: {core_ok}/{expected_core}',
+            f'Взято из БД без API: {reused}',
             f'Ошибок API/доп. источников: {total_failed}',
         ]
         await message.answer('\n'.join(lines),parse_mode='HTML')
@@ -1102,12 +1104,15 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
         days=max(1,min(days,31)); end=local_now().date()-timedelta(days=1); start=end-timedelta(days=days-1)
         if allowed(message,'operate') and not ctx.job_lock.locked():
             await message.answer(f'💰 Обновляю финансовые данные {start} — {end}…')
-            outcomes=await ctx.collect_finance(start,end)
-            try: outcomes += await ctx.collect_advertising(start,end)
-            except Exception as exc: await message.answer(f'⚠️ Реклама обновилась не полностью: {escape(str(exc)[:180])}')
-            if any(not x.ok for x in outcomes):
-                await message.answer('⚠️ Часть финансовых источников не обновилась; старые успешные данные сохранены.')
-        elif not allowed(message,'operate'):
+            try:
+                outcomes=await ctx.collect_finance(start,end)
+                if any(not x.ok for x in outcomes):
+                    await message.answer('⚠️ Часть финансовых источников не обновилась; старые успешные данные сохранены.')
+            except Exception as exc:
+                await message.answer(f'⚠️ Финансы обновились не полностью: {escape(str(exc)[:220])}')
+        elif allowed(message,'operate'):
+            await message.answer('⏳ Уже выполняется другая загрузка. Показываю сохранённые финансы.')
+        else:
             await message.answer('👁 Режим viewer: показываю сохранённые финансы без обновления API.')
         await send(message,format_finance(build_finance_report(ctx.repository,ctx.shop_id,end,days)))
 
@@ -1126,7 +1131,9 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
                     await message.answer('⚠️ Часть рекламных источников не обновилась; сохранённые данные не затёрты.')
             except Exception as exc:
                 await message.answer(f'⚠️ Реклама обновилась не полностью: {escape(str(exc)[:220])}')
-        elif not allowed(message,'operate'):
+        elif allowed(message,'operate'):
+            await message.answer('⏳ Уже выполняется другая загрузка. Показываю сохранённую рекламную статистику.')
+        else:
             await message.answer('👁 Режим viewer: показываю сохранённую рекламную статистику без обновления API.')
         await send(message,format_advertising(build_advertising_report(ctx.repository,ctx.shop_id,end,days)))
 
@@ -1146,7 +1153,9 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
                     await message.answer('⚠️ Часть источников не обновилась; расчёт использует доступные сохранённые данные.')
             except Exception as exc:
                 await message.answer(f'⚠️ Обновление завершилось частично: {escape(str(exc)[:220])}')
-        elif not allowed(message,'operate'):
+        elif allowed(message,'operate'):
+            await message.answer('⏳ Уже выполняется другая загрузка. Показываю расчёт по сохранённым данным.')
+        else:
             await message.answer('👁 Режим viewer: расчёт по уже сохранённым данным.')
         await send(message,format_management(build_management_report(ctx.repository,ctx.shop_id,end,days)))
 

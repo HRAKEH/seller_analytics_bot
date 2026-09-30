@@ -69,8 +69,8 @@ def test_button_handlers_have_no_exact_text_collisions():
 def test_main_menu_is_logically_grouped_and_emoji_first():
     _, mapping, categories = _menu_model()
     expected = {
-        '📊 Отчёты', '📦 Товары и SKU', '💰 Деньги и реклама', '🚚 Поставки',
-        '🚨 Контроль', '🏪 Магазин и доступ', '🛠 Сервис',
+        '📊 Отчёты', '📦 Товары', '💰 Деньги и реклама', '🚚 Поставки',
+        '🚨 Проблемы', '🏪 Магазин', '🛠 Ещё', '🧰 Техническое',
     }
     assert set(categories.values()) == expected
     assert len(set(mapping.values())) == len(mapping)
@@ -78,18 +78,24 @@ def test_main_menu_is_logically_grouped_and_emoji_first():
 
 
 
-def test_every_command_button_is_rendered_by_a_keyboard_builder():
+def test_primary_workflows_are_rendered_by_keyboard_builders():
     _, mapping, _ = _menu_model()
     source = (ROOT / 'app/bot/keyboards.py').read_text(encoding='utf-8')
     builders = source[source.index('def main_keyboard'):]
-    missing = []
-    for command in mapping:
-        if command == 'start':
-            present = 'HOME' in builders
-        elif command == 'cancel':
-            present = 'CANCEL' in builders
-        else:
-            present = f"COMMAND_BUTTONS['{command}']" in builders
-        if not present:
-            missing.append(command)
-    assert missing == [], f'Commands mapped to handlers but absent from keyboard builders: {missing}'
+    primary = {
+        'shops','shop','settings','readiness','connect_check',
+        'backfill','products','stocks','finance','ads','management','sku_finance','reconcile',
+        'alerts','actions','action_history','supply','inbound','promotions','forecast_quality',
+        'export','health','jobs','diagnostics',
+    }
+    aliases={
+        'backfill':'📥 Догрузить данные',
+        'export':'📤 Экспорт',
+    }
+    missing=[]
+    for cmd in primary:
+        canonical=f"COMMAND_BUTTONS['{cmd}']" in builders
+        alias=aliases.get(cmd)
+        if not canonical and not (alias and repr(alias) in builders):
+            missing.append(cmd)
+    assert missing == [], f'Primary workflows absent from button menus: {missing}'

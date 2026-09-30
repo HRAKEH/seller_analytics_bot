@@ -44,13 +44,20 @@ class CollectionOutcome:
 
 
 class CollectionService:
+    _shared_wb_auto_disabled: dict[str,set[str]] = {}
+
     def __init__(self, repository: Repository, *, ozon: OzonClient | None = None,
                  wildberries: WildberriesClient | None = None, ozon_performance: OzonPerformanceClient | None = None):
         self.repo, self.ozon, self.wb, self.ozon_performance = repository, ozon, wildberries, ozon_performance
         # Authorization failures on optional WB stock endpoints are usually not
-        # transient. Keep them out of the hourly alert loop until restart or a
-        # successful manual refresh proves access is available again.
-        self._auto_disabled_endpoints: set[str] = set()
+        # transient. Share suppression across shop runtimes that use the same WB
+        # credential so a duplicate shop/profile cannot probe the same forbidden
+        # endpoint again in the same process.
+        if wildberries is not None:
+            self._auto_disabled_endpoints=self._shared_wb_auto_disabled.setdefault(
+                getattr(wildberries,'rate_scope',f'instance:{id(wildberries)}'),set())
+        else:
+            self._auto_disabled_endpoints=set()
 
     async def _ozon_analytics_all(self, payload: dict) -> FetchResult:
         if self.ozon is None:
@@ -216,7 +223,8 @@ class CollectionService:
         return None
 
     async def backfill_orders(self, *, start: date, end: date, wb_connection_id: int | None = None,
-                              ozon_connection_id: int | None = None, shop_id: int | None = None) -> list[CollectionOutcome]:
+                              ozon_connection_id: int | None = None, shop_id: int | None = None,
+                              include_ozon_fulfillment: bool = True) -> list[CollectionOutcome]:
         if end < start:
             raise ValueError('end must not be before start')
         outcomes: list[CollectionOutcome] = []
@@ -303,7 +311,7 @@ class CollectionService:
                                 rid=self.repo.record_failure(ozon_connection_id,endpoint,ds,f'Normalization: {exc}',attempts=result.attempts)
                                 outcomes.append(CollectionOutcome('ozon',ds,False,rid,str(exc)))
                             current += timedelta(days=1)
-        if ozon_connection_id is not None and shop_id is not None and self.ozon is not None:
+        if include_ozon_fulfillment and ozon_connection_id is not None and shop_id is not None and self.ozon is not None:
             outcomes.extend(await self.collect_ozon_fulfillment_range(
                 shop_id=shop_id,connection_id=ozon_connection_id,start=start,end=end))
         return outcomes

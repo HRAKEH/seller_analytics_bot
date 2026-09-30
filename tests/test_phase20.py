@@ -362,7 +362,9 @@ def test_context_backfill_routes_selected_marketplace():
     block=src[start:end]
     assert "source in {'all','wildberries','wb'}" in block
     assert "source in {'all','ozon'}" in block
-    assert 'wb_connection_id=wb_id,ozon_connection_id=ozon_id' in block
+    assert "one_source(wb_id,'wildberries')" in block
+    assert "one_source(ozon_id,'ozon')" in block
+    assert 'orders already loaded' in block
 
 
 def test_normal_report_buttons_are_cached_and_refresh_is_explicit(monkeypatch):
@@ -385,10 +387,19 @@ def test_normal_report_buttons_are_cached_and_refresh_is_explicit(monkeypatch):
     assert "@dp.message(F.text == '🔄 Обновить остатки')" in src
 
 
+def test_finance_refresh_does_not_refresh_advertising():
+    src=(ROOT/'app/bot/handlers.py').read_text(encoding='utf-8')
+    block=src[src.index("    @dp.message(Command('finance'))"):src.index("    @dp.message(Command('ads'))")]
+    assert 'collect_finance' in block
+    assert 'collect_advertising' not in block
+    assert 'Финансы обновились не полностью' in block
+
+
 def test_wb_connection_check_fails_fast_and_stops_extra_probes_after_429():
     wb=(ROOT/'app/integrations/wildberries.py').read_text(encoding='utf-8')
     probe=wb[wb.index('    async def ping'):wb.index('    async def orders')]
-    assert probe.count('retry_on_429=False') >= 2
+    assert probe.count('retry_on_429: bool = False') >= 2
+    assert probe.count('fail_fast_rate_limit: bool = True') >= 2
 
     readiness=(ROOT/'app/services/readiness.py').read_text(encoding='utf-8')
     assert "rate_limited=(not info.ok and info.status_code==429)" in readiness

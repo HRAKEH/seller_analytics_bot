@@ -98,12 +98,13 @@ class AlertEngine:
                     candidates.append(AlertNotification('order_drop','shop','warning',
                         f'📉 Заказы за вчера {cur:g} ед., на {drop:.1f}% ниже среднего за {len(baselines)} предыдущих полных дней ({avg:.1f}).',drop))
 
-        # 3) Primary order API freshness.
+        # 3) Primary order-data freshness. A successful backfill is a real
+        # refresh too, so it must clear api_stale instead of waiting for the next
+        # scheduled one-day endpoint call.
         evaluated.add('api_stale')
         for conn in self.repo.list_connections(shop_id):
             if not conn.enabled: continue
-            endpoint='statistics/orders' if conn.marketplace=='wildberries' else 'analytics/orders'
-            run=self.repo.last_successful_run(conn.id,endpoint)
+            run=self.repo.last_successful_order_run(conn.id)
             stale=True; age=None
             if run and run.finished_at:
                 try:

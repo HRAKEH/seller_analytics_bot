@@ -468,6 +468,36 @@ class Repository:
         if not r: return None
         return SourceRun(r["id"], r["connection_id"], r["endpoint"], r["data_date"], r["status"], r["started_at"], r["finished_at"], r["error"], r["http_status"], r["attempts"], r["payload_hash"])
 
+    def latest_order_run(self, connection_id: int, data_date: str | None = None) -> SourceRun | None:
+        """Latest core-order attempt across daily and backfill endpoints."""
+        sql="""SELECT * FROM source_runs WHERE connection_id=?
+               AND endpoint IN ('statistics/orders','statistics/orders/backfill',
+                                'analytics/orders','analytics/orders/backfill')"""
+        params: list[Any]=[connection_id]
+        if data_date is not None:
+            sql += " AND data_date=?"; params.append(data_date)
+        sql += " ORDER BY finished_at DESC,id DESC LIMIT 1"
+        with self.db.connect() as c:
+            r=c.execute(sql,params).fetchone()
+        if not r: return None
+        return SourceRun(r["id"],r["connection_id"],r["endpoint"],r["data_date"],r["status"],
+                         r["started_at"],r["finished_at"],r["error"],r["http_status"],r["attempts"],r["payload_hash"])
+
+    def last_successful_order_run(self, connection_id: int, data_date: str | None = None) -> SourceRun | None:
+        """Latest successful core-order run across daily and backfill endpoints."""
+        sql="""SELECT * FROM source_runs WHERE connection_id=? AND status IN ('success','partial')
+               AND endpoint IN ('statistics/orders','statistics/orders/backfill',
+                                'analytics/orders','analytics/orders/backfill')"""
+        params: list[Any]=[connection_id]
+        if data_date is not None:
+            sql += " AND data_date=?"; params.append(data_date)
+        sql += " ORDER BY finished_at DESC,id DESC LIMIT 1"
+        with self.db.connect() as c:
+            r=c.execute(sql,params).fetchone()
+        if not r: return None
+        return SourceRun(r["id"],r["connection_id"],r["endpoint"],r["data_date"],r["status"],
+                         r["started_at"],r["finished_at"],r["error"],r["http_status"],r["attempts"],r["payload_hash"])
+
     # --- products / listings ----------------------------------------------
     def ensure_product(self, shop_id: int, internal_sku: str, name: str, cost_price: float | None = None) -> Product:
         now = utcnow()

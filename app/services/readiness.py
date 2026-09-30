@@ -93,7 +93,7 @@ async def build_readiness(ctx, *, live: bool = False, persist: bool = True) -> R
     if live and not p.demo_mode:
         if ctx.collector.wb is not None:
             wb=ctx.collector.wb
-            info=await wb.seller_info()
+            info=await wb.seller_info(retry_on_429=False,fail_fast_rate_limit=True)
             name=''
             if info.ok and isinstance(info.data,dict): name=str(info.data.get('name') or info.data.get('tradeMark') or '')
             items.append(ReadinessItem('wb_auth','WB · токен',info.ok,True,
@@ -148,27 +148,56 @@ async def build_readiness(ctx, *, live: bool = False, persist: bool = True) -> R
                 if categories is not None and category not in categories:
                     items.append(ReadinessItem(key,label,False,False,'категория отсутствует в токене'))
                     continue
-                r=await wb.ping(url)
+                r=await wb.ping(url,retry_on_429=False,fail_fast_rate_limit=True)
                 items.append(ReadinessItem(key,label,r.ok,False,'доступ есть' if r.ok else (r.error or f'HTTP {r.status_code}')))
 
             if token_meta['ok']:
                 stock_type_ok=token_meta['type_code'] in {3,4} and token_meta['expired'] is not True
                 analytics_ok='Аналитика' in set(token_meta['categories'])
+                metadata_ok=stock_type_ok and analytics_ok
+                stock_runs=[]
+                if ctx.wb_connection_id is not None:
+                    for label,endpoint in (
+                        ('FBW','analytics/stocks/wb-warehouses'),
+                        ('FBS','analytics/stocks/seller-warehouses'),
+                    ):
+                        stock_runs.append((label,repo.latest_run(ctx.wb_connection_id,endpoint)))
+                auth_failures=[
+                    f'{label} HTTP {run.http_status}' for label,run in stock_runs
+                    if run is not None and run.status=='failed' and run.http_status in {401,403}
+                ]
+                verified=bool(stock_runs) and all(
+                    run is not None and run.status in {'success','partial'} for _,run in stock_runs)
+                if auth_failures:
+                    stock_ok=False
+                    stock_detail='фактический API отказал: '+', '.join(auth_failures)
+                elif verified and metadata_ok:
+                    stock_ok=True
+                    stock_detail='фактические FBW/FBS запросы ранее проходили успешно'
+                elif metadata_ok:
+                    stock_ok=True
+                    stock_detail='по токену подходит; фактический stock API ещё не подтверждён'
+                else:
+                    stock_ok=False
+                    stock_detail='нужен Personal/Service + категория Аналитика'
                 items.append(ReadinessItem(
                     'wb_stock_capability','WB · текущие остатки FBW/FBS',
-                    stock_type_ok and analytics_ok,False,
-                    'тип токена и категория подходят' if stock_type_ok and analytics_ok
-                    else 'нужен Personal/Service + категория Аналитика'))
+                    stock_ok,False,stock_detail))
         if ctx.collector.ozon is not None:
             oz=ctx.collector.ozon
-            info=await oz.seller_info(); company=''
+            info=await oz.seller_info(retry_on_429=False,fail_fast_rate_limit=True); company=''
             if info.ok and isinstance(info.data,dict):
                 company=str((info.data.get('company') or {}).get('name') or (info.data.get('company') or {}).get('legal_name') or '')
             items.append(ReadinessItem('ozon_auth','Ozon · кабинет',info.ok,True,
                                        ('кабинет: '+company) if info.ok and company else (info.error or 'OK')))
-            roles=await oz.api_roles(); methods=_ozon_method_strings(roles.data) if roles.ok else set()
-            detail=(f'{len(methods)} методов доступны'+_expiry_hint(roles.data)) if roles.ok else (roles.error or 'ошибка ролей')
-            items.append(ReadinessItem('ozon_roles','Ozon · права API-ключа',roles.ok,True,detail))
+            if info.status_code==429:
+                items.append(ReadinessItem('ozon_roles','Ozon · права API-ключа',False,False,
+                                           'не проверялось: действует лимит Ozon'))
+            else:
+                roles=await oz.api_roles(retry_on_429=False,fail_fast_rate_limit=True)
+                methods=_ozon_method_strings(roles.data) if roles.ok else set()
+                detail=(f'{len(methods)} методов доступны'+_expiry_hint(roles.data)) if roles.ok else (roles.error or 'ошибка ролей')
+                items.append(ReadinessItem('ozon_roles','Ozon · права API-ключа',roles.ok,True,detail))
         if ctx.collector.ozon_performance is not None:
             token=await ctx.collector.ozon_performance._token()
             items.append(ReadinessItem('ozon_ads','Ozon Performance',token.ok,False,

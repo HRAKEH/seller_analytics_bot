@@ -22,14 +22,26 @@ class DailyReport:
     sources: tuple[MarketplaceDaily, ...]
 
     @property
+    def complete(self) -> bool:
+        return bool(self.sources) and all(s.units is not None for s in self.sources)
+
+    @property
     def total_units(self) -> float | None:
-        values = [s.units for s in self.sources if s.units is not None]
+        # Never present a cross-marketplace "total" when one enabled source is
+        # missing; a partial sum looks authoritative but is not comparable.
+        if not self.complete: return None
+        return sum(float(s.units or 0) for s in self.sources)
+
+    @property
+    def available_units(self) -> float | None:
+        values=[float(s.units) for s in self.sources if s.units is not None]
         return sum(values) if values else None
 
     @property
     def previous_total_units(self) -> float | None:
-        values = [s.previous_units for s in self.sources if s.previous_units is not None]
-        return sum(values) if values else None
+        if not self.sources or any(s.previous_units is None for s in self.sources):
+            return None
+        return sum(float(s.previous_units or 0) for s in self.sources)
 
 
 def _metric(repo: Repository, connection_id: int, day: str, key: str):
@@ -45,8 +57,7 @@ def build_daily_report(repo: Repository, shop_id: int, day: date) -> DailyReport
         money = _metric(repo, conn.id, ds, 'ordered_revenue')
         cancels = _metric(repo, conn.id, ds, 'cancellations_units')
         prev_units = _metric(repo, conn.id, prev, 'ordered_units')
-        endpoint = 'analytics/orders' if conn.marketplace == 'ozon' else 'statistics/orders'
-        latest = repo.latest_run(conn.id, endpoint, ds)
+        latest = repo.latest_order_run(conn.id, ds)
         warning = latest.error if latest and latest.status == 'failed' else None
         sources.append(MarketplaceDaily(
             conn.marketplace, conn.id,
