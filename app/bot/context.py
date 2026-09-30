@@ -2,7 +2,7 @@ from __future__ import annotations
 import asyncio
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, timedelta
 from app.config import Settings
 from app.services.collection import CollectionService, CollectionOutcome
 from app.services.preferences import defaults_from_settings
@@ -135,7 +135,7 @@ class AppContext:
             current=start
             while current<=end:
                 requested.append(current.isoformat())
-                current += __import__('datetime').timedelta(days=1)
+                current += timedelta(days=1)
             missing=[ds for ds in requested if ds not in complete]
             if not missing:
                 out=[]
