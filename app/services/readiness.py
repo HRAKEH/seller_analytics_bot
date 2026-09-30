@@ -134,9 +134,13 @@ async def build_readiness(ctx, *, live: bool = False, persist: bool = True) -> R
                 ('wb_prices','WB · Цены и скидки','https://discounts-prices-api.wildberries.ru','Цены и скидки'),
             ]
             auth_blocked=(not info.ok and info.status_code in {401,403})
+            rate_limited=(not info.ok and info.status_code==429)
             for key,label,url,category in domains:
                 if auth_blocked:
                     items.append(ReadinessItem(key,label,False,False,'WB-токен не авторизован'))
+                    continue
+                if rate_limited:
+                    items.append(ReadinessItem(key,label,False,False,'WB временно ограничил запросы; повторите проверку позже'))
                     continue
                 if token_meta['ok'] and token_meta['expired'] is True:
                     items.append(ReadinessItem(key,label,False,False,'срок WB-токена истёк'))
