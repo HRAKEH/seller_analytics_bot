@@ -4,6 +4,9 @@ from datetime import datetime, timedelta, timezone
 from email.utils import format_datetime
 
 import httpx
+import pytest
+
+from app.integrations.base import MarketplaceClient
 
 from app.integrations.base import _server_retry_delay
 
@@ -37,3 +40,28 @@ def test_retry_after_http_date_is_supported():
 def test_rate_limit_reset_is_used_as_fallback():
     response=httpx.Response(429,headers={'X-Ratelimit-Reset':'29'})
     assert _server_retry_delay(response)==29.0
+
+
+@pytest.mark.asyncio
+async def test_final_429_preserves_cooldown_and_shared_scope_can_fail_fast():
+    calls=0
+    async def handler(request):
+        nonlocal calls
+        calls += 1
+        return httpx.Response(429,headers={'X-Ratelimit-Retry':'120'},text='limited')
+
+    transport=httpx.MockTransport(handler)
+    first=MarketplaceClient('test','https://example.com',min_interval=0,max_retries=0,
+                            transport=transport,rate_scope='same-credential')
+    second=MarketplaceClient('test','https://example.com',min_interval=0,max_retries=0,
+                             transport=transport,rate_scope='same-credential')
+    result=await first.request('GET','/',retry_429=False)
+    assert not result.ok and result.status_code==429 and calls==1
+    assert first.cooldown_remaining()>100
+
+    # A second runtime using the same credential must learn the cooldown without
+    # making another HTTP request or sleeping for two minutes.
+    result2=await second.request('GET','/',fail_fast_rate_limit=True)
+    assert not result2.ok and result2.status_code==429 and calls==1
+    assert 'повтор не ранее' in (result2.error or '')
+    await first.close(); await second.close()
