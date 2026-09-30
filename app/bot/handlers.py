@@ -35,7 +35,8 @@ from .context import AppContext
 from .keyboards import (
     main_keyboard, reports_keyboard, products_keyboard, money_keyboard, supply_keyboard,
     control_keyboard, shop_keyboard, service_keyboard, input_keyboard, shop_picker_keyboard,
-    shop_confirm_keyboard, backfill_source_keyboard, backfill_period_keyboard, backfill_running_keyboard, COMMAND_BUTTONS,
+    shop_confirm_keyboard, backfill_source_keyboard, backfill_period_keyboard, backfill_running_keyboard,
+    action_center_keyboard, action_item_keyboard, action_ref, COMMAND_BUTTONS,
     MENU_REPORTS, MENU_PRODUCTS, MENU_MONEY, MENU_SUPPLY, MENU_CONTROL, MENU_SHOP, MENU_SERVICE,
     HOME, BACK, CANCEL,
 )
@@ -86,7 +87,29 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
         return main_keyboard(ctx.repository.role_for_user(uid,ctx.shop_id))
 
     async def send(message: types.Message, text: str):
-        await message.answer(text, parse_mode='HTML', reply_markup=keyboard_for(message))
+        # Telegram rejects messages over 4096 chars. Most report formatters place
+        # HTML tags within individual lines, so line-based chunking keeps markup valid.
+        limit=3900
+        lines=(text or '').split('\n')
+        chunks=[]; current=''
+        for line in lines:
+            candidate=line if not current else current+'\n'+line
+            if len(candidate)<=limit:
+                current=candidate
+                continue
+            if current:
+                chunks.append(current)
+            current=line
+            while len(current)>limit:
+                chunks.append(current[:limit])
+                current=current[limit:]
+        if current or not chunks:
+            chunks.append(current)
+        for idx,chunk in enumerate(chunks):
+            await message.answer(
+                chunk or '—',
+                parse_mode='HTML',
+                reply_markup=keyboard_for(message) if idx==len(chunks)-1 else None)
 
     def role_for(message: types.Message) -> str:
         uid=message.from_user.id if message.from_user else 0
@@ -95,9 +118,8 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
     async def show_main_menu(message: types.Message, *, text: str | None = None):
         shop=ctx.repository.get_shop(ctx.shop_id)
         title=text or (
-            f'🏠 <b>Главное меню</b>\n'
-            f'🏪 {escape(shop.name if shop else "Магазин")}\n'
-            f'Выберите раздел:'
+            f'🏠 <b>{escape(shop.name if shop else "Магазин")}</b>\n'
+            'Выберите, что хотите сделать:'
         )
         await message.answer(title,parse_mode='HTML',reply_markup=main_keyboard(role_for(message)))
 
@@ -1186,17 +1208,111 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
         lines += ['🚨 <b>Изменения алертов</b>']+['• '+escape(n.message) for n in notes] if notes else ['✅ Новых изменений алертов нет.']
         if active:
             lines += ['', '<b>Активные проблемы</b>']
+            rule_labels={
+                'api_stale':'Данные давно не обновлялись',
+                'order_drop':'Падение заказов',
+                'low_stock':'Мало остатка',
+                'high_drr':'Высокий ДРР',
+            }
+            subject_labels={'wildberries':'Wildberries','wb':'Wildberries','ozon':'Ozon'}
             for row in active[:20]:
+                rule=str(row.get('rule_key') or '')
+                subject=str(row.get('subject_key') or '')
+                label=rule_labels.get(rule,rule.replace('_',' '))
+                subject_label=subject_labels.get(subject.lower(),subject)
                 value='' if row.get('last_value') is None else f" · значение {float(row['last_value']):.1f}"
-                lines.append(f"• {escape(str(row['rule_key']))} · {escape(str(row['subject_key']))}{value}")
+                if rule=='api_stale':
+                    lines.append(f"• ⚠️ <b>{escape(subject_label)}</b>: {escape(label.lower())}.")
+                else:
+                    lines.append(f"• {escape(label)} · {escape(subject_label)}{value}")
+            if any(str(x.get('rule_key'))=='api_stale' for x in active):
+                lines += ['', 'Что делать: откройте «📡 Состояние данных». Если нужно обновить данные — «📊 Отчёты» → «🔄 Обновить вчера».']
         else: lines += ['', '🟢 Активных проблем нет.']
         await send(message,'\n'.join(lines))
+
+    def current_action_center():
+        end=local_now().date()-timedelta(days=1)
+        return build_action_center(ctx.repository,ctx.shop_id,end,persist=False)
+
+    def find_action_by_ref(ref: str):
+        center=current_action_center()
+        item=next((x for x in center.items if action_ref(str(x.action_key))==ref),None)
+        return center,item
 
     @dp.message(Command('actions'))
     async def cmd_actions(message: types.Message):
         if not allowed(message): return await denied(message)
         end=local_now().date()-timedelta(days=1)
-        await send(message,format_action_center(build_action_center(ctx.repository,ctx.shop_id,end,persist=allowed(message,'operate'))))
+        center=build_action_center(ctx.repository,ctx.shop_id,end,persist=allowed(message,'operate'))
+        await message.answer(
+            format_action_center(center),
+            parse_mode='HTML',
+            reply_markup=action_center_keyboard(center.items) if center.items else keyboard_for(message))
+
+    @dp.callback_query(F.data == 'action:list')
+    async def cb_action_list(callback: types.CallbackQuery):
+        if callback.from_user is None or not ctx.repository.can_user(callback.from_user.id,ctx.shop_id,'view'):
+            return await callback.answer('Недостаточно прав.',show_alert=True)
+        center=current_action_center()
+        await callback.answer()
+        if callback.message:
+            await callback.message.edit_text(
+                format_action_center(center),
+                parse_mode='HTML',
+                reply_markup=action_center_keyboard(center.items) if center.items else None)
+
+    @dp.callback_query(F.data.startswith('action:view:'))
+    async def cb_action_view(callback: types.CallbackQuery):
+        if callback.from_user is None or not ctx.repository.can_user(callback.from_user.id,ctx.shop_id,'view'):
+            return await callback.answer('Недостаточно прав.',show_alert=True)
+        ref=(callback.data or '').rsplit(':',1)[-1]
+        _,item=find_action_by_ref(ref)
+        if item is None:
+            return await callback.answer('Действие уже изменилось или исчезло.',show_alert=True)
+        state=' · ✅ принято' if item.status=='acknowledged' else (' · ⏰ отложено' if item.status=='snoozed' else '')
+        lines=[
+            f'🎯 <b>{escape(item.title)}</b>{state}',
+            escape(item.detail),
+        ]
+        if item.evidence:
+            lines += ['', '<b>Почему:</b>', '• '+escape(' · '.join(item.evidence[:5]))]
+        if item.hint:
+            lines += ['', '<b>Где посмотреть:</b>', escape(item.hint)]
+        await callback.answer()
+        if callback.message:
+            await callback.message.edit_text(
+                '\n'.join(lines),parse_mode='HTML',
+                reply_markup=action_item_keyboard(ref) if ctx.repository.can_user(callback.from_user.id,ctx.shop_id,'operate') else None)
+
+    @dp.callback_query(F.data.startswith('action:ack:'))
+    async def cb_action_ack(callback: types.CallbackQuery):
+        if callback.from_user is None or not ctx.repository.can_user(callback.from_user.id,ctx.shop_id,'operate'):
+            return await callback.answer('Недостаточно прав.',show_alert=True)
+        ref=(callback.data or '').rsplit(':',1)[-1]
+        _,item=find_action_by_ref(ref)
+        if item is None:
+            return await callback.answer('Действие уже изменилось или исчезло.',show_alert=True)
+        ok=ctx.repository.set_action_status(ctx.shop_id,item.action_key,'acknowledged',telegram_user_id=callback.from_user.id)
+        await callback.answer('Принято' if ok else 'Не удалось обновить',show_alert=not ok)
+        if callback.message and ok:
+            await callback.message.edit_reply_markup(reply_markup=action_item_keyboard(ref))
+
+    @dp.callback_query(F.data.startswith('action:snooze:'))
+    async def cb_action_snooze(callback: types.CallbackQuery):
+        if callback.from_user is None or not ctx.repository.can_user(callback.from_user.id,ctx.shop_id,'operate'):
+            return await callback.answer('Недостаточно прав.',show_alert=True)
+        ref=(callback.data or '').rsplit(':',1)[-1]
+        _,item=find_action_by_ref(ref)
+        if item is None:
+            return await callback.answer('Действие уже изменилось или исчезло.',show_alert=True)
+        ok=ctx.repository.set_action_status(
+            ctx.shop_id,item.action_key,'snoozed',
+            telegram_user_id=callback.from_user.id,snooze_hours=24)
+        await callback.answer('Отложено на 24 часа' if ok else 'Не удалось обновить',show_alert=not ok)
+        if callback.message and ok:
+            await callback.message.edit_text(
+                '⏰ <b>Действие отложено на 24 часа.</b>\nОно вернётся, если проблема останется актуальной.',
+                parse_mode='HTML')
 
     @dp.message(Command('action_history'))
     async def cmd_action_history(message: types.Message):
@@ -1454,7 +1570,7 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
 
     @dp.message(F.text == MENU_PRODUCTS)
     async def menu_products(message: types.Message):
-        await show_submenu(message,'📦 <b>Товары и SKU</b>\nАссортимент, остатки, себестоимость и связка листингов.',products_keyboard)
+        await show_submenu(message,'📦 <b>Товары</b>\nПродажи по товарам, остатки и прибыль по SKU.',products_keyboard)
 
     @dp.message(F.text == MENU_MONEY)
     async def menu_money(message: types.Message):
@@ -1466,15 +1582,15 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
 
     @dp.message(F.text == MENU_CONTROL)
     async def menu_control(message: types.Message):
-        await show_submenu(message,'🚨 <b>Контроль</b>\nАлерты, состояние API, health-check и retry-очередь.',control_keyboard)
+        await show_submenu(message,'🚨 <b>Проблемы</b>\nЧто требует внимания, активные предупреждения и состояние данных.',control_keyboard)
 
     @dp.message(F.text == MENU_SHOP)
     async def menu_shop(message: types.Message):
-        await show_submenu(message,'🏪 <b>Магазин и доступ</b>\nМагазины, роли сотрудников, профили ключей и настройки.',shop_keyboard)
+        await show_submenu(message,'🏪 <b>Магазин</b>\nВыбор магазина, настройки и подключения.',shop_keyboard)
 
     @dp.message(F.text == MENU_SERVICE)
     async def menu_service(message: types.Message):
-        await show_submenu(message,'🛠 <b>Сервис</b>\nЭкспорт и резервное копирование.',service_keyboard)
+        await show_submenu(message,'🛠 <b>Ещё</b>\nЭкспорт, диагностика и служебные функции.',service_keyboard)
 
     @dp.message(F.text == BACK)
     async def menu_back(message: types.Message, state: FSMContext):

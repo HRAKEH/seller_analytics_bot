@@ -200,6 +200,50 @@ def test_action_center_retry_failures_are_shop_scoped():
     assert 'recent_retry_jobs(limit=50,shop_id=shop_id)' in src
 
 
+def test_startup_reuses_existing_active_shop_instead_of_recreating_default():
+    src=(ROOT/'main.py').read_text(encoding='utf-8')
+    assert 'active_shops=repo.list_shops(seller.id)' in src
+    assert "shop=active_shops[0] if active_shops else repo.ensure_shop(" in src
+
+
+def test_simplified_user_menus_hide_manual_and_technical_actions(monkeypatch):
+    kb=_load_keyboard_module_with_stub(monkeypatch)
+    reports=set(kb.reports_keyboard('owner'))
+    products=set(kb.products_keyboard('owner'))
+    control=set(kb.control_keyboard('owner'))
+    supply=set(kb.supply_keyboard('owner'))
+    assert kb.COMMAND_BUTTONS['day'] not in reports
+    assert kb.COMMAND_BUTTONS['cost'] not in products
+    assert kb.COMMAND_BUTTONS['link'] not in products
+    assert kb.COMMAND_BUTTONS['action_ack'] not in control
+    assert kb.COMMAND_BUTTONS['action_snooze'] not in control
+    assert kb.COMMAND_BUTTONS['health'] not in control
+    assert kb.COMMAND_BUTTONS['diagnostics'] not in control
+    assert kb.COMMAND_BUTTONS['supply_set'] not in supply
+    assert kb.COMMAND_BUTTONS['supply_defaults'] not in supply
+
+
+def test_action_center_has_inline_button_flow(monkeypatch):
+    kb=_load_keyboard_module_with_stub(monkeypatch)
+    class Item:
+        action_key='alert:api_stale:wildberries'
+        title='Wildberries: данные давно не обновлялись'
+    markup=kb.action_center_keyboard([Item()])
+    assert any(x[1].startswith('action:view:') for x in markup if isinstance(x,tuple))
+    ref=kb.action_ref(Item.action_key)
+    detail=kb.action_item_keyboard(ref)
+    assert ('✅ Принято',f'action:ack:{ref}') in detail
+    assert ('⏰ Отложить на 24 ч',f'action:snooze:{ref}') in detail
+
+
+def test_long_message_guard_and_human_readable_api_alerts_are_present():
+    src=(ROOT/'app/bot/handlers.py').read_text(encoding='utf-8')
+    assert 'limit=3900' in src
+    assert "'api_stale':'Данные давно не обновлялись'" in src
+    assert 'Wildberries' in src
+    assert "F.data.startswith('action:view:')" in src
+
+
 def test_main_singleton_lease_has_fail_fast_cleanup():
     src=(ROOT/'main.py').read_text(encoding='utf-8')
     assert "poller_lease='singleton:telegram-poller'" in src
