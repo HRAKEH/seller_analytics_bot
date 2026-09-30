@@ -212,7 +212,7 @@ def test_simplified_user_menus_hide_manual_and_technical_actions(monkeypatch):
     products=set(kb.products_keyboard('owner'))
     control=set(kb.control_keyboard('owner'))
     supply=set(kb.supply_keyboard('owner'))
-    assert kb.COMMAND_BUTTONS['day'] not in reports
+    assert kb.COMMAND_BUTTONS['day'] in reports
     assert kb.COMMAND_BUTTONS['cost'] not in products
     assert kb.COMMAND_BUTTONS['link'] not in products
     assert kb.COMMAND_BUTTONS['action_ack'] not in control
@@ -242,6 +242,44 @@ def test_long_message_guard_and_human_readable_api_alerts_are_present():
     assert "'api_stale':'Данные давно не обновлялись'" in src
     assert 'Wildberries' in src
     assert "F.data.startswith('action:view:')" in src
+
+def test_common_flows_use_buttons_and_cached_reports(monkeypatch):
+    kb=_load_keyboard_module_with_stub(monkeypatch)
+    day=kb.date_picker_keyboard()
+    assert ('Вчера','day:relative:1') in day
+    assert ('⌨️ Ввести дату','day:custom') in day
+
+    export=kb.export_picker_keyboard()
+    assert ('Excel · 30 дн.','export:30:xlsx') in export
+    assert ('CSV · 90 дн.','export:90:csv') in export
+
+    jobs=kb.retry_jobs_keyboard([{'id':7,'job_type':'daily','status':'dead'}])
+    assert ('🔁 Повторить #7 · daily','job:retry:7') in jobs
+
+    products=set(kb.products_keyboard('owner'))
+    money=set(kb.money_keyboard('owner'))
+    assert '🔄 Обновить остатки' in products
+    assert '🔄 Обновить финансы' in money
+    assert '🔄 Обновить рекламу' in money
+
+
+def test_normal_report_buttons_do_not_implicitly_call_marketplace_apis():
+    src=(ROOT/'app/bot/handlers.py').read_text(encoding='utf-8')
+    finance=src[src.index("@dp.message(F.text == COMMAND_BUTTONS['finance'])"):src.index("@dp.message(F.text == COMMAND_BUTTONS['ads'])")]
+    assert 'collect_finance' not in finance
+    ads=src[src.index("@dp.message(F.text == COMMAND_BUTTONS['ads'])"):src.index("@dp.message(F.text == COMMAND_BUTTONS['management'])")]
+    assert 'collect_advertising' not in ads
+    stocks=src[src.index("@dp.message(F.text == '📦 Остатки')"):src.index("@dp.message(F.text == '🔄 Обновить остатки')")]
+    assert 'collect_inventory' not in stocks
+    assert "@dp.message(F.text == '🔄 Обновить финансы')" in src
+    assert "@dp.message(F.text == '🔄 Обновить рекламу')" in src
+
+
+def test_wb_connection_checks_do_not_sleep_for_rate_limit_retry():
+    src=(ROOT/'app/integrations/wildberries.py').read_text(encoding='utf-8')
+    ping=src[src.index('    async def ping'):src.index('    async def orders')]
+    assert ping.count('retry_on_429=False') >= 2
+
 
 
 def test_main_singleton_lease_has_fail_fast_cleanup():
