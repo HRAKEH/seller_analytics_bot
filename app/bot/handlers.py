@@ -36,7 +36,8 @@ from .keyboards import (
     main_keyboard, reports_keyboard, products_keyboard, money_keyboard, supply_keyboard,
     control_keyboard, shop_keyboard, service_keyboard, input_keyboard, shop_picker_keyboard,
     shop_confirm_keyboard, backfill_source_keyboard, backfill_period_keyboard, backfill_running_keyboard,
-    action_center_keyboard, action_item_keyboard, action_ref, COMMAND_BUTTONS,
+    action_center_keyboard, action_item_keyboard, action_ref, date_picker_keyboard,
+    export_picker_keyboard, retry_jobs_keyboard, COMMAND_BUTTONS,
     MENU_REPORTS, MENU_PRODUCTS, MENU_MONEY, MENU_SUPPLY, MENU_CONTROL, MENU_SHOP, MENU_SERVICE,
     HOME, BACK, CANCEL,
 )
@@ -161,6 +162,24 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
 
     def local_now() -> datetime:
         return datetime.now(ZoneInfo(pref().timezone))
+
+    async def deliver_export(message: types.Message, days: int, fmt: str):
+        days=max(1,min(int(days),365))
+        fmt=(fmt or 'xlsx').lower()
+        if fmt not in {'xlsx','csv'}:
+            return await message.answer('⚠️ Формат экспорта: Excel или CSV.')
+        end=local_now().date()-timedelta(days=1)
+        shop=ctx.repository.get_shop(ctx.shop_id)
+        await message.answer(f'📤 Формирую файл за {days} дн. · {fmt.upper()}…')
+        try:
+            with tempfile.TemporaryDirectory(prefix='seller-bot-export-') as tmp:
+                suffix='.xlsx' if fmt=='xlsx' else '_csv.zip'
+                path=Path(tmp)/f'sellerbot_shop_{ctx.shop_id}_{end.isoformat()}{suffix}'
+                result=export_xlsx(ctx.repository,ctx.shop_id,end,days,path) if fmt=='xlsx' else export_csv_zip(ctx.repository,ctx.shop_id,end,days,path)
+                caption=f'📤 {shop.name if shop else "Магазин"} · {result.start} — {result.end}'
+                await message.answer_document(FSInputFile(str(result.path)),caption=caption)
+        except Exception as exc:
+            await message.answer(f'⚠️ Экспорт не создан: {escape(str(exc)[:300])}')
 
     def backfill_source_label(source: str) -> str:
         return {
@@ -652,19 +671,7 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
         try: days=int(parts[1]) if len(parts)>1 else 30
         except ValueError: return await message.answer('Формат: /export [дней] [xlsx|csv]')
         fmt=(parts[2].lower() if len(parts)>2 else 'xlsx')
-        if fmt not in {'xlsx','csv'}: return await message.answer('Формат экспорта: xlsx или csv.')
-        days=max(1,min(days,365)); end=local_now().date()-timedelta(days=1)
-        shop=ctx.repository.get_shop(ctx.shop_id)
-        await message.answer(f'📤 Формирую экспорт за {days} дн. · {fmt.upper()}…')
-        try:
-            with tempfile.TemporaryDirectory(prefix='seller-bot-export-') as tmp:
-                suffix='.xlsx' if fmt=='xlsx' else '_csv.zip'
-                path=Path(tmp)/f'sellerbot_shop_{ctx.shop_id}_{end.isoformat()}{suffix}'
-                result=export_xlsx(ctx.repository,ctx.shop_id,end,days,path) if fmt=='xlsx' else export_csv_zip(ctx.repository,ctx.shop_id,end,days,path)
-                caption=f'📤 {shop.name if shop else "Магазин"} · {result.start} — {result.end}'
-                await message.answer_document(FSInputFile(str(result.path)),caption=caption)
-        except Exception as exc:
-            await message.answer(f'⚠️ Экспорт не создан: {escape(str(exc)[:300])}')
+        await deliver_export(message,days,fmt)
 
     @dp.message(Command('backup'))
     async def cmd_backup(message: types.Message):
@@ -1517,14 +1524,21 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
     async def cmd_jobs(message: types.Message):
         if not allowed(message,'operate'): return await denied(message,'operate')
         counts=ctx.repository.retry_job_counts(ctx.shop_id); rows=ctx.repository.recent_retry_jobs(12,shop_id=ctx.shop_id)
-        lines=['🧰 <b>Persistent retry queue</b>','━━━━━━━━━━━━━━━━',
-               f'pending: {counts.get("pending",0)} · running: {counts.get("running",0)} · dead: {counts.get("dead",0)} · success: {counts.get("success",0)}']
-        for r in rows:
-            icon={'pending':'⏳','running':'▶️','success':'✅','dead':'❌'}.get(str(r['status']),'•')
-            lines.append(f'{icon} #{r["id"]} · <code>{escape(str(r["job_type"]))}</code> · попыток {r["attempts"]}/{r["max_attempts"]}')
-            if r.get('last_error'): lines.append(f'  {escape(str(r["last_error"])[:140])}')
-        if allowed(message,'manage'): lines += ['', 'Повторить вручную: кнопка «🔁 Повторить retry-задачу».']
-        await send(message,'\n'.join(lines))
+        labels={'daily':'ежедневный отчёт','inventory':'остатки','reconciliation':'сверка',
+                'advertising':'реклама','promotions':'акции','inbound':'поставки'}
+        lines=['🔁 <b>Ошибки и автоматические повторы</b>','━━━━━━━━━━━━━━━━',
+               f'Ждут: {counts.get("pending",0)} · выполняются: {counts.get("running",0)} · исчерпаны: {counts.get("dead",0)}']
+        for r in rows[:8]:
+            status=str(r['status'])
+            icon={'pending':'⏳','running':'▶️','success':'✅','dead':'❌'}.get(status,'•')
+            kind=labels.get(str(r.get('job_type')),str(r.get('job_type')))
+            lines.append(f'{icon} #{r["id"]} · {escape(kind)} · попыток {r["attempts"]}/{r["max_attempts"]}')
+            if status=='dead' and r.get('last_error'):
+                lines.append(f'  ↳ {escape(str(r["last_error"])[:120])}')
+        if not rows:
+            lines.append('✅ Ошибок и повторов сейчас нет.')
+        markup=retry_jobs_keyboard(rows) if allowed(message,'manage') else keyboard_for(message)
+        await message.answer('\n'.join(lines),parse_mode='HTML',reply_markup=markup)
 
     @dp.message(Command('job_retry'))
     async def cmd_job_retry(message: types.Message):
@@ -1566,15 +1580,15 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
 
     @dp.message(F.text == MENU_REPORTS)
     async def menu_reports(message: types.Message):
-        await show_submenu(message,'📊 <b>Отчёты</b>\nДень, периоды, история и загрузка данных.',reports_keyboard)
+        await show_submenu(message,'📊 <b>Отчёты</b>\n«Вчера / Неделя / Месяц» — из сохранённых данных, без API. «Обновить» и «Догрузить» обращаются к маркетплейсам.',reports_keyboard)
 
     @dp.message(F.text == MENU_PRODUCTS)
     async def menu_products(message: types.Message):
-        await show_submenu(message,'📦 <b>Товары</b>\nПродажи по товарам, остатки и прибыль по SKU.',products_keyboard)
+        await show_submenu(message,'📦 <b>Товары</b>\n«Остатки» показывает последний сохранённый снимок. «Обновить остатки» — отдельный запрос к API.',products_keyboard)
 
     @dp.message(F.text == MENU_MONEY)
     async def menu_money(message: types.Message):
-        await show_submenu(message,'💰 <b>Деньги и реклама</b>\nФинансы, реклама, управленческий результат и сверка.',money_keyboard)
+        await show_submenu(message,'💰 <b>Деньги и реклама</b>\nОбычные отчёты читают БД. Кнопки «Обновить…» явно запрашивают API. «Проверка расхождений» — тяжёлая полная сверка.',money_keyboard)
 
     @dp.message(F.text == MENU_SUPPLY)
     async def menu_supply(message: types.Message):
@@ -1682,9 +1696,15 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
     @dp.message(F.text == COMMAND_BUTTONS['user_remove'])
     async def btn_menu_user_remove(message: types.Message,state: FSMContext): await launch_input_action(message,state,'user_remove')
     @dp.message(F.text == COMMAND_BUTTONS['export'])
-    async def btn_menu_export(message: types.Message,state: FSMContext): await launch_input_action(message,state,'export')
+    async def btn_menu_export(message: types.Message,state: FSMContext):
+        if not allowed(message): return await denied(message)
+        await state.clear()
+        await message.answer('📤 <b>Скачать данные</b>\nВыберите формат и период:',parse_mode='HTML',reply_markup=export_picker_keyboard())
     @dp.message(F.text == COMMAND_BUTTONS['day'])
-    async def btn_menu_day(message: types.Message,state: FSMContext): await launch_input_action(message,state,'day')
+    async def btn_menu_day(message: types.Message,state: FSMContext):
+        if not allowed(message,'operate'): return await denied(message,'operate')
+        await state.clear()
+        await message.answer('🗓 <b>Другой день</b>\nВыберите дату:',parse_mode='HTML',reply_markup=date_picker_keyboard())
     @dp.message(F.text == COMMAND_BUTTONS['link'])
     async def btn_menu_link(message: types.Message,state: FSMContext): await launch_input_action(message,state,'link')
     @dp.message(F.text == COMMAND_BUTTONS['cost'])
@@ -1701,6 +1721,68 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
     async def btn_menu_action_ack(message: types.Message,state: FSMContext): await launch_input_action(message,state,'action_ack')
     @dp.message(F.text == COMMAND_BUTTONS['action_snooze'])
     async def btn_menu_action_snooze(message: types.Message,state: FSMContext): await launch_input_action(message,state,'action_snooze')
+
+    @dp.callback_query(F.data == 'flow:cancel')
+    async def cb_flow_cancel(callback: types.CallbackQuery, state: FSMContext):
+        await state.clear()
+        await callback.answer('Закрыто')
+        if callback.message:
+            try: await callback.message.edit_reply_markup(reply_markup=None)
+            except Exception: pass
+
+    @dp.callback_query(F.data.startswith('day:relative:'))
+    async def cb_day_relative(callback: types.CallbackQuery):
+        if callback.from_user is None or not ctx.repository.can_user(callback.from_user.id,ctx.shop_id,'operate'):
+            return await callback.answer('Недостаточно прав.',show_alert=True)
+        try: days=int((callback.data or '').rsplit(':',1)[-1])
+        except ValueError: return await callback.answer('Некорректная дата.',show_alert=True)
+        target=local_now().date()-timedelta(days=max(1,days))
+        await callback.answer()
+        if callback.message:
+            await callback.message.answer(f'⏳ Обновляю данные за {target.isoformat()}…')
+            try:
+                await ctx.collect_day(target)
+            except Exception as exc:
+                await callback.message.answer(f'⚠️ Ошибка загрузки: {escape(str(exc)[:250])}')
+            await callback.message.answer(
+                format_daily(build_daily_report(ctx.repository,ctx.shop_id,target)),
+                parse_mode='HTML',
+                reply_markup=main_keyboard(ctx.repository.role_for_user(callback.from_user.id,ctx.shop_id)))
+
+    @dp.callback_query(F.data == 'day:custom')
+    async def cb_day_custom(callback: types.CallbackQuery, state: FSMContext):
+        if callback.from_user is None or not ctx.repository.can_user(callback.from_user.id,ctx.shop_id,'operate'):
+            return await callback.answer('Недостаточно прав.',show_alert=True)
+        await callback.answer()
+        if callback.message:
+            await start_menu_input(callback.message,state,'day',prompts['day'])
+
+    @dp.callback_query(F.data.startswith('export:'))
+    async def cb_export(callback: types.CallbackQuery):
+        if callback.from_user is None or not ctx.repository.can_user(callback.from_user.id,ctx.shop_id,'view'):
+            return await callback.answer('Недостаточно прав.',show_alert=True)
+        parts=(callback.data or '').split(':')
+        if len(parts)!=3:
+            return await callback.answer('Некорректный экспорт.',show_alert=True)
+        try: days=int(parts[1])
+        except ValueError: return await callback.answer('Некорректный период.',show_alert=True)
+        fmt=parts[2]
+        await callback.answer('Готовлю файл…')
+        if callback.message:
+            await deliver_export(callback.message,days,fmt)
+
+    @dp.callback_query(F.data.startswith('job:retry:'))
+    async def cb_job_retry(callback: types.CallbackQuery):
+        if callback.from_user is None or not ctx.repository.can_user(callback.from_user.id,ctx.shop_id,'manage'):
+            return await callback.answer('Недостаточно прав.',show_alert=True)
+        try: job_id=int((callback.data or '').rsplit(':',1)[-1])
+        except ValueError: return await callback.answer('Некорректная задача.',show_alert=True)
+        ok=ctx.repository.requeue_retry_job(job_id,shop_id=ctx.shop_id)
+        await callback.answer('Задача возвращена в очередь.' if ok else 'Задача уже недоступна.',show_alert=not ok)
+        if callback.message:
+            counts=ctx.repository.retry_job_counts(ctx.shop_id)
+            await callback.message.answer(
+                f'🔁 Очередь: ждут {counts.get("pending",0)} · исчерпаны {counts.get("dead",0)}')
 
     @dp.message(StateFilter(MenuInputStates.waiting_value), F.text)
     async def menu_input_value(message: types.Message,state: FSMContext):
@@ -1751,11 +1833,20 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
     @dp.message(F.text == COMMAND_BUTTONS['products'])
     async def btn_menu_products_report(message: types.Message): await cmd_products(command_copy(message,'products',''))
     @dp.message(F.text == COMMAND_BUTTONS['finance'])
-    async def btn_menu_finance(message: types.Message): await cmd_finance(command_copy(message,'finance',''))
+    async def btn_menu_finance(message: types.Message):
+        if not allowed(message): return await denied(message)
+        p=pref(); days=p.finance_lookback_days; end=local_now().date()-timedelta(days=1)
+        await send(message,format_finance(build_finance_report(ctx.repository,ctx.shop_id,end,days)))
     @dp.message(F.text == COMMAND_BUTTONS['ads'])
-    async def btn_menu_ads(message: types.Message): await cmd_ads(command_copy(message,'ads',''))
+    async def btn_menu_ads(message: types.Message):
+        if not allowed(message): return await denied(message)
+        p=pref(); days=p.finance_lookback_days; end=local_now().date()-timedelta(days=1)
+        await send(message,format_advertising(build_advertising_report(ctx.repository,ctx.shop_id,end,days)))
     @dp.message(F.text == COMMAND_BUTTONS['management'])
-    async def btn_menu_management(message: types.Message): await cmd_management(command_copy(message,'management',''))
+    async def btn_menu_management(message: types.Message):
+        if not allowed(message): return await denied(message)
+        p=pref(); days=p.finance_lookback_days; end=local_now().date()-timedelta(days=1)
+        await send(message,format_management(build_management_report(ctx.repository,ctx.shop_id,end,days)))
     @dp.message(F.text == COMMAND_BUTTONS['sku_finance'])
     async def btn_menu_sku_finance(message: types.Message): await cmd_sku_finance(command_copy(message,'sku_finance',''))
     @dp.message(F.text == COMMAND_BUTTONS['reconcile'])
@@ -1831,7 +1922,23 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
             days=p.product_report_days,stock_lookback_days=p.stock_velocity_days,stock_risk_days=p.stock_risk_days)))
 
     @dp.message(F.text == '📦 Остатки')
-    async def btn_stocks(message: types.Message): await cmd_stocks(message)
+    async def btn_stocks(message: types.Message):
+        if not allowed(message): return await denied(message)
+        p=pref(); end=local_now().date()-timedelta(days=1)
+        await send(message,format_stock_report(build_product_report(ctx.repository,ctx.shop_id,end,
+            days=p.product_report_days,stock_lookback_days=p.stock_velocity_days,stock_risk_days=p.stock_risk_days)))
+
+    @dp.message(F.text == '🔄 Обновить остатки')
+    async def btn_stocks_refresh(message: types.Message):
+        await cmd_stocks(message)
+
+    @dp.message(F.text == '🔄 Обновить финансы')
+    async def btn_finance_refresh(message: types.Message):
+        await cmd_finance(command_copy(message,'finance',''))
+
+    @dp.message(F.text == '🔄 Обновить рекламу')
+    async def btn_ads_refresh(message: types.Message):
+        await cmd_ads(command_copy(message,'ads',''))
 
     @dp.message(F.text == '🚚 Поставка')
     async def btn_supply(message: types.Message):
