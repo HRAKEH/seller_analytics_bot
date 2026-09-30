@@ -114,18 +114,18 @@ class WildberriesClient(MarketplaceClient):
         return {'Authorization': self.token} if self.token else {}
 
     async def ping(self, base_url: str = 'https://common-api.wildberries.ru', *,
-                   retry_429: bool = True, fail_fast_rate_limit: bool = False) -> FetchResult:
+                   retry_on_429: bool = False, fail_fast_rate_limit: bool = True) -> FetchResult:
         return await self.request(
             'GET',base_url.rstrip('/')+'/ping',headers=self._headers(),
             rate_key='ping:'+base_url,min_interval=10.0,
-            retry_429=retry_429,fail_fast_rate_limit=fail_fast_rate_limit)
+            retry_on_429=retry_on_429,fail_fast_rate_limit=fail_fast_rate_limit)
 
-    async def seller_info(self, *, retry_429: bool = True,
-                          fail_fast_rate_limit: bool = False) -> FetchResult:
+    async def seller_info(self, *, retry_on_429: bool = False,
+                          fail_fast_rate_limit: bool = True) -> FetchResult:
         return await self.request(
             'GET','https://common-api.wildberries.ru/api/v1/seller-info',
             headers=self._headers(),rate_key='seller_info',min_interval=60.0,
-            retry_429=retry_429,fail_fast_rate_limit=fail_fast_rate_limit)
+            retry_on_429=retry_on_429,fail_fast_rate_limit=fail_fast_rate_limit)
 
     async def orders(self, date_from: str, *, flag: int = 0) -> FetchResult:
         """Operational orders. flag=1 returns rows whose order date matches date_from."""
