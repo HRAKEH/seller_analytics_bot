@@ -70,12 +70,15 @@ def format_action_center(center: ActionCenter, *, page: int=0, per_page: int=5) 
             lines += ['',f'{icon} <b>{label}</b>']
             last_priority=item.priority
         state=' · ✅ принято' if item.status=='acknowledged' else (' · ⏰ отложено' if item.status=='snoozed' else '')
-        lines.append(f'• <b>{escape(item.title)}</b>{state}')
-        lines.append(escape(item.detail))
+        title=item.title if len(item.title)<=120 else item.title[:117]+'…'
+        detail=item.detail if len(item.detail)<=350 else item.detail[:347]+'…'
+        lines.append(f'• <b>{escape(title)}</b>{state}')
+        lines.append(escape(detail))
         if item.evidence:
-            lines.append('  ↳ '+escape(' · '.join(item.evidence[:3])))
+            evidence=' · '.join(str(x)[:120] for x in item.evidence[:3])
+            lines.append('  ↳ '+escape(evidence[:380]))
         if item.hint:
-            lines.append(f'  → {escape(item.hint)}')
+            lines.append(f'  → {escape(item.hint[:180])}')
     if center.snoozed_count:
         lines += ['',f'⏰ Скрыто отложенных действий: {center.snoozed_count}.']
     return '\n'.join(lines)
