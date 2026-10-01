@@ -1,7 +1,7 @@
 """Financial normalization with conservative, source-explicit semantics."""
 from __future__ import annotations
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Any
 from app.storage.models import MetricPoint
 from .numeric import finite_number
@@ -23,13 +23,18 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec='seconds')
 
 def _num(value: Any) -> float:
+    if isinstance(value,dict) and value.get('currency') not in (None,'','RUB','RUR','руб'):
+        raise FinanceNormalizationError('Unsupported finance currency; RUB is required')
     try: return finite_number(value)
-    except (TypeError, ValueError) as exc: raise FinanceNormalizationError(f'Некорректная денежная сумма: {value!r}') from exc
+    except (TypeError, ValueError) as exc: raise FinanceNormalizationError('Некорректная денежная сумма') from exc
 
 def normalize_wb_finance_report(row: dict[str, Any], connection_id: int) -> tuple[str, list[MetricPoint]]:
     if not isinstance(row, dict): raise FinanceNormalizationError('WB finance row must be object')
     day = str(row.get('dateTo') or row.get('dateFrom') or row.get('createDate') or '')[:10]
-    if len(day) != 10: raise FinanceNormalizationError('WB finance row has no report date')
+    try: date.fromisoformat(day)
+    except ValueError as exc: raise FinanceNormalizationError('WB finance row has no valid report date') from exc
+    if row.get('currency') not in (None,'','RUB','RUR','руб'):
+        raise FinanceNormalizationError('Unsupported finance currency; RUB is required')
     as_of = str(row.get('createDate') or _now())
     mapping = {
         'financial_sales': 'retailAmountSum', 'goods_payable': 'forPaySum',
@@ -47,16 +52,42 @@ def normalize_wb_finance_report(row: dict[str, Any], connection_id: int) -> tupl
     if not points: raise FinanceNormalizationError('WB finance row has no supported totals')
     return day, points
 
+def _accrual_rows(payload: Any) -> list[dict[str,Any]]:
+    if not isinstance(payload,dict) or 'accruals' not in payload:
+        raise FinanceNormalizationError('Ozon finance payload must contain accruals')
+    rows=payload['accruals']
+    if not isinstance(rows,list) or any(not isinstance(x,dict) for x in rows):
+        raise FinanceNormalizationError('Ozon finance accruals must be a list of objects')
+    return rows
+
+
+def _walk_accrued(node: Any) -> float:
+    """Sum signed fee components once, including scalar and Money amounts."""
+    if isinstance(node,dict):
+        return (_num(node.get('accrued')) if 'accrued' in node else 0.0) + sum(
+            _walk_accrued(v) for k,v in node.items() if k!='accrued')
+    if isinstance(node,list): return sum(_walk_accrued(v) for v in node)
+    return 0.0
+
+
+def _ozon_has_sales(row: dict[str,Any]) -> bool:
+    return str(row.get('accrued_category') or '').upper() in {'POSTING',''}
+
+
+def wb_document_amount(row: dict[str,Any], value: Any) -> float:
+    """WB return documents carry positive amounts: subtract them exactly once."""
+    amount=_num(value)
+    doc=str(_pick(row,'docTypeName','doc_type_name') or '').strip().casefold()
+    return -abs(amount) if doc=='возврат' else amount
+
+
 def normalize_ozon_accruals(payload: Any, connection_id: int, data_date: str) -> list[MetricPoint]:
-    if not isinstance(payload, dict): raise FinanceNormalizationError('Ozon finance payload must be object')
-    rows=payload.get('accruals') or []
-    if not isinstance(rows,list): raise FinanceNormalizationError('Ozon finance accruals must be list')
+    rows=_accrual_rows(payload)
     sales=commission=logistics=services=0.0
     net=0.0
     for row in rows:
         if not isinstance(row,dict): continue
         net += _num(row.get('total_amount'))
-        category=str(row.get('accrued_category') or '').upper()
         posting=row.get('posting') or {}
         products=posting.get('products') or posting.get('items') or []
         if isinstance(products,list):
@@ -65,23 +96,14 @@ def normalize_ozon_accruals(payload: Any, connection_id: int, data_date: str) ->
                 c=item.get('commission') or {}
                 seller_price=_num(c.get('seller_price'))
                 sale_comm=_num(c.get('sale_commission'))
-                if category in {'POSTING',''}: sales += seller_price
-                if sale_comm < 0: commission += -sale_comm
+                if _ozon_has_sales(row): sales += seller_price
+                # Positive signed cash-flow corrections reduce expenses.
+                commission -= sale_comm
                 delivery=item.get('delivery') or {}
                 d=_num(delivery.get('total_accrued'))
-                if d < 0: logistics += -d
-        def walk_accrued(node):
-            total=0.0
-            if isinstance(node,dict):
-                if isinstance(node.get('accrued'),dict):
-                    total += _num(node['accrued'])
-                for key,value in node.items():
-                    if key != 'accrued': total += walk_accrued(value)
-            elif isinstance(node,list):
-                for value in node: total += walk_accrued(value)
-            return total
-        fee_signed = walk_accrued(row.get('item_fees')) + walk_accrued(row.get('non_item_fee')) + walk_accrued(row.get('container_fees'))
-        if fee_signed < 0: services += -fee_signed
+                logistics -= d
+        fee_signed = sum(_walk_accrued(row.get(k)) for k in ('item_fees','non_item_fee','container_fees'))
+        services -= fee_signed
     now=_now()
     return [
         MetricPoint(connection_id,data_date,'financial_sales',sales,'RUB',False,now),
@@ -107,30 +129,33 @@ def normalize_wb_product_finance(payload: Any) -> list[ProductFinanceObservation
     now=_now()
     for row in payload:
         if not isinstance(row,dict): continue
-        raw_day=_pick(row,'saleDt','sale_dt','rrDt','rr_dt','date','createDate','create_dt')
+        raw_day=_pick(row,'saleDt','sale_dt','rrDate','rrDt','rr_dt','date','createDate','create_dt')
         day=str(raw_day or '')[:10]
         if len(day)!=10: continue
         sku=str(_pick(row,'nmId','nm_id','nmID','nmid') or '').strip()
         if not sku: continue
-        offer=str(_pick(row,'supplierArticle','supplier_article','sa_name','vendorCode') or '').strip() or None
-        name=str(_pick(row,'subjectName','subject_name','brandName','brand_name') or offer or f'WB {sku}')
+        offer=str(_pick(row,'vendorCode','supplierArticle','supplier_article','sa_name') or '').strip() or None
+        name=str(_pick(row,'title','subjectName','subject_name','brandName','brand_name') or offer or f'WB {sku}')
         key=(day,sku); obs=grouped.get(key)
         if obs is None:
             obs=grouped[key]=ProductFinanceObservation(day,sku,name,offer_id=offer,as_of=now)
         fields={
             'financial_sales':('retailAmount','retail_amount','retailPriceWithdiscRub','retail_price_withdisc_rub'),
-            'goods_payable':('ppvzForPay','ppvz_for_pay'),
+            'goods_payable':('forPay','ppvzForPay','ppvz_for_pay'),
             'commission':('commission','commissionRub','commission_rub'),
-            'logistics':('deliveryRub','delivery_rub'),
-            'storage':('storageFee','storage_fee'),
-            'acceptance':('acceptanceFee','acceptance_fee'),
+            'logistics':('deliveryService','deliveryRub','delivery_rub'),
+            'storage':('paidStorage','storageFee','storage_fee'),
+            'acceptance':('paidAcceptance','acceptanceFee','acceptance_fee','acceptance'),
             'services':('deduction','deductionSum','deduction_sum'),
             'penalties':('penalty','penaltySum','penalty_sum'),
+            'compensation':('additionalPayment','additional_payment'),
         }
         for metric,names in fields.items():
             raw=_pick(row,*names)
             if raw is None: continue
             value=_num(raw)
+            if metric in {'financial_sales','goods_payable'}:
+                value=wb_document_amount(row,raw)
             if metric in {'commission','logistics','storage','acceptance','services','penalties'}:
                 value=abs(value)
             obs.metrics[metric]=obs.metrics.get(metric,0.0)+value
@@ -139,11 +164,7 @@ def normalize_wb_product_finance(payload: Any) -> list[ProductFinanceObservation
 
 def normalize_ozon_product_finance(payload: Any, data_date: str) -> list[ProductFinanceObservation]:
     """Extract SKU-level finance from product-bound Ozon accrual components only."""
-    if not isinstance(payload,dict):
-        raise FinanceNormalizationError('Ozon finance payload must be object')
-    rows=payload.get('accruals') or []
-    if not isinstance(rows,list):
-        raise FinanceNormalizationError('Ozon finance accruals must be list')
+    rows=_accrual_rows(payload)
     grouped: dict[str,ProductFinanceObservation]={}; now=_now()
 
     def obs_for(sku: Any, name: Any = None, offer: Any = None) -> ProductFinanceObservation | None:
@@ -168,11 +189,12 @@ def normalize_ozon_product_finance(payload: Any, data_date: str) -> list[Product
             sale_comm=_num(commission.get('sale_commission'))
             delivery=item.get('delivery') or {}
             delivery_total=_num(delivery.get('total_accrued'))
-            obs.metrics['financial_sales']=obs.metrics.get('financial_sales',0.0)+seller
+            if _ozon_has_sales(row):
+                obs.metrics['financial_sales']=obs.metrics.get('financial_sales',0.0)+seller
             if sale_comm:
-                obs.metrics['commission']=obs.metrics.get('commission',0.0)+abs(sale_comm)
+                obs.metrics['commission']=obs.metrics.get('commission',0.0)-sale_comm
             if delivery_total:
-                obs.metrics['logistics']=obs.metrics.get('logistics',0.0)+abs(delivery_total)
+                obs.metrics['logistics']=obs.metrics.get('logistics',0.0)-delivery_total
 
         fee_root=row.get('item_fees') or {}
         fee_groups=fee_root.get('fees') if isinstance(fee_root,dict) else None
@@ -180,9 +202,7 @@ def normalize_ozon_product_finance(payload: Any, data_date: str) -> list[Product
             if not isinstance(group,dict): continue
             obs=obs_for(group.get('sku'))
             if obs is None: continue
-            total=0.0
-            for fee in group.get('fees') or []:
-                if isinstance(fee,dict): total += abs(_num(fee.get('accrued')))
+            total=-_walk_accrued(group.get('fees'))
             if total: obs.metrics['services']=obs.metrics.get('services',0.0)+total
     return sorted(grouped.values(),key=lambda x:x.marketplace_sku)
 
@@ -211,7 +231,7 @@ def normalize_ozon_ad_stats(payload: Any, connection_id: int) -> dict[str,list[M
         ds=str(row.get('date') or row.get('day') or '')[:10]
         if len(ds)!=10: continue
         b=totals.setdefault(ds,[0.0,0.0])
-        b[0]+=_num(row.get('expense') if row.get('expense') is not None else row.get('spend'))
-        b[1]+=_num(row.get('sales') if row.get('sales') is not None else row.get('revenue'))
+        b[0]+=_num(_pick(row,'expense','spend','sum'))
+        b[1]+=_num(_pick(row,'ordersMoney','orders_money','sales','revenue','sum_price'))
     now=_now()
     return {d:[MetricPoint(connection_id,d,'ad_spend',v[0],'RUB',False,now), MetricPoint(connection_id,d,'ad_attributed_sales',v[1],'RUB',False,now)] for d,v in totals.items()}

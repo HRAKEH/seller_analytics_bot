@@ -6,7 +6,7 @@ import pytest
 
 from app.storage import Database, Repository, MetricPoint, ProductMetricPoint, InventoryPoint, LATEST_SCHEMA_VERSION
 from app.services.promotions import normalize_wb_promotions, normalize_ozon_promotions, historical_promo_factor
-from app.services.supply import build_supply_plan
+from app.services.supply import QUALITY_METHOD_VERSION, build_supply_plan
 from app.services.exporting import collect_export_tables
 from app.integrations.base import FetchResult
 from app.integrations.wildberries import WildberriesClient
@@ -65,7 +65,7 @@ def test_supply_uses_exact_future_promo_and_bias_correction(tmp_path):
     repo.save_forecast_quality(shop.id,[
         {'product_id':product.id,'as_of_date':(end-timedelta(days=30-i)).isoformat(),'horizon_days':7,'predicted_units':8,'actual_units':10}
         for i in range(3)
-    ],method_version='old-model')
+    ],method_version=QUALITY_METHOD_VERSION)
     row=next(r for r in build_supply_plan(repo,shop.id,end,persist=True).rows if r.internal_sku=='SKU-PROMO')
     assert row.bias_correction>1.0
     assert row.promo_factor>1.0

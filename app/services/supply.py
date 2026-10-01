@@ -15,7 +15,7 @@ from typing import Any
 from app.storage import Repository
 from .promotions import historical_promo_factor
 
-METHOD_VERSION='calibrated-promo-bias-wma-v5'
+METHOD_VERSION='calibrated-promo-bias-wma-v6'
 QUALITY_METHOD_VERSION='seasonal-wma-v3-backtest'
 CALIBRATION_METHOD_VERSION='risk-buffer-v1'
 
@@ -147,15 +147,24 @@ def _trend(values: list[float]) -> float | None:
     recent=values[-14:]; previous=values[-28:-14] if len(values)>=28 else values[:-14]
     if not previous: return None
     a=sum(recent)/len(recent); b=sum(previous)/len(previous)
-    if b==0: return 100.0 if a>0 else 0.0
+    if b==0: return None if a>0 else 0.0
     return (a-b)/b*100.0
 
 
-def _xyz(values: list[float], weeks: int) -> tuple[str,float | None]:
-    recent=values[-weeks*7:]; chunks=[]
-    while len(recent)>=7:
-        chunks.append(sum(recent[-7:])); recent=recent[:-7]
-    chunks.reverse()
+def _xyz(values: list[float], weeks: int, days: list[str] | None=None) -> tuple[str,float | None]:
+    chunks=[]
+    if days is not None:
+        # Missing API days cannot be stitched into an artificial seven-day week.
+        buckets={}
+        for ds,value in zip(days,values):
+            d=date.fromisoformat(ds); monday=d-timedelta(days=d.weekday())
+            buckets.setdefault(monday,{})[d.weekday()]=value
+        chunks=[sum(bucket.values()) for _,bucket in sorted(buckets.items()) if len(bucket)==7][-weeks:]
+    else:
+        recent=values[-weeks*7:]
+        while len(recent)>=7:
+            chunks.append(sum(recent[-7:])); recent=recent[:-7]
+        chunks.reverse()
     if len(chunks)<4: return '?',None
     mean=sum(chunks)/len(chunks)
     if mean<=0: return 'Z',None
@@ -226,7 +235,9 @@ def build_supply_calibration(repo: Repository, shop_id: int, as_of: date, *, per
     """
     pref=repo.ensure_shop_supply_preferences(shop_id)
     products=repo.products_for_supply(shop_id)
-    quality=repo.forecast_quality_samples_by_product(shop_id,limit_per_product=24)
+    quality=repo.forecast_quality_samples_by_product(shop_id,limit_per_product=24,
+        as_of_date=as_of.isoformat(),method_version=QUALITY_METHOD_VERSION,
+        horizon_days=int(pref.get('forecast_horizon_days',7)))
     hist_start=(as_of-timedelta(days=max(90,int(pref.get('lookback_days',56))*2))).isoformat()
     inventory=repo.product_inventory_daily(shop_id,hist_start,as_of.isoformat())
     delays=repo.inbound_delay_samples_by_product(shop_id,(as_of-timedelta(days=365)).isoformat(),as_of.isoformat())
@@ -287,7 +298,8 @@ def build_supply_plan(repo: Repository, shop_id: int, as_of: date, *, lookback_d
     products=repo.products_for_supply(shop_id)
     historical_promo_dates=repo.promotion_dates_by_product(shop_id,start.isoformat(),as_of.isoformat())
     future_promo_dates=repo.promotion_dates_by_product(shop_id,(as_of+timedelta(days=1)).isoformat(),(as_of+timedelta(days=180)).isoformat())
-    bias_corrections=repo.forecast_bias_corrections(shop_id)
+    bias_corrections=repo.forecast_bias_corrections(shop_id,as_of_date=as_of.isoformat(),
+        method_version=QUALITY_METHOD_VERSION,horizon_days=int(pref.get('forecast_horizon_days',7)))
 
     inventory_rows=repo.latest_inventory_by_listing(shop_id); inventory: dict[int,dict[str,Any]]={}
     for row in inventory_rows:
@@ -332,7 +344,7 @@ def build_supply_plan(repo: Repository, shop_id: int, as_of: date, *, lookback_d
         next7_dates=_future_dates(as_of,7)
         next7=_demand_for_dates(baseline,next7_dates,factors,promo_dates=promo_dates,promo_factor=promo_factor)
         seasonal_strength=max(abs(v-1.0) for v in factors.values()) if factors else 0.0
-        trend=_trend(values); xyz,_cv=_xyz(values,xyz_weeks)
+        trend=_trend(values); xyz,_cv=_xyz(values,xyz_weeks,eligible)
         inv=inventory.get(pid); available=float(inv['available']) if inv is not None else None
         days_cover=(available/baseline) if available is not None and baseline>1e-9 else None
         lead=int(p['lead_time_days']); safety=int(p['safety_stock_days']); target=int(p['target_stock_days'])

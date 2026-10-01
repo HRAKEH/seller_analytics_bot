@@ -4,7 +4,7 @@ from datetime import date, timedelta
 from pathlib import Path
 
 from app.storage import Database, Repository, MetricPoint, ProductMetricPoint, InventoryPoint, LATEST_SCHEMA_VERSION
-from app.services.supply import build_supply_calibration, build_supply_plan
+from app.services.supply import QUALITY_METHOD_VERSION, build_supply_calibration, build_supply_plan
 from app.services.exporting import collect_export_tables
 
 
@@ -66,7 +66,7 @@ def test_forecast_error_and_zero_stock_add_bounded_safety_buffer(tmp_path):
     repo.save_forecast_quality(shop.id,[
         {'product_id':product.id,'as_of_date':(end-timedelta(days=40-i)).isoformat(),'horizon_days':7,'predicted_units':10,'actual_units':20}
         for i in range(6)
-    ],method_version='old-model')
+    ],method_version=QUALITY_METHOD_VERSION)
     cal=build_supply_calibration(repo,shop.id,end,persist=True)
     row=next(r for r in cal.rows if r.internal_sku=='RISK')
     assert row.forecast_wape_pct==50.0
@@ -88,7 +88,7 @@ def test_auto_calibration_can_be_disabled_without_losing_suggestion(tmp_path):
     repo.save_forecast_quality(shop.id,[
         {'product_id':product.id,'as_of_date':(end-timedelta(days=20-i)).isoformat(),'horizon_days':7,'predicted_units':5,'actual_units':10}
         for i in range(5)
-    ],method_version='old')
+    ],method_version=QUALITY_METHOD_VERSION)
     cal=build_supply_calibration(repo,shop.id,end,persist=True)
     suggestion=next(r for r in cal.rows if r.internal_sku=='OFF')
     assert suggestion.safety_buffer_days>0

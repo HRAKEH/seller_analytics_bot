@@ -12,6 +12,7 @@ import hashlib
 import json
 from typing import Any
 from .numeric import finite_number
+from .finance import wb_document_amount, _ozon_has_sales
 
 
 class ReconciliationNormalizationError(ValueError):
@@ -51,7 +52,7 @@ def _num(value: Any) -> float:
     try:
         return finite_number(value)
     except (TypeError, ValueError) as exc:
-        raise ReconciliationNormalizationError(f'Non-numeric amount: {value!r}') from exc
+        raise ReconciliationNormalizationError('Non-numeric amount') from exc
 
 
 def _pick(row: dict[str, Any], *names: str) -> Any:
@@ -153,14 +154,14 @@ def normalize_wb_finance_events(payload: Any, *, start_date: str | None = None,
         rrd=str(_pick(row,'rrdId','rrd_id') or '').strip() or None
         offer=str(_pick(row,'vendorCode','supplierArticle','sa_name') or '').strip() or None
         name=str(_pick(row,'title','subjectName','subject_name','brandName','brand_name') or offer or f'WB {sku}')
-        gross=_num(_pick(row,'retailAmount','retail_amount'))
+        gross=wb_document_amount(row,_pick(row,'retailAmount','retail_amount'))
         raw_net=_pick(row,'ppvzForPay','ppvz_for_pay','forPay','for_pay')
-        net=_num(raw_net) if raw_net is not None else None
+        net=wb_document_amount(row,raw_net) if raw_net is not None else None
         stable=rrd or _fingerprint('wb-finance-row',row)
         out.append(CommerceObservation(
             sku,name,day,'finance','wb_finance',_fingerprint('wb-finance',stable),offer,
             str(_pick(row,'rrDate','rrDt','rr_dt','saleDt','sale_dt') or '') or None,
-            srid,rrd,float(_pick(row,'quantity') or 0),gross,net,'ALL',False,
+            srid,rrd,_num(_pick(row,'quantity')),gross,net,'ALL',False,
             {'doc_type':_pick(row,'docTypeName','doc_type_name'),'operation':_pick(row,'sellerOperName','supplier_oper_name')}
         ))
     return out
@@ -231,7 +232,7 @@ def normalize_ozon_finance_events(payload: Any, *, data_date: str) -> list[Comme
             offer=str(item.get('offer_id') or '').strip() or None
             name=str(item.get('name') or offer or f'Ozon {sku}')
             commission=item.get('commission') or {}
-            gross=_num(commission.get('seller_price'))
+            gross=_num(commission.get('seller_price')) if _ozon_has_sales(row) else 0.0
             sale_comm=_num(commission.get('sale_commission'))
             delivery=_num((item.get('delivery') or {}).get('total_accrued'))
             stable=_fingerprint('ozon-finance-source',row_key,occurrence,item_index)

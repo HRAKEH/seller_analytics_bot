@@ -1165,8 +1165,17 @@ class Repository:
                     (int(run['connection_id']),p.listing_id,p.data_date,p.event_time,p.event_kind,
                      p.external_order_id,p.external_event_id,float(p.quantity),float(p.gross_amount),
                      None if p.net_amount is None else float(p.net_amount),p.fulfillment_scheme,
-                     int(p.is_preliminary),p.source_name,source_run_id,p.metadata_json,p.fingerprint,now))
+                    int(p.is_preliminary),p.source_name,source_run_id,p.metadata_json,p.fingerprint,now))
                 saved += cur.rowcount
+                if cur.rowcount==0 and p.source_name=='wb_finance' and p.event_kind=='finance':
+                    # Stable rrdId identifies the same line even after a correction.
+                    c.execute("""UPDATE commerce_events SET listing_id=?,data_date=?,event_time=?,
+                        external_order_id=?,external_event_id=?,quantity=?,gross_amount=?,net_amount=?,
+                        fulfillment_scheme=?,is_preliminary=?,source_run_id=?,metadata_json=?
+                        WHERE connection_id=? AND fingerprint=? AND source_name='wb_finance' AND event_kind='finance'""",
+                        (p.listing_id,p.data_date,p.event_time,p.external_order_id,p.external_event_id,float(p.quantity),
+                         float(p.gross_amount),None if p.net_amount is None else float(p.net_amount),p.fulfillment_scheme,
+                         int(p.is_preliminary),source_run_id,p.metadata_json,int(run['connection_id']),p.fingerprint))
             c.commit()
         return saved
 
@@ -1802,13 +1811,23 @@ class Repository:
             out.setdefault(int(r['product_id']),[]).append(float(max(0,(actual-planned).days)))
         return out
 
-    def forecast_quality_samples_by_product(self, shop_id: int, *, limit_per_product: int=24) -> dict[int,list[dict[str,Any]]]:
+    def forecast_quality_samples_by_product(self, shop_id: int, *, limit_per_product: int=24,
+                                          as_of_date: str | None=None, method_version: str | None=None,
+                                          horizon_days: int | None=None) -> dict[int,list[dict[str,Any]]]:
+        filters=['q.shop_id=?','q.product_id IS NOT NULL']; params=[shop_id]
+        if as_of_date is not None:
+            filters.append("date(q.as_of_date,'+'||q.horizon_days||' days')<=date(?)"); params.append(as_of_date)
+        if method_version is not None:
+            filters.append('q.method_version=?'); params.append(method_version)
+        if horizon_days is not None:
+            filters.append('q.horizon_days=?'); params.append(int(horizon_days))
+        where=' AND '.join(filters)
         with self.db.connect() as c:
-            rows=c.execute("""WITH ranked AS (
+            rows=c.execute(f"""WITH ranked AS (
                 SELECT q.*,ROW_NUMBER() OVER (PARTITION BY q.product_id ORDER BY q.as_of_date DESC,q.id DESC) rn
-                FROM forecast_quality_snapshots q WHERE q.shop_id=? AND q.product_id IS NOT NULL)
+                FROM forecast_quality_snapshots q WHERE {where})
               SELECT * FROM ranked WHERE rn<=? ORDER BY product_id,as_of_date""",
-              (shop_id,max(1,int(limit_per_product)))).fetchall()
+              (*params,max(1,int(limit_per_product)))).fetchall()
         out: dict[int,list[dict[str,Any]]]={}
         for r in rows: out.setdefault(int(r['product_id']),[]).append(dict(r))
         return out
@@ -1972,17 +1991,14 @@ class Repository:
                 bucket.add(cur.isoformat()); cur += timedelta(days=1)
         return out
 
-    def forecast_bias_corrections(self, shop_id: int, *, limit_per_product: int=12) -> dict[int,float]:
+    def forecast_bias_corrections(self, shop_id: int, *, limit_per_product: int=12,
+                                  as_of_date: str | None=None, method_version: str | None=None,
+                                  horizon_days: int | None=None) -> dict[int,float]:
         """Return damped correction factors derived only from already evaluated forecasts."""
-        with self.db.connect() as c:
-            rows=c.execute("""SELECT q.product_id,q.predicted_units,q.actual_units,q.evaluated_at
-                FROM forecast_quality_snapshots q WHERE q.shop_id=? AND q.product_id IS NOT NULL
-                ORDER BY q.product_id,q.evaluated_at DESC,q.id DESC""",(shop_id,)).fetchall()
-        grouped: dict[int,list[tuple[float,float]]]={}
-        for r in rows:
-            pid=int(r['product_id']); bucket=grouped.setdefault(pid,[])
-            if len(bucket)<max(1,int(limit_per_product)):
-                bucket.append((float(r['predicted_units'] or 0),float(r['actual_units'] or 0)))
+        samples=self.forecast_quality_samples_by_product(shop_id,limit_per_product=limit_per_product,
+            as_of_date=as_of_date,method_version=method_version,horizon_days=horizon_days)
+        grouped={pid:[(float(r['predicted_units'] or 0),float(r['actual_units'] or 0)) for r in rows]
+                 for pid,rows in samples.items()}
         out={}
         for pid,vals in grouped.items():
             # Zero-actual horizons still contribute forecast overshoot to bias.

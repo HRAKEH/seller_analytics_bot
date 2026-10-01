@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.0.2 — Production handoff and financial source audit
+
+- Combine WB report types into one daily metric snapshot, deduplicating report IDs.
+- Recognize current WB detailed finance aliases and signed return documents; update corrected stable finance events.
+- Preserve signed Ozon expense corrections and scalar/Money fees; reject malformed finance and foreign currencies.
+- Match Ozon aggregate advertising to ordersMoney; avoid non-posting synthetic financial sales.
+- Warn about unknown marketplace/ad expenses and suppress incompatible WB/Ozon money totals.
+- Restrict calibration to matured horizons of the current method and preference horizon. Use full calendar weeks for XYZ and avoid fake growth percentages from zero.
+- Redact credentials before HTTP error truncation; hide secrets in configuration repr; fail-fast Performance OAuth readiness on 429.
+- Add bounded read-only host live audit, regression tests, accountant formulas, user guide and pilot monetization plan.
+- Update pytest to 9.0.3 and pin pip 26.2.1 in CI/Docker. Schema remains 15.
+
 ## 1.0.1 — Formula and snapshot consistency audit
 
 - Schema 15 preserves all data while allowing historical A → B → A corrections; consecutive identical responses remain idempotent and refresh source freshness.
