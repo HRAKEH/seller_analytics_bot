@@ -2,6 +2,7 @@
 from __future__ import annotations
 import asyncio
 import logging
+import math
 import random
 import uuid
 from dataclasses import dataclass
@@ -42,7 +43,9 @@ def _server_retry_delay(response: httpx.Response) -> float | None:
         if not raw:
             continue
         try:
-            return max(1.0,float(raw))
+            value=float(raw)
+            if math.isfinite(value): return max(1.0,value)
+            continue
         except (TypeError,ValueError):
             if name!='Retry-After':
                 continue
@@ -54,6 +57,21 @@ def _server_retry_delay(response: httpx.Response) -> float | None:
             except (TypeError,ValueError,OverflowError):
                 continue
     return None
+
+
+def _safe_error(text: str, headers=None, body=None) -> str:
+    """Redact request credentials before a response reaches DB or Telegram."""
+    secrets=set()
+    for key,value in (headers or {}).items():
+        if str(key).lower() in {'authorization','api-key','x-api-key'} and value:
+            raw=str(value); secrets.add(raw)
+            if raw.lower().startswith('bearer '): secrets.add(raw[7:])
+    if isinstance(body,dict):
+        for key in ('client_secret','api_key','access_token','refresh_token','password'):
+            if body.get(key): secrets.add(str(body[key]))
+    for secret in sorted(secrets,key=len,reverse=True):
+        text=text.replace(secret,'[REDACTED]')
+    return text[:300]
 
 
 class MarketplaceClient:
@@ -125,7 +143,7 @@ class MarketplaceClient:
                 except (httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError) as exc:
                     self._shared_rate_next[state_key]=loop.time()+interval
                     if attempt > self.max_retries:
-                        return FetchResult.failure(self.source, f'Сетевая ошибка: {exc}', None, attempt)
+                        return FetchResult.failure(self.source, 'Сетевая ошибка: '+_safe_error(str(exc),headers,json), None, attempt)
                     retry_wait=min(120.0,max(interval,1.0)*attempt)+random.uniform(0,.25)
                 else:
                     self._shared_rate_next[state_key]=loop.time()+interval
@@ -154,14 +172,14 @@ class MarketplaceClient:
                     elif 500 <= response.status_code < 600:
                         if attempt > self.max_retries:
                             return FetchResult.failure(
-                                self.source,f'HTTP {response.status_code}: {response.text[:300]}',
+                                self.source,f'HTTP {response.status_code}: '+_safe_error(response.text,headers,json),
                                 response.status_code,attempt)
                         retry_wait=min(120.0,2 ** attempt * 2)
                         self._shared_rate_next[state_key]=max(
                             self._shared_rate_next.get(state_key,0.0),loop.time()+retry_wait)
                     else:
                         return FetchResult.failure(
-                            self.source,f'HTTP {response.status_code}: {response.text[:300]}',
+                            self.source,f'HTTP {response.status_code}: '+_safe_error(response.text,headers,json),
                             response.status_code,attempt)
             if retry_wait:
                 await asyncio.sleep(retry_wait)

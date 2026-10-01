@@ -199,7 +199,7 @@ async def build_readiness(ctx, *, live: bool = False, persist: bool = True) -> R
                 detail=(f'{len(methods)} методов доступны'+_expiry_hint(roles.data)) if roles.ok else (roles.error or 'ошибка ролей')
                 items.append(ReadinessItem('ozon_roles','Ozon · права API-ключа',roles.ok,True,detail))
         if ctx.collector.ozon_performance is not None:
-            token=await ctx.collector.ozon_performance._token()
+            token=await ctx.collector.ozon_performance._token(retry_on_429=False,fail_fast_rate_limit=True)
             items.append(ReadinessItem('ozon_ads','Ozon Performance',token.ok,False,
                                        'авторизация успешна' if token.ok else (token.error or 'ошибка')))
 

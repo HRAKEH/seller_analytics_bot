@@ -18,7 +18,8 @@ class OzonPerformanceClient(MarketplaceClient):
         self._access_token: str | None = None
         self._expires_at: datetime | None = None
 
-    async def _token(self, force: bool = False) -> FetchResult:
+    async def _token(self, force: bool = False, *, retry_on_429: bool = True,
+                     fail_fast_rate_limit: bool = False) -> FetchResult:
         now = datetime.now(timezone.utc)
         if not force and self._access_token and self._expires_at and now < self._expires_at - timedelta(seconds=60):
             return FetchResult.success(self.source, {'access_token': self._access_token}, 200, 1)
@@ -26,7 +27,8 @@ class OzonPerformanceClient(MarketplaceClient):
             'client_id': self.client_id,
             'client_secret': self.client_secret,
             'grant_type': 'client_credentials',
-        }, headers={'Content-Type': 'application/json', 'Accept': 'application/json'}, rate_key='token', min_interval=0)
+        }, headers={'Content-Type': 'application/json', 'Accept': 'application/json'}, rate_key='token', min_interval=0,
+            retry_on_429=retry_on_429,fail_fast_rate_limit=fail_fast_rate_limit)
         if not result.ok:
             return result
         body = result.data if isinstance(result.data, dict) else {}

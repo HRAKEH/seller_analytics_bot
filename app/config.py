@@ -1,6 +1,6 @@
 """Centralized environment configuration."""
 from __future__ import annotations
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import os
 from pathlib import Path
 import re
@@ -22,11 +22,11 @@ def _bool(name: str, default: bool = False) -> bool:
 @dataclass(frozen=True)
 class MarketplaceCredentials:
     profile: str
-    ozon_client_id: str = ""
-    ozon_api_key: str = ""
-    ozon_perf_client_id: str = ""
-    ozon_perf_client_secret: str = ""
-    wb_api_token: str = ""
+    ozon_client_id: str = field(default="",repr=False)
+    ozon_api_key: str = field(default="",repr=False)
+    ozon_perf_client_id: str = field(default="",repr=False)
+    ozon_perf_client_secret: str = field(default="",repr=False)
+    wb_api_token: str = field(default="",repr=False)
 
     @property
     def has_ozon(self) -> bool:
@@ -43,13 +43,13 @@ class MarketplaceCredentials:
 
 @dataclass(frozen=True)
 class Settings:
-    telegram_token: str
+    telegram_token: str = field(repr=False)
     owner_ids: tuple[int, ...]
-    ozon_client_id: str
-    ozon_api_key: str
-    ozon_perf_client_id: str
-    ozon_perf_client_secret: str
-    wb_api_token: str
+    ozon_client_id: str = field(repr=False)
+    ozon_api_key: str = field(repr=False)
+    ozon_perf_client_id: str = field(repr=False)
+    ozon_perf_client_secret: str = field(repr=False)
+    wb_api_token: str = field(repr=False)
     db_file: Path
     timezone: str
     report_time: str

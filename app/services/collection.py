@@ -474,15 +474,31 @@ class CollectionService:
                     outcomes.append(self._failure(wb_connection_id,endpoint,start.isoformat(),'wildberries',result))
                 else:
                     rows=result.data if isinstance(result.data,list) else []
-                    for row in rows:
+                    # Daily reports can have multiple types; one metric version
+                    # must contain all reports rather than retain only the last.
+                    unique={}
+                    for index,row in enumerate(rows):
+                        key=('report',str(row['reportId'])) if isinstance(row,dict) and row.get('reportId') is not None else ('row',index)
+                        unique[key]=row
+                    grouped_reports={}
+                    for row in unique.values():
                         try:
                             ds,points=normalize_wb_finance_report(row,wb_connection_id)
                             if not (start.isoformat() <= ds <= end.isoformat()): continue
-                            rid=self.repo.record_success(wb_connection_id,endpoint,ds,row,points,attempts=result.attempts)
-                            outcomes.append(CollectionOutcome('wildberries',ds,True,rid,'finance loaded'))
+                            bucket=grouped_reports.setdefault(ds,{'rows':[],'points':{}})
+                            bucket['rows'].append(row)
+                            for point in points:
+                                old=bucket['points'].get(point.metric_key)
+                                bucket['points'][point.metric_key]=MetricPoint(wb_connection_id,ds,point.metric_key,
+                                    point.value+(old.value if old else 0),point.unit,False,
+                                    max(point.as_of or '',old.as_of or '') if old else point.as_of)
                         except (FinanceNormalizationError,ValueError) as exc:
                             rid=self.repo.record_failure(wb_connection_id,endpoint,start.isoformat(),f'Normalization: {exc}',attempts=result.attempts)
                             outcomes.append(CollectionOutcome('wildberries',start.isoformat(),False,rid,str(exc)))
+                    for ds,bucket in grouped_reports.items():
+                        rid=self.repo.record_success(wb_connection_id,endpoint,ds,{'reports':bucket['rows']},
+                            list(bucket['points'].values()),attempts=result.attempts)
+                        outcomes.append(CollectionOutcome('wildberries',ds,True,rid,'finance loaded'))
                     if shop_id is not None:
                         detail_endpoint='finance/sales-reports/detailed'
                         detail=await self.wb.finance_sales_report_detailed_all(start.isoformat(),end.isoformat(),period='daily')
@@ -526,13 +542,14 @@ class CollectionService:
                         try:
                             points=normalize_ozon_accruals(result.data,ozon_connection_id,ds)
                             product_finance=normalize_ozon_product_finance(result.data,ds)
+                            commerce=normalize_ozon_finance_events(result.data,data_date=ds) if shop_id is not None else []
                             rid=self.repo.record_success(ozon_connection_id,endpoint,ds,result.data,points,attempts=result.attempts)
                             if shop_id is not None:
                                 self._save_product_finance_observations(shop_id=shop_id,connection_id=ozon_connection_id,
                                     marketplace='ozon',source_run_id=rid,observations=product_finance,replace_finance_snapshot=True)
                                 self._save_commerce_observations(shop_id=shop_id,connection_id=ozon_connection_id,
                                     marketplace='ozon',source_run_id=rid,
-                                    observations=normalize_ozon_finance_events(result.data,data_date=ds),
+                                    observations=commerce,
                                     replace_finance_snapshot=True)
                             outcomes.append(CollectionOutcome('ozon',ds,True,rid,'finance loaded'))
                         except (FinanceNormalizationError,ValueError) as exc:
