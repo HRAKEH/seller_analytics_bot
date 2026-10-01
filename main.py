@@ -21,6 +21,7 @@ from app.services.resilience import (
 )
 from app.services.health import health_http_server
 from app.bot import RuntimeRegistry, ContextProxy, ShopContextMiddleware, register_handlers
+from app.bot.updates import TelegramUpdateMiddleware
 
 
 async def main():
@@ -63,6 +64,7 @@ async def main():
         proxy=ContextProxy()
         bot=Bot(settings.telegram_token)
         dp=Dispatcher(storage=MemoryStorage())
+        dp.update.outer_middleware(TelegramUpdateMiddleware(settings.instance_id))
         context_middleware=ShopContextMiddleware(registry)
         dp.message.middleware(context_middleware)
         dp.callback_query.middleware(context_middleware)
