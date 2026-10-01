@@ -57,9 +57,9 @@ def test_repeated_historical_response_becomes_latest(setup,last_endpoint):
 def test_unchanged_success_refreshes_freshness_without_duplicate_metrics(setup,monkeypatch):
     _,repo,_,conn,_,listing=setup
     import app.storage.repositories as module
-    monkeypatch.setattr(module,'utcnow',lambda:'2026-09-28T00:00:00+00:00')
+    monkeypatch.setattr(module,'source_utcnow',lambda:'2026-09-28T00:00:00+00:00')
     first=order(repo,conn,listing,DAY,1,100)
-    monkeypatch.setattr(module,'utcnow',lambda:'2026-09-29T00:00:00+00:00')
+    monkeypatch.setattr(module,'source_utcnow',lambda:'2026-09-29T00:00:00+00:00')
     assert order(repo,conn,listing,DAY,1,100)==first
     assert repo.last_successful_order_run(conn.id).finished_at=='2026-09-29T00:00:00+00:00'
     assert repo.count('metric_values')==2

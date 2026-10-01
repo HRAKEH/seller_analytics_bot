@@ -22,6 +22,9 @@ class ManagementSource:
     goods_payable: float | None
     bank_payment: float | None
     warnings: tuple[str,...] = ()
+    performance_ad_spend: float | None = None
+    ads_from_finance: bool = False
+    unbilled_performance_ad_spend: float | None = None
 
 @dataclass(frozen=True)
 class ManagementReport:
@@ -50,10 +53,30 @@ def build_management_report(repo: Repository, shop_id: int, end: date, days: int
         estimated_cogs=float(c.get('estimated_cost',0))
         marketplace_expenses=sum(float(m.get(k,0)) for k in EXPENSE_KEYS)
         ad_spend=float(m.get('ad_spend',0)); compensation=float(m.get('compensation',0))
+        performance_ad_spend=ad_spend if 'ad_spend' in m else None
+        ads_from_finance=marketplace=='ozon' and 'marketplace_net' in m and 'services' in m
+        ad_accounting=(repo.ozon_ad_accounting(shop_id,start.isoformat(),end.isoformat())
+                      if marketplace=='ozon' and hasattr(repo,'ozon_ad_accounting') else None)
+        if ad_accounting is not None:ads_from_finance=ad_accounting['has_finance']
+        unbilled_performance=None
+        if ads_from_finance:
+            # All billed advertising already belongs to the complete accrual
+            # expenses. Performance spend uses another timing/billing basis.
+            # Split known billed ads out for display, never subtract it twice.
+            billed=float(ad_accounting['billed'] if ad_accounting is not None else m.get('finance_ad_spend',0))
+            if ad_accounting is not None and ad_accounting['performance_only_days']:
+                unbilled_performance=float(ad_accounting['performance_without_finance'])
+            ad_spend=billed+float(unbilled_performance or 0)
+            marketplace_expenses -= billed
         warnings=[]
         if not any(k in m for k in EXPENSE_KEYS): warnings.append('Финансовые удержания не загружены; их размер неизвестен.')
         elif 'commission' not in m: warnings.append('Комиссия не загружена; учитываются только известные расходы.')
-        if 'ad_spend' not in m: warnings.append('Реклама не загружена; её расход неизвестен.')
+        if 'ad_spend' not in m and not ads_from_finance: warnings.append('Реклама не загружена; её расход неизвестен.')
+        if ads_from_finance and ('finance_ad_spend' not in m or
+                                (ad_accounting is not None and ad_accounting['legacy_finance_days'])):
+            warnings.append('Реклама включена в финансовые расходы; обновите /finance для отдельной разбивки.')
+        if unbilled_performance is not None:
+            warnings.append('За дни без финансовых начислений реклама взята из Performance; расчёт предварительный.')
         result=None
         # A zero-unit row returned by estimated_order_cogs is a valid zero-COST
         # basis (for example, an expense-only day). But if there is no COGS row
@@ -69,7 +92,8 @@ def build_management_report(repo: Repository, shop_id: int, end: date, days: int
             float(m['financial_sales']) if 'financial_sales' in m else None,
             float(m['marketplace_net']) if 'marketplace_net' in m else None,
             float(m['goods_payable']) if 'goods_payable' in m else None,
-            float(m['bank_payment']) if 'bank_payment' in m else None,tuple(warnings)))
+            float(m['bank_payment']) if 'bank_payment' in m else None,tuple(warnings),
+            performance_ad_spend,ads_from_finance,unbilled_performance))
     connections=repo.list_connections(shop_id) if hasattr(repo,'list_connections') else []
     present={r.marketplace for r in rows}
     missing=tuple(sorted({c.marketplace for c in connections if c.enabled}-present))
@@ -89,15 +113,19 @@ def format_management(report: ManagementReport) -> str:
     for row in report.sources:
         icon='🟣' if row.marketplace=='ozon' else '🔵'
         cov='—' if row.cogs_coverage_pct is None else f'{row.cogs_coverage_pct:.0f}%'
+        ad_label=('Реклама (начисления + Performance)' if row.unbilled_performance_ad_spend is not None
+                  else 'Реклама по начислениям' if row.ads_from_finance else 'Реклама')
         lines += ['',f'{icon} <b>{escape(row.marketplace.title())}</b>',
                   f'Заказы в деньгах: {_money(row.ordered_revenue)}',
                   f'Оценочная себестоимость: {_money(row.estimated_cogs)} · покрытие {cov}',
                   f'Известные расходы маркетплейса: {_money(row.marketplace_expenses)}',
-                  f'Реклама: {_money(row.ad_spend)}',
+                  f'{ad_label}: {_money(row.ad_spend)}',
                   f'Компенсации/доплаты: {_money(row.compensation)}',
                   f'<b>Оценочный результат: {_money(row.estimated_result)}</b>']
         if row.estimated_result is None: complete=False
         else: total += row.estimated_result
+        if row.ads_from_finance and row.performance_ad_spend is not None:
+            lines.append(f'Реклама Performance (справочно): {_money(row.performance_ad_spend)} · за дни с начислениями повторно не вычитается')
         facts=[]
         if row.financial_sales is not None: facts.append('фин. продажи '+_money(row.financial_sales))
         if row.marketplace_net is not None: facts.append('нетто '+_money(row.marketplace_net))

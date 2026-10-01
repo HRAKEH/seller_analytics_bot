@@ -70,6 +70,19 @@ def _walk_accrued(node: Any) -> float:
     return 0.0
 
 
+def _walk_ad_accrued(node: Any) -> float:
+    """Advertising fee IDs verified against the supplied Ozon accrual export.
+
+    41: pay-per-click; 54: promotion paid per order. Other fee types remain in
+    services, so unidentified charges are still included exactly once.
+    """
+    if isinstance(node,dict):
+        own=_num(node.get('accrued')) if node.get('type_id') in (41,54) else 0.0
+        return own+sum(_walk_ad_accrued(v) for k,v in node.items() if k!='accrued')
+    if isinstance(node,list):return sum(_walk_ad_accrued(v) for v in node)
+    return 0.0
+
+
 def _ozon_has_sales(row: dict[str,Any]) -> bool:
     return str(row.get('accrued_category') or '').upper() in {'POSTING',''}
 
@@ -83,7 +96,7 @@ def wb_document_amount(row: dict[str,Any], value: Any) -> float:
 
 def normalize_ozon_accruals(payload: Any, connection_id: int, data_date: str) -> list[MetricPoint]:
     rows=_accrual_rows(payload)
-    sales=commission=logistics=services=0.0
+    sales=commission=logistics=services=finance_ad=0.0
     net=0.0
     for row in rows:
         if not isinstance(row,dict): continue
@@ -104,6 +117,7 @@ def normalize_ozon_accruals(payload: Any, connection_id: int, data_date: str) ->
                 logistics -= d
         fee_signed = sum(_walk_accrued(row.get(k)) for k in ('item_fees','non_item_fee','container_fees'))
         services -= fee_signed
+        finance_ad -= sum(_walk_ad_accrued(row.get(k)) for k in ('item_fees','non_item_fee','container_fees'))
     now=_now()
     return [
         MetricPoint(connection_id,data_date,'financial_sales',sales,'RUB',False,now),
@@ -111,6 +125,7 @@ def normalize_ozon_accruals(payload: Any, connection_id: int, data_date: str) ->
         MetricPoint(connection_id,data_date,'logistics',logistics,'RUB',False,now),
         MetricPoint(connection_id,data_date,'services',services,'RUB',False,now),
         MetricPoint(connection_id,data_date,'marketplace_net',net,'RUB',False,now),
+        MetricPoint(connection_id,data_date,'finance_ad_spend',finance_ad,'RUB',False,now),
     ]
 
 

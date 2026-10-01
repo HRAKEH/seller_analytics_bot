@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 from .numeric import finite_number
+from .ozon_dates import posting_day
 
 
 class ProductNormalizationError(ValueError):
@@ -236,10 +237,10 @@ def normalize_ozon_postings(payload: Any, *, fulfillment_scheme: str,
     for posting in rows:
         if not isinstance(posting, dict):
             continue
-        day = str(posting.get('created_at') or posting.get('in_process_at') or '')[:10]
+        day = posting_day(posting.get('created_at') or posting.get('in_process_at') or '')
         if target_date and day != target_date:
             continue
-        if len(day) != 10:
+        if not day:
             continue
         for product in posting.get('products') or []:
             if not isinstance(product, dict):

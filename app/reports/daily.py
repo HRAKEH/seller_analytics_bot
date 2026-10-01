@@ -15,6 +15,9 @@ class MarketplaceDaily:
     preliminary: bool
     freshness: str | None
     warning: str | None
+    order_source: str | None = None
+    marketplace_net: float | None = None
+    finance_freshness: str | None = None
 
 @dataclass(frozen=True)
 class DailyReport:
@@ -57,7 +60,14 @@ def build_daily_report(repo: Repository, shop_id: int, day: date) -> DailyReport
         money = _metric(repo, conn.id, ds, 'ordered_revenue')
         cancels = _metric(repo, conn.id, ds, 'cancellations_units')
         prev_units = _metric(repo, conn.id, prev, 'ordered_units')
-        latest = repo.latest_order_run(conn.id, ds)
+        source=dict(units).get('endpoint') if units else None
+        if conn.marketplace=='wildberries' and units and prev_units:
+            previous_source=dict(prev_units).get('endpoint') or ''
+            if str(source or '').startswith('analytics/orders')!=previous_source.startswith('analytics/orders'):
+                prev_units=None
+        finance=_metric(repo,conn.id,ds,'marketplace_net') if conn.marketplace=='ozon' else None
+        latest = repo.latest_order_run(conn.id, ds,prefer_wb_funnel=(
+            conn.marketplace=='wildberries' and str(source or '').startswith('analytics/orders')))
         warning = latest.error if latest and latest.status == 'failed' else None
         sources.append(MarketplaceDaily(
             conn.marketplace, conn.id,
@@ -68,5 +78,7 @@ def build_daily_report(repo: Repository, shop_id: int, day: date) -> DailyReport
             bool(units['is_preliminary']) if units else True,
             units['as_of'] if units else None,
             warning,
+            source,float(finance['value']) if finance else None,
+            finance['as_of'] if finance else None,
         ))
     return DailyReport(ds, tuple(sources))

@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.0.3 — WB analytics orders and Ozon accrual reconciliation
+
+- Use the complete WB Sales Funnel product snapshot as the primary order count/value, with validated pagination and the Analytics token category. Preserve operational Statistics orders for lifecycle reconciliation and warehouse schemes; label fallback explicitly.
+- Keep Statistics and Analytics versions independent, prevent operational refreshes from overwriting funnel totals, and upgrade cached legacy days during backfill. Hide WB daily, period and product growth comparisons across different source bases.
+- Separate Ozon ordered value from financial net accruals in daily reports; show financial amounts with cents and support `/finance [days] [YYYY-MM-DD]`.
+- Identify billed Ozon advertising inside services, including signed corrections. Management deducts it once and uses Performance only on days without accruals; old finance snapshots remain supported.
+- Add newly introduced metrics when an unchanged API payload is collected again, preserving raw-response idempotency and schema 15.
+- Use Moscow calendar boundaries for Ozon postings, repair historic event dates from their UTC timestamps, and clear obsolete fulfillment entries after a complete refresh.
+- Add regression coverage and a Bothost update/reconciliation guide. Database schema remains 15.
+
 ## 1.0.2 — Production handoff and financial source audit
 
 - Combine WB report types into one daily metric snapshot, deduplicating report IDs.

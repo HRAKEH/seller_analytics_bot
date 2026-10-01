@@ -45,6 +45,9 @@ def build_period_report(repo: Repository, shop_id: int, end: date, days: int, la
     previous_matches=[(date.fromisoformat(ds)-timedelta(days=days)).isoformat() for ds in complete]
     previous_comparable=bool(previous_matches) and all(
         pds in previous[c.id] for c in conns for pds in previous_matches)
+    if previous_comparable:
+        previous_comparable=all(c.marketplace!='wildberries' or
+            repo.order_sources_comparable(c.id,complete,previous_matches) for c in conns)
     sources=[]
     for c in conns:
         units=sum(current[c.id][d] for d in complete)

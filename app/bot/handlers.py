@@ -1099,9 +1099,13 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
     async def cmd_finance(message: types.Message):
         if not allowed(message): return await denied(message)
         p=pref(); parts=(message.text or '').split()
-        try: days=int(parts[1]) if len(parts)>1 else p.finance_lookback_days
-        except ValueError: return await message.answer('Формат: /finance или /finance 7')
-        days=max(1,min(days,31)); end=local_now().date()-timedelta(days=1); start=end-timedelta(days=days-1)
+        try:
+            days=int(parts[1]) if len(parts)>1 else p.finance_lookback_days
+            end=date.fromisoformat(parts[2]) if len(parts)>2 else local_now().date()-timedelta(days=1)
+            if len(parts)>3:raise ValueError('extra arguments')
+        except ValueError: return await message.answer('Формат: /finance [дней] [YYYY-MM-DD], например /finance 1 2026-09-30')
+        if end>local_now().date():return await message.answer('⚠️ Нельзя загружать финансы за будущую дату.')
+        days=max(1,min(days,31)); start=end-timedelta(days=days-1)
         if allowed(message,'operate') and not ctx.job_lock.locked():
             await message.answer(f'💰 Обновляю финансовые данные {start} — {end}…')
             try:

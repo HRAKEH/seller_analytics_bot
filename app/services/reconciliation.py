@@ -12,6 +12,7 @@ import hashlib
 import json
 from typing import Any
 from .numeric import finite_number
+from .ozon_dates import posting_day
 from .finance import wb_document_amount, _ozon_has_sales
 
 
@@ -180,7 +181,7 @@ def normalize_ozon_posting_events(payload: Any, *, fulfillment_scheme: str,
         if not isinstance(posting,dict):
             continue
         event_time=str(posting.get('created_at') or posting.get('in_process_at') or posting.get('shipment_date') or '')
-        day=_day(event_time)
+        day=posting_day(event_time)
         if not day or (start_date and day < start_date) or (end_date and day > end_date):
             continue
         posting_number=str(posting.get('posting_number') or posting.get('postingNumber') or '').strip() or None

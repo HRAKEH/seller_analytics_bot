@@ -3,7 +3,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 from .base import MarketplaceClient, FetchResult
 
@@ -161,6 +161,42 @@ class WildberriesClient(MarketplaceClient):
                 return FetchResult.failure(self.source, 'WB pagination cursor did not advance', 200, total_attempts)
             cursor = next_cursor
         return FetchResult.failure(self.source, f'WB pagination safety limit reached ({max_pages})', 200, total_attempts)
+
+    async def sales_funnel_all(self, day: str, *, limit: int = 1000,
+                               max_pages: int = 100) -> FetchResult:
+        """All product cards for one Moscow calendar day, including deleted cards.
+
+        This is the seller analytics order basis, separate from supplier/orders.
+        A failed or repeated page must never become a partial successful snapshot.
+        """
+        date.fromisoformat(day)
+        page_limit=max(1,min(int(limit),1000))
+        products=[]; seen=set(); attempts=0; offset=0
+        for _ in range(max_pages):
+            result=await self.request('POST',
+                'https://seller-analytics-api.wildberries.ru/api/analytics/v3/sales-funnel/products',
+                json={'selectedPeriod':{'start':day,'end':day},'nmIds':[],
+                      'skipDeletedNm':False,'limit':page_limit,'offset':offset},
+                headers=self._headers(),rate_key='analytics_funnel',min_interval=20.0)
+            attempts += result.attempts
+            if not result.ok:
+                return FetchResult.failure(self.source,result.error or 'WB funnel error',result.status_code,attempts)
+            body=result.data
+            data=body.get('data') if isinstance(body,dict) else None
+            page=data.get('products') if isinstance(data,dict) else None
+            if not isinstance(page,list):
+                return FetchResult.failure(self.source,'WB funnel has no products list',result.status_code,attempts)
+            for row in page:
+                product=row.get('product') if isinstance(row,dict) else None
+                sku=str(product.get('nmId') or '') if isinstance(product,dict) else ''
+                if not sku or sku in seen:
+                    return FetchResult.failure(self.source,'WB funnel pagination has missing/repeated nmId',200,attempts)
+                seen.add(sku)
+            products.extend(page)
+            if len(page)<page_limit:
+                return FetchResult.success(self.source,{'data':{'products':products}},200,attempts)
+            offset += len(page)
+        return FetchResult.failure(self.source,f'WB funnel pagination safety limit reached ({max_pages})',200,attempts)
 
     async def sales(self, date_from: str, *, flag: int = 0) -> FetchResult:
         result = await self.request('GET', '/api/v1/supplier/sales',

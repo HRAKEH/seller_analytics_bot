@@ -129,8 +129,10 @@ class AppContext:
         self.active_backfill_task=task
 
         async def one_source(connection_id: int, market: str) -> list[CollectionOutcome]:
+            prefer_funnel=(market=='wildberries' and
+                           getattr(getattr(self.collector,'wb',None),'sales_funnel_all',None) is not None)
             complete=set(self.repository.successful_order_dates(
-                connection_id,start.isoformat(),end.isoformat()))
+                connection_id,start.isoformat(),end.isoformat(),prefer_wb_funnel=prefer_funnel))
             requested=[]
             current=start
             while current<=end:

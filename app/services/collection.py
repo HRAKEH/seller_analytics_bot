@@ -7,6 +7,7 @@ import json
 import logging
 
 from app.integrations import OzonClient, WildberriesClient, OzonPerformanceClient, FetchResult
+from app.integrations.wildberries import decode_wb_token
 from app.storage import Repository, MetricPoint, ProductMetricPoint, InventoryPoint, CommerceEventPoint
 from .normalization import normalize_ozon_order_analytics, normalize_wb_orders, NormalizationError
 from .finance import (
@@ -30,6 +31,8 @@ from .advertising import (
 )
 from .inbound import normalize_wb_supply, normalize_ozon_order
 from .promotions import normalize_wb_promotions, normalize_ozon_promotions, PromotionNormalizationError
+from .ozon_dates import posting_day, posting_range
+from .wb_funnel import normalize_wb_funnel
 
 log=logging.getLogger(__name__)
 
@@ -112,7 +115,7 @@ class CollectionService:
             for scheme,units in obs.fulfillment_units.items():
                 points.append(ProductMetricPoint(listing.id,obs.data_date,'fulfillment_units',units,
                                                  'units',scheme,True,obs.as_of))
-        return self.repo.save_product_metrics(source_run_id,points) if points else 0
+        return self.repo.save_product_metrics(source_run_id,points,replace_fulfillment_snapshot=True)
 
     def _save_inventory_observations(self, *, shop_id: int, connection_id: int,
                                      marketplace: str, source_run_id: int,
@@ -159,23 +162,20 @@ class CollectionService:
                 p.campaign_name,listing.id if listing else None,p.spend,p.attributed_sales,p.orders,p.clicks,p.impressions))
         return resolved
 
-    async def collect_wb_orders_day(self, connection_id: int, day: date, *, shop_id: int | None = None) -> CollectionOutcome:
-        ds = day.isoformat(); endpoint = 'statistics/orders'
-        if self.wb is None:
-            rid = self.repo.record_failure(connection_id, endpoint, ds, 'WB client is not configured')
-            return CollectionOutcome('wildberries', ds, False, rid, 'WB client is not configured')
-        result = await self.wb.orders(ds, flag=1)
+    def _save_wb_statistics(self, connection_id: int, ds: str, endpoint: str,
+                            result: FetchResult, shop_id: int | None) -> CollectionOutcome:
         if not result.ok:
             return self._failure(connection_id, endpoint, ds, 'wildberries', result)
         try:
             points = normalize_wb_orders(result.data, connection_id, ds)
             product_obs = normalize_wb_product_orders(result.data, data_date=ds)
-            rid = self.repo.record_success(connection_id, endpoint, ds, result.data, points,
+            primary=self.repo.has_wb_funnel_snapshot(connection_id,ds)
+            rid = self.repo.record_success(connection_id, endpoint, ds, result.data, [] if primary else points,
                                            attempts=result.attempts)
             if shop_id is not None:
-                self._save_product_observations(shop_id=shop_id, connection_id=connection_id,
-                                                marketplace='wildberries', source_run_id=rid,
-                                                observations=product_obs)
+                saver=self._save_fulfillment_observations if primary else self._save_product_observations
+                saver(shop_id=shop_id,connection_id=connection_id,marketplace='wildberries',
+                      source_run_id=rid,observations=product_obs)
                 self._save_commerce_observations(shop_id=shop_id, connection_id=connection_id,
                     marketplace='wildberries', source_run_id=rid,
                     observations=normalize_wb_order_events(result.data,data_date=ds))
@@ -184,6 +184,45 @@ class CollectionService:
                                            http_status=result.status_code, attempts=result.attempts)
             return CollectionOutcome('wildberries', ds, False, rid, str(exc))
         return CollectionOutcome('wildberries', ds, True, rid, 'orders loaded')
+
+    async def collect_wb_funnel_day(self, connection_id: int, day: date, *,
+                                   shop_id: int | None = None, backfill: bool = False) -> CollectionOutcome:
+        ds=day.isoformat(); endpoint='analytics/orders/backfill' if backfill else 'analytics/orders'
+        if self.wb is None or getattr(self.wb,'sales_funnel_all',None) is None:
+            return self._failure(connection_id,endpoint,ds,'wildberries',
+                FetchResult.failure('wildberries','WB sales funnel client is not configured',None,0))
+        meta=decode_wb_token(getattr(self.wb,'token',''))
+        if meta['ok'] and 'Аналитика' not in meta['categories']:
+            result=FetchResult.failure('wildberries','В WB-токене нет категории «Аналитика»',403,0)
+        elif 'analytics/orders' in self._auto_disabled_endpoints:
+            result=FetchResult.failure('wildberries','WB «Воронка продаж» недоступна по текущему токену; проверьте подключения',403,0)
+        else:
+            result=await self.wb.sales_funnel_all(ds)
+        if not result.ok:
+            if result.status_code in (401,402,403):
+                self._auto_disabled_endpoints.add('analytics/orders')
+            return self._failure(connection_id,endpoint,ds,'wildberries',result)
+        try:
+            points,observations=normalize_wb_funnel(result.data,connection_id,ds)
+            rid=self.repo.record_success(connection_id,endpoint,ds,result.data,points,attempts=result.attempts)
+            if shop_id is not None:
+                self._save_product_observations(shop_id=shop_id,connection_id=connection_id,
+                    marketplace='wildberries',source_run_id=rid,observations=observations)
+            return CollectionOutcome('wildberries',ds,True,rid,'sales funnel loaded')
+        except (NormalizationError,ProductNormalizationError,ValueError) as exc:
+            rid=self.repo.record_failure(connection_id,endpoint,ds,f'Normalization: {exc}',attempts=result.attempts)
+            return CollectionOutcome('wildberries',ds,False,rid,str(exc))
+
+    async def collect_wb_orders_day(self, connection_id: int, day: date, *, shop_id: int | None = None) -> CollectionOutcome:
+        ds=day.isoformat()
+        if self.wb is None:
+            return self._failure(connection_id,'statistics/orders',ds,'wildberries',
+                FetchResult.failure('wildberries','WB client is not configured',None,0))
+        result=await self.wb.orders(ds,flag=1)
+        operational=self._save_wb_statistics(connection_id,ds,'statistics/orders',result,shop_id)
+        if getattr(self.wb,'sales_funnel_all',None) is not None:
+            return await self.collect_wb_funnel_day(connection_id,day,shop_id=shop_id)
+        return operational
 
     async def collect_ozon_orders_day(self, connection_id: int, day: date, *, shop_id: int | None = None) -> CollectionOutcome:
         ds = day.isoformat(); endpoint = 'analytics/orders'
@@ -250,21 +289,20 @@ class CollectionService:
                     current=start
                     while current <= end:
                         ds=current.isoformat(); rows=grouped.get(ds,[])
-                        try:
-                            points=normalize_wb_orders(rows,wb_connection_id,ds)
-                            product_obs=normalize_wb_product_orders(rows,data_date=ds)
-                            rid=self.repo.record_success(wb_connection_id,endpoint,ds,rows,points,attempts=result.attempts)
-                            if shop_id is not None:
-                                self._save_product_observations(shop_id=shop_id, connection_id=wb_connection_id,
-                                    marketplace='wildberries', source_run_id=rid, observations=product_obs)
-                                self._save_commerce_observations(shop_id=shop_id,connection_id=wb_connection_id,
-                                    marketplace='wildberries',source_run_id=rid,
-                                    observations=normalize_wb_order_events(rows,data_date=ds))
-                            outcomes.append(CollectionOutcome('wildberries',ds,True,rid,'orders loaded'))
-                        except (NormalizationError, ProductNormalizationError, ValueError) as exc:
-                            rid=self.repo.record_failure(wb_connection_id,endpoint,ds,f'Normalization: {exc}',attempts=result.attempts)
-                            outcomes.append(CollectionOutcome('wildberries',ds,False,rid,str(exc)))
+                        outcomes.append(self._save_wb_statistics(wb_connection_id,ds,endpoint,
+                            FetchResult.success('wildberries',rows,200,result.attempts),shop_id))
                         current += timedelta(days=1)
+            if self.wb is not None and getattr(self.wb,'sales_funnel_all',None) is not None:
+                current=start
+                while current<=end:
+                    if self.repo.has_wb_funnel_snapshot(wb_connection_id,current.isoformat()):
+                        run=self.repo.last_successful_order_run(wb_connection_id,current.isoformat())
+                        outcomes.append(CollectionOutcome('wildberries',current.isoformat(),True,
+                            run.id if run else 0,'sales funnel already loaded'))
+                    else:
+                        outcomes.append(await self.collect_wb_funnel_day(wb_connection_id,current,
+                            shop_id=shop_id,backfill=True))
+                    current += timedelta(days=1)
 
         if ozon_connection_id is not None:
             endpoint='analytics/orders/backfill'
@@ -324,8 +362,7 @@ class CollectionService:
         if self.ozon is None:
             rid=self.repo.record_failure(connection_id,'postings/fulfillment',start.isoformat(),'Ozon client is not configured')
             return [CollectionOutcome('ozon',start.isoformat(),False,rid,'Ozon client is not configured')]
-        since=f'{start.isoformat()}T00:00:00.000Z'
-        to=f'{end.isoformat()}T23:59:59.999Z'
+        since,to=posting_range(start,end)
         outcomes:list[CollectionOutcome]=[]
         for scheme in ('FBO','FBS'):
             endpoint=f'postings/{scheme.lower()}'
@@ -339,6 +376,9 @@ class CollectionService:
                 rid=self.repo.record_failure(connection_id,endpoint,start.isoformat(),f'Normalization: {exc}',attempts=result.attempts)
                 outcomes.append(CollectionOutcome('ozon',start.isoformat(),False,rid,str(exc)))
                 continue
+            # Existing events retain original UTC timestamps, so their dates
+            # can be repaired without deleting history or querying another day.
+            self.repo.correct_ozon_posting_dates(connection_id)
             obs_by_day:dict[str,list[ProductDayObservation]]={}
             for obs in observations:
                 if start.isoformat() <= obs.data_date <= end.isoformat():
@@ -347,8 +387,8 @@ class CollectionService:
             raw_by_day:dict[str,list[dict]]={}
             for posting in raw_postings:
                 if not isinstance(posting,dict): continue
-                ds=str(posting.get('created_at') or posting.get('in_process_at') or '')[:10]
-                if start.isoformat() <= ds <= end.isoformat(): raw_by_day.setdefault(ds,[]).append(posting)
+                ds=posting_day(posting.get('created_at') or posting.get('in_process_at') or '')
+                if ds and start.isoformat() <= ds <= end.isoformat(): raw_by_day.setdefault(ds,[]).append(posting)
             current=start
             while current <= end:
                 ds=current.isoformat(); raw={'postings':raw_by_day.get(ds,[]),'scheme':scheme}

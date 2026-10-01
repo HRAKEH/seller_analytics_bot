@@ -17,6 +17,12 @@ def utcnow() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+def source_utcnow() -> str:
+    # Preserve completion order when a cached source succeeds after a failure
+    # in the same second. Runtime queues retain their existing timestamp basis.
+    return datetime.now(timezone.utc).isoformat(timespec='microseconds')
+
+
 def canonical_json(data: Any) -> str:
     return json.dumps(data, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
 
@@ -387,7 +393,7 @@ class Repository:
     def record_failure(self, connection_id: int, endpoint: str, data_date: str, error: str,
                        *, http_status: int | None = None, attempts: int = 1,
                        started_at: str | None = None) -> int:
-        now = utcnow()
+        now = source_utcnow()
         with self.db.connect() as c:
             cur = c.execute("""INSERT INTO source_runs
                 (connection_id,endpoint,data_date,status,started_at,finished_at,error,http_status,attempts,created_at)
@@ -401,7 +407,7 @@ class Repository:
                        store_raw: bool = True, status: str = "success") -> int:
         if status not in {"success", "partial"}:
             raise ValueError("status must be success or partial")
-        now = utcnow()
+        now = source_utcnow()
         body = canonical_json(raw_payload)
         digest = hashlib.sha256(body.encode("utf-8")).hexdigest()
         points = list(metrics)
@@ -416,11 +422,11 @@ class Repository:
         with self.db.connect() as c:
             c.execute("BEGIN IMMEDIATE")
             if status == "success":
-                # A -> B -> A must create a new version. Daily/backfill orders
-                # share a metric basis and therefore one version sequence.
-                order_endpoints = ('statistics/orders', 'statistics/orders/backfill',
-                                   'analytics/orders', 'analytics/orders/backfill')
-                endpoints = order_endpoints if endpoint in order_endpoints else (endpoint,)
+                # Daily/backfill share versions within the same source basis.
+                # WB supplier orders and sales funnel must remain independent.
+                families=(('statistics/orders','statistics/orders/backfill'),
+                          ('analytics/orders','analytics/orders/backfill'))
+                endpoints=next((family for family in families if endpoint in family),(endpoint,))
                 placeholders = ','.join('?' for _ in endpoints)
                 previous = c.execute(f"""SELECT id,status,payload_hash FROM source_runs
                     WHERE connection_id=? AND endpoint IN ({placeholders}) AND data_date=?
@@ -428,6 +434,18 @@ class Repository:
                     (connection_id, *endpoints, data_date)).fetchone()
                 if previous and previous['status'] == 'success' and previous['payload_hash'] == digest:
                     c.execute('UPDATE source_runs SET finished_at=? WHERE id=?', (now, previous['id']))
+                    # New normalizer versions may add metrics to an unchanged
+                    # payload (for example billed advertising on an upgrade).
+                    existing={r['metric_key'] for r in c.execute(
+                        'SELECT metric_key FROM metric_values WHERE source_run_id=?',(previous['id'],))}
+                    for p in points:
+                        if p.metric_key in existing:continue
+                        c.execute("""INSERT INTO metric_values
+                            (connection_id,data_date,metric_key,value,unit,is_preliminary,as_of,fetched_at,source_run_id)
+                            VALUES(?,?,?,?,?,?,?,?,?)""",
+                            (p.connection_id,p.data_date,p.metric_key,p.value,p.unit,
+                             int(p.is_preliminary),p.as_of,now,previous['id']))
+                        existing.add(p.metric_key)
                     c.commit()
                     return int(previous["id"])
             cur = c.execute("""INSERT INTO source_runs
@@ -449,7 +467,7 @@ class Repository:
     def latest_metric(self, connection_id: int, data_date: str, metric_key: str):
         """Latest metric from a successful/partial run; failed runs never shadow it."""
         with self.db.connect() as c:
-            return c.execute("""SELECT mv.*, sr.status, sr.finished_at
+            return c.execute("""SELECT mv.*, sr.status, sr.finished_at, sr.endpoint
                 FROM metric_values mv JOIN source_runs sr ON sr.id=mv.source_run_id
                 WHERE mv.connection_id=? AND mv.data_date=? AND mv.metric_key=?
                   AND sr.status IN ('success','partial')
@@ -467,6 +485,14 @@ class Repository:
             result.setdefault(r["metric_key"], float(r["value"]))
         return result
 
+    def has_wb_funnel_snapshot(self, connection_id: int, data_date: str) -> bool:
+        with self.db.connect() as c:
+            row=c.execute("""SELECT 1 FROM source_runs
+                WHERE connection_id=? AND data_date=? AND status='success'
+                  AND endpoint IN ('analytics/orders','analytics/orders/backfill') LIMIT 1""",
+                (connection_id,data_date)).fetchone()
+        return row is not None
+
     def last_successful_run(self, connection_id: int, endpoint: str | None = None) -> SourceRun | None:
         sql = "SELECT * FROM source_runs WHERE connection_id=? AND status IN ('success','partial')"
         params: list[Any] = [connection_id]
@@ -478,12 +504,15 @@ class Repository:
         if not r: return None
         return SourceRun(r["id"], r["connection_id"], r["endpoint"], r["data_date"], r["status"], r["started_at"], r["finished_at"], r["error"], r["http_status"], r["attempts"], r["payload_hash"])
 
-    def latest_order_run(self, connection_id: int, data_date: str | None = None) -> SourceRun | None:
+    def latest_order_run(self, connection_id: int, data_date: str | None = None,
+                          *, prefer_wb_funnel: bool = False) -> SourceRun | None:
         """Latest core-order attempt across daily and backfill endpoints."""
         sql="""SELECT * FROM source_runs WHERE connection_id=?
                AND endpoint IN ('statistics/orders','statistics/orders/backfill',
                                 'analytics/orders','analytics/orders/backfill')"""
         params: list[Any]=[connection_id]
+        if prefer_wb_funnel:
+            sql += " AND endpoint IN ('analytics/orders','analytics/orders/backfill')"
         if data_date is not None:
             sql += " AND data_date=?"; params.append(data_date)
         sql += " ORDER BY finished_at DESC,id DESC LIMIT 1"
@@ -621,39 +650,53 @@ class Repository:
 
     def save_product_metrics(self, source_run_id: int, points: Iterable[ProductMetricPoint], *,
                              replace_order_snapshot: bool = False,
-                             replace_finance_snapshot: bool = False) -> int:
+                             replace_finance_snapshot: bool = False,
+                             replace_fulfillment_snapshot: bool = False) -> int:
         now=utcnow(); rows=list(points)
-        if not rows and not (replace_order_snapshot or replace_finance_snapshot): return 0
+        if not rows and not (replace_order_snapshot or replace_finance_snapshot or replace_fulfillment_snapshot): return 0
         with self.db.connect() as c:
             run=c.execute("SELECT connection_id,status,data_date,endpoint FROM source_runs WHERE id=?",(source_run_id,)).fetchone()
             if not run or run['status'] not in ('success','partial'):
                 raise ValueError('Product metrics require a successful/partial source run')
             c.execute('BEGIN IMMEDIATE')
-            if replace_order_snapshot or replace_finance_snapshot:
-                if replace_order_snapshot and replace_finance_snapshot:
+            if replace_order_snapshot or replace_finance_snapshot or replace_fulfillment_snapshot:
+                if sum((replace_order_snapshot,replace_finance_snapshot,replace_fulfillment_snapshot)) > 1:
                     raise ValueError('Cannot replace unrelated snapshots together')
                 endpoints=('statistics/orders','statistics/orders/backfill','analytics/orders','analytics/orders/backfill') if replace_order_snapshot else ('finance/accrual/by-day',)
                 keys=('ordered_units','ordered_revenue','cancellations_units','fulfillment_units') if replace_order_snapshot else (
                     'financial_sales','goods_payable','bank_payment','marketplace_net','commission','logistics',
                     'storage','acceptance','acquiring','services','penalties','compensation','returns_amount','payout')
+                if replace_order_snapshot and run['endpoint'].startswith('analytics/orders'):
+                    # Analytics does not attribute orders to warehouse schemes.
+                    # Keep the independently collected operational breakdown.
+                    keys=('ordered_units','ordered_revenue','cancellations_units')
+                scheme=None
+                if replace_fulfillment_snapshot:
+                    endpoints=(('statistics/orders','statistics/orders/backfill')
+                               if run['endpoint'].startswith('statistics/orders') else ('postings/fbo','postings/fbs'))
+                    keys=('fulfillment_units',)
+                    scheme={'postings/fbo':'FBO','postings/fbs':'FBS'}.get(run['endpoint'])
                 if run['status'] != 'success' or run['endpoint'] not in endpoints:
                     raise ValueError('Snapshot replacement requires a complete source run')
                 if any(p.data_date != run['data_date'] for p in rows):
                     raise ValueError('Snapshot belongs to another date')
                 if any(p.metric_key not in keys for p in rows):
                     raise ValueError('Snapshot contains unrelated metrics')
+                if scheme and any(p.fulfillment_scheme != scheme for p in rows):
+                    raise ValueError('Fulfillment snapshot contains another scheme')
                 present={(p.listing_id,p.metric_key,p.fulfillment_scheme) for p in rows}
                 old=c.execute(f"""SELECT DISTINCT pm.listing_id,pm.metric_key,pm.unit,pm.fulfillment_scheme
                     FROM product_metric_values pm JOIN product_listings pl ON pl.id=pm.listing_id
                     JOIN source_runs sr ON sr.id=pm.source_run_id
                     WHERE pl.connection_id=? AND pm.data_date=?
                       AND sr.endpoint IN ({','.join('?' for _ in endpoints)})
-                      AND pm.metric_key IN ({','.join('?' for _ in keys)})""",
-                    (run['connection_id'],run['data_date'],*endpoints,*keys)).fetchall()
+                      AND pm.metric_key IN ({','.join('?' for _ in keys)})
+                      {'AND pm.fulfillment_scheme=?' if scheme else ''}""",
+                    (run['connection_id'],run['data_date'],*endpoints,*keys,*((scheme,) if scheme else ()))).fetchall()
                 for p in old:
                     if (p['listing_id'],p['metric_key'],p['fulfillment_scheme']) not in present:
                         rows.append(ProductMetricPoint(p['listing_id'],run['data_date'],p['metric_key'],
-                                                       0.0,p['unit'],p['fulfillment_scheme'],replace_order_snapshot,now))
+                                                       0.0,p['unit'],p['fulfillment_scheme'],replace_order_snapshot or replace_fulfillment_snapshot,now))
             saved=0
             for p in rows:
                 finite_number(p.value)
@@ -785,19 +828,21 @@ class Repository:
               (shop_id,)).fetchall()
         return [dict(r) for r in rows]
 
-    def successful_order_dates(self, connection_id: int, start_date: str, end_date: str) -> list[str]:
+    def successful_order_dates(self, connection_id: int, start_date: str, end_date: str,
+                               *, prefer_wb_funnel: bool = False) -> list[str]:
         """Dates for which a complete operational-order source run succeeded.
 
         Empty product rows on one of these dates can therefore be interpreted as
         zero orders for that SKU, rather than missing collection.
         """
+        endpoints=(('analytics/orders','analytics/orders/backfill') if prefer_wb_funnel else
+                   ('statistics/orders','statistics/orders/backfill','analytics/orders','analytics/orders/backfill'))
         with self.db.connect() as c:
-            rows=c.execute("""SELECT DISTINCT data_date FROM source_runs
+            rows=c.execute(f"""SELECT DISTINCT data_date FROM source_runs
                 WHERE connection_id=? AND data_date BETWEEN ? AND ?
                   AND status='success'
-                  AND (endpoint='statistics/orders' OR endpoint='statistics/orders/backfill'
-                       OR endpoint='analytics/orders' OR endpoint='analytics/orders/backfill')
-                ORDER BY data_date""",(connection_id,start_date,end_date)).fetchall()
+                  AND endpoint IN ({','.join('?' for _ in endpoints)})
+                ORDER BY data_date""",(connection_id,start_date,end_date,*endpoints)).fetchall()
         return [str(r['data_date']) for r in rows]
 
     def count(self, table: str) -> int:
@@ -837,6 +882,25 @@ class Repository:
         for r in rows:
             result.setdefault(r['data_date'], float(r['value']))
         return result
+
+    def order_sources_comparable(self, connection_id: int, current_dates: Iterable[str],
+                                  previous_dates: Iterable[str]) -> bool:
+        """WB calendar pairs must use the same orders basis after an upgrade."""
+        current=list(current_dates); previous=list(previous_dates)
+        if not current or len(current)!=len(previous):return False
+        dates=current+previous
+        with self.db.connect() as c:
+            rows=c.execute("""SELECT mv.data_date,sr.endpoint
+                FROM metric_values mv JOIN source_runs sr ON sr.id=mv.source_run_id
+                WHERE mv.connection_id=? AND mv.data_date BETWEEN ? AND ?
+                  AND mv.metric_key='ordered_units' AND sr.status IN ('success','partial')
+                ORDER BY mv.fetched_at DESC,mv.id DESC""",
+                (connection_id,min(dates),max(dates))).fetchall()
+        sources={}
+        for row in rows:sources.setdefault(row['data_date'],row['endpoint'])
+        return all(ds in sources and ps in sources and
+                   sources[ds].startswith('analytics/orders')==sources[ps].startswith('analytics/orders')
+                   for ds,ps in zip(current,previous))
 
     def recent_metric_days(self, shop_id: int, metric_key: str = 'ordered_units', limit: int = 10) -> list[tuple[str,int,int]]:
         """Return (date, sources_with_metric, enabled_sources) newest first."""
@@ -944,6 +1008,34 @@ class Repository:
         out: dict[str,dict[str,float]]={}
         for r in rows: out.setdefault(r['marketplace'],{})[r['metric_key']]=float(r['value'])
         return out
+
+    def ozon_ad_accounting(self, shop_id: int, start_date: str, end_date: str) -> dict[str, Any]:
+        """Deduct billed ads once; use Performance only on days without accruals."""
+        with self.db.connect() as c:
+            rows=c.execute("""WITH ranked AS (
+                SELECT mv.*,ROW_NUMBER() OVER(PARTITION BY mv.connection_id,mv.data_date,mv.metric_key
+                    ORDER BY mv.fetched_at DESC,mv.id DESC) rn
+                FROM metric_values mv JOIN source_runs sr ON sr.id=mv.source_run_id
+                JOIN marketplace_connections mc ON mc.id=mv.connection_id
+                WHERE mc.shop_id=? AND mc.marketplace='ozon' AND mv.data_date BETWEEN ? AND ?
+                  AND mv.metric_key IN ('marketplace_net','services','finance_ad_spend','ad_spend')
+                  AND sr.status IN ('success','partial'))
+                SELECT connection_id,data_date,metric_key,value FROM ranked WHERE rn=1""",
+                (shop_id,start_date,end_date)).fetchall()
+        daily={}
+        for row in rows:
+            daily.setdefault((row['connection_id'],row['data_date']),{})[row['metric_key']]=float(row['value'])
+        result={'has_finance':False,'billed':0.0,'performance_without_finance':0.0,
+                'performance_only_days':0,'legacy_finance_days':0}
+        for metrics in daily.values():
+            if 'marketplace_net' in metrics and 'services' in metrics:
+                result['has_finance']=True
+                result['billed'] += metrics.get('finance_ad_spend',0)
+                if 'finance_ad_spend' not in metrics:result['legacy_finance_days'] += 1
+            elif 'ad_spend' in metrics:
+                result['performance_without_finance'] += metrics['ad_spend']
+                result['performance_only_days'] += 1
+        return result
 
     def estimated_order_cogs(self, shop_id: int, start_date: str, end_date: str) -> dict[str,dict[str,float]]:
         """Cost estimate based on ordered units and cost effective on each order date.
@@ -1125,6 +1217,23 @@ class Repository:
 
 
     # --- order/sale/finance reconciliation ------------------------------
+    def correct_ozon_posting_dates(self, connection_id: int) -> int:
+        """Repair historic posting days using their original UTC event times."""
+        from app.services.ozon_dates import posting_day
+        with self.db.connect() as c:
+            c.execute('BEGIN IMMEDIATE')
+            rows=c.execute("""SELECT id,data_date,event_time FROM commerce_events
+                WHERE connection_id=? AND source_name='ozon_postings'
+                  AND event_kind IN ('posting','cancel')""",(connection_id,)).fetchall()
+            updates=[]
+            for row in rows:
+                day=posting_day(row['event_time'])
+                if day and day != row['data_date']:
+                    updates.append((day,row['id']))
+            c.executemany('UPDATE commerce_events SET data_date=? WHERE id=?',updates)
+            c.commit()
+        return len(updates)
+
     def save_commerce_events(self, source_run_id: int, points: Iterable[CommerceEventPoint], *,
                              replace_finance_snapshot: bool = False) -> int:
         rows=list(points)

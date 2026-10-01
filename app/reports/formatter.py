@@ -3,9 +3,9 @@ from __future__ import annotations
 from html import escape
 from .daily import DailyReport, MarketplaceDaily
 
-def money(value: float | None) -> str:
+def money(value: float | None, *, precision: int = 0) -> str:
     if value is None: return '—'
-    return f"{value:,.0f}".replace(',', ' ') + ' ₽'
+    return f"{value:,.{precision}f}".replace(',', ' ') + ' ₽'
 
 def num(value: float | None) -> str:
     if value is None: return '—'
@@ -36,7 +36,15 @@ def format_daily(report: DailyReport) -> str:
         else:
             lines.append(f'{source_name(s.marketplace)}: <b>{num(s.units)} шт.</b>')
         if s.ordered_revenue is not None:
-            lines.append(f'  сумма заказов {money(s.ordered_revenue)} · на ед. {money(avg)}')
+            lines.append(f'  стоимость заказов до удержаний {money(s.ordered_revenue)} · на ед. {money(avg)}')
+        if s.marketplace=='wildberries':
+            label='Воронка продаж' if str(s.order_source or '').startswith('analytics/orders') else 'Статистика, резервный источник'
+            lines.append(f'  источник: {label}')
+        if s.marketplace=='ozon':
+            if s.marketplace_net is not None:
+                lines.append(f'  начисления после удержаний за день: <b>{money(s.marketplace_net,precision=2)}</b>')
+            else:
+                lines.append(f'  начисления после удержаний: ⏳ ещё не загружены · /finance 1 {report.day}')
         if s.cancellations is not None:
             lines.append(f'  отмены {num(s.cancellations)} шт. · {delta(s.units, s.previous_units)}')
         if s.warning:
@@ -54,6 +62,11 @@ def format_daily(report: DailyReport) -> str:
         else:
             lines.append('🟡 ИТОГО: ⏳ нет сопоставимых данных')
     lines.append('ℹ️ Суммы заказов по площадкам пока не складываются: финансовая методика источников различается.')
+    if any(s.marketplace=='wildberries' and s.units is not None and
+           not str(s.order_source or '').startswith('analytics/orders') for s in report.sources):
+        lines.append('ℹ️ WB: источник может не включать заказы с неподтверждённой оплатой.')
+    if any(s.marketplace=='ozon' for s in report.sources):
+        lines.append('ℹ️ Ozon: заказы и финансовые начисления за день относятся к разным наборам продаж.')
     return '\n'.join(lines)
 
 
@@ -153,23 +166,27 @@ def format_stock_report(report) -> str:
     return '\n'.join(lines)
 
 def format_finance(report) -> str:
+    def fm(value):return money(value,precision=2)
     lines=[f'💰 <b>Финансы · {report.start} — {report.end}</b>','━━━━━━━━━━━━━━━━']
     if not report.sources:
         return '\n'.join(lines+['📭 Финансовые данные ещё не загружены. Откройте «💰 Деньги и реклама» → «💰 Финансы».'])
     for s in report.sources:
         m=s.metrics
         lines.append(f'\n{source_name(s.marketplace)}')
-        if 'financial_sales' in m: lines.append(f'  продажи по фин. отчёту: <b>{money(m["financial_sales"])}</b>')
-        if 'goods_payable' in m: lines.append(f'  к перечислению за товар: {money(m["goods_payable"])}')
-        if 'marketplace_net' in m: lines.append(f'  нетто начислений: <b>{money(m["marketplace_net"])}</b>')
-        if 'bank_payment' in m: lines.append(f'  банковский платёж: <b>{money(m["bank_payment"])}</b>')
+        if 'financial_sales' in m: lines.append(f'  продажи по фин. отчёту: <b>{fm(m["financial_sales"])}</b>')
+        if 'goods_payable' in m: lines.append(f'  к перечислению за товар: {fm(m["goods_payable"])}')
+        if 'marketplace_net' in m: lines.append(f'  начисления после удержаний: <b>{fm(m["marketplace_net"])}</b>')
+        if 'bank_payment' in m: lines.append(f'  банковский платёж: <b>{fm(m["bank_payment"])}</b>')
         costs=[]
         for key,label in [('commission','комиссия'),('logistics','логистика'),('storage','хранение'),('acceptance','приёмка'),('acquiring','эквайринг'),('services','прочие услуги'),('penalties','штрафы')]:
-            if m.get(key): costs.append(f'{label} {money(m[key])}')
+            if m.get(key): costs.append(f'{label} {fm(m[key])}')
         if costs: lines.append('  расходы: '+ ' · '.join(costs))
-        if m.get('compensation'): lines.append(f'  компенсации/доплаты: {money(m["compensation"])}')
+        if 'finance_ad_spend' in m:
+            lines.append(f'  из прочих услуг — реклама по начислениям: {fm(m["finance_ad_spend"])} (уже учтена в итоге)')
+        if m.get('compensation'): lines.append(f'  компенсации/доплаты: {fm(m["compensation"])}')
         if m.get('ad_spend') is not None:
-            lines.append(f'  реклама: {money(m.get("ad_spend",0))}')
+            label='реклама Performance, справочно' if s.marketplace=='ozon' else 'реклама'
+            lines.append(f'  {label}: {fm(m.get("ad_spend",0))}')
             attributed=m.get('ad_attributed_sales',0)
             if attributed>0: lines.append(f'  ДРР по атрибутированным продажам: {m.get("ad_spend",0)/attributed*100:.1f}%')
         if s.estimated_order_cogs>0:

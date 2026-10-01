@@ -24,6 +24,8 @@ METRICS: dict[str, MetricDefinition] = {
     "bank_payment": MetricDefinition("bank_payment", "Фактический платёж", "RUB", False, "Фактически проведённый платёж, если источник его предоставляет"),
     "marketplace_net": MetricDefinition("marketplace_net", "Нетто маркетплейса", "RUB", False, "Расчёт из официальных финансовых компонент источника"),
     "ad_spend": MetricDefinition("ad_spend", "Рекламные расходы", "RUB", True),
+    "finance_ad_spend": MetricDefinition("finance_ad_spend", "Реклама по начислениям Ozon", "RUB", False,
+                                       "Подмножество services; уже включено в marketplace_net"),
     "ad_attributed_sales": MetricDefinition("ad_attributed_sales", "Продажи из рекламы", "RUB", True),
     "commission": MetricDefinition("commission", "Комиссия", "RUB", True),
     "logistics": MetricDefinition("logistics", "Логистика", "RUB", True),

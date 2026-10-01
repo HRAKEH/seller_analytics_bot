@@ -94,6 +94,11 @@ def build_product_report(repo: Repository, shop_id: int, end: date, *, days: int
         len(repo.successful_order_dates(c.id,start.isoformat(),end.isoformat()))==days
         and len(repo.successful_order_dates(c.id,prev_start.isoformat(),prev_end.isoformat()))==days
         for c in conns)
+    if comparison_complete:
+        current_dates=[(start+timedelta(days=i)).isoformat() for i in range(days)]
+        previous_dates=[(prev_start+timedelta(days=i)).isoformat() for i in range(days)]
+        comparison_complete=all(c.marketplace!='wildberries' or
+            repo.order_sources_comparable(c.id,current_dates,previous_dates) for c in conns)
     changes:list[ProductChange]=[]
     if comparison_complete:
         all_lids=set(unit_idx)|set(prev_idx)
