@@ -3,6 +3,7 @@ from __future__ import annotations
 import contextvars
 import json
 import logging
+from logging.handlers import RotatingFileHandler
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -79,7 +80,7 @@ def configure_logging(settings) -> None:
     handlers=[logging.StreamHandler(sys.stdout)]
     try:
         log_path=Path('logs/bot.log')
-        file_handler=logging.FileHandler(log_path,encoding='utf-8')
+        file_handler=RotatingFileHandler(log_path,maxBytes=5*1024*1024,backupCount=3,encoding='utf-8')
         try: log_path.chmod(0o600)
         except OSError: pass
         handlers.append(file_handler)

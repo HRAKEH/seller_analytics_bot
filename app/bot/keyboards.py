@@ -45,6 +45,9 @@ COMMAND_BUTTONS: dict[str, str] = {
     'products': '🏆 Топ товаров',
     'stocks': '📦 Остатки',
     'finance': '💰 Финансы',
+    'refresh': '🔄 Обновить все отчёты',
+    'sources': '📡 Полнота источников',
+    'accruals': '🧮 Начисления Ozon',
     'ads': '📣 Реклама',
     'management': '📈 Результат магазина',
     'sku_finance': '🧾 Экономика по товарам',
@@ -112,7 +115,7 @@ def reports_keyboard(role: str | None = 'owner', *, system_owner: bool = False):
         '📜 Что уже загружено',
     ]
     if role in {'analyst', 'owner'}:
-        buttons += ['🔄 Обновить вчера', '📥 Догрузить данные']
+        buttons += ['🔄 Обновить вчера', '📥 Догрузить данные', COMMAND_BUTTONS['refresh']]
     buttons += [BACK, HOME]
     return _build(buttons)
 
@@ -134,9 +137,10 @@ def money_keyboard(role: str | None = 'owner', *, system_owner: bool = False):
     buttons = [
         COMMAND_BUTTONS['finance'], COMMAND_BUTTONS['ads'],
         COMMAND_BUTTONS['management'], COMMAND_BUTTONS['reconcile'],
+        COMMAND_BUTTONS['sources'], COMMAND_BUTTONS['accruals'],
     ]
     if role in {'analyst','owner'}:
-        buttons += ['🔄 Обновить финансы', '🔄 Обновить рекламу']
+        buttons += [COMMAND_BUTTONS['refresh'], '🔄 Обновить финансы', '🔄 Обновить рекламу']
     buttons += [BACK, HOME]
     return _build(buttons)
 

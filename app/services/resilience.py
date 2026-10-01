@@ -48,29 +48,40 @@ async def execute_retry_job(bot, registry, job: dict) -> None:
             outcomes=await ctx.collect_day(day)
             if not _all_ok(outcomes):
                 raise RuntimeError('daily retry remains partial')
+            start=day-timedelta(days=ctx.preferences().finance_lookback_days-1)
+            for kind,action in (('finance',ctx.collect_finance),('advertising',ctx.collect_advertising)):
+                try:
+                    result=await action(start,day)
+                    if result and not _all_ok(result):raise RuntimeError(f'{kind} retry remains partial')
+                except asyncio.CancelledError:raise
+                except Exception as exc:
+                    queue_retry(ctx.repository,ctx.settings,shop_id,kind,f'{start}:{day}',
+                        {'start':start.isoformat(),'end':day.isoformat()},error=str(exc),delay_seconds=300)
             if payload.get('notify',True):
                 await _notify_shop(bot,ctx,'🔄 <b>Данные восстановлены. Обновлённый отчёт:</b>\n\n'+
                     format_daily(build_daily_report(ctx.repository,ctx.shop_id,day)))
         elif job_type=='reconciliation':
             start=date.fromisoformat(str(payload['start'])); end=date.fromisoformat(str(payload['end']))
-            await ctx.collect_reconciliation(start,end)
+            outcomes=await ctx.collect_reconciliation(start,end)
         elif job_type=='advertising':
             start=date.fromisoformat(str(payload['start'])); end=date.fromisoformat(str(payload['end']))
-            await ctx.collect_advertising(start,end)
+            outcomes=await ctx.collect_advertising(start,end)
         elif job_type=='inventory':
             raw=payload.get('day'); day=date.fromisoformat(str(raw)) if raw else None
-            await ctx.collect_inventory(day)
+            outcomes=await ctx.collect_inventory(day)
         elif job_type=='inbound':
             raw=payload.get('day'); day=date.fromisoformat(str(raw)) if raw else None
-            await ctx.collect_inbound(day)
+            outcomes=await ctx.collect_inbound(day)
         elif job_type=='promotions':
             raw=payload.get('day'); day=date.fromisoformat(str(raw)) if raw else None
-            await ctx.collect_promotions(day)
+            outcomes=await ctx.collect_promotions(day)
         elif job_type=='finance':
             start=date.fromisoformat(str(payload['start'])); end=date.fromisoformat(str(payload['end']))
-            await ctx.collect_finance(start,end)
+            outcomes=await ctx.collect_finance(start,end)
         else:
             raise ValueError(f'unknown retry job type: {job_type}')
+        if job_type!='daily' and outcomes and not _all_ok(outcomes):
+            raise RuntimeError(f'{job_type} retry remains partial')
     finally:
         reset_log_context(tokens)
 

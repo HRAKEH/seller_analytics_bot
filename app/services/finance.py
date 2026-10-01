@@ -5,6 +5,7 @@ from datetime import date, datetime, timezone
 from typing import Any
 from app.storage.models import MetricPoint
 from .numeric import finite_number
+from .money import decimal_amount, money_value, money_sum
 
 class FinanceNormalizationError(ValueError):
     pass
@@ -61,13 +62,19 @@ def _accrual_rows(payload: Any) -> list[dict[str,Any]]:
     return rows
 
 
+def _walk_fee_decimal(node: Any, *, ads_only: bool=False):
+    """Accumulate recursively without intermediate rounding."""
+    if isinstance(node,dict):
+        include='accrued' in node and (not ads_only or node.get('type_id') in (41,54))
+        own=decimal_amount(_num(node.get('accrued'))) if include else decimal_amount(0)
+        return own+sum((_walk_fee_decimal(v,ads_only=ads_only) for k,v in node.items() if k!='accrued'),decimal_amount(0))
+    if isinstance(node,list):return sum((_walk_fee_decimal(v,ads_only=ads_only) for v in node),decimal_amount(0))
+    return decimal_amount(0)
+
+
 def _walk_accrued(node: Any) -> float:
     """Sum signed fee components once, including scalar and Money amounts."""
-    if isinstance(node,dict):
-        return (_num(node.get('accrued')) if 'accrued' in node else 0.0) + sum(
-            _walk_accrued(v) for k,v in node.items() if k!='accrued')
-    if isinstance(node,list): return sum(_walk_accrued(v) for v in node)
-    return 0.0
+    return money_value(_walk_fee_decimal(node))
 
 
 def _walk_ad_accrued(node: Any) -> float:
@@ -76,11 +83,7 @@ def _walk_ad_accrued(node: Any) -> float:
     41: pay-per-click; 54: promotion paid per order. Other fee types remain in
     services, so unidentified charges are still included exactly once.
     """
-    if isinstance(node,dict):
-        own=_num(node.get('accrued')) if node.get('type_id') in (41,54) else 0.0
-        return own+sum(_walk_ad_accrued(v) for k,v in node.items() if k!='accrued')
-    if isinstance(node,list):return sum(_walk_ad_accrued(v) for v in node)
-    return 0.0
+    return money_value(_walk_fee_decimal(node,ads_only=True))
 
 
 def _ozon_has_sales(row: dict[str,Any]) -> bool:
@@ -96,36 +99,36 @@ def wb_document_amount(row: dict[str,Any], value: Any) -> float:
 
 def normalize_ozon_accruals(payload: Any, connection_id: int, data_date: str) -> list[MetricPoint]:
     rows=_accrual_rows(payload)
-    sales=commission=logistics=services=finance_ad=0.0
-    net=0.0
+    sales=commission=logistics=services=finance_ad=decimal_amount(0)
+    net=decimal_amount(0)
     for row in rows:
         if not isinstance(row,dict): continue
-        net += _num(row.get('total_amount'))
+        net += decimal_amount(_num(row.get('total_amount')))
         posting=row.get('posting') or {}
         products=posting.get('products') or posting.get('items') or []
         if isinstance(products,list):
             for item in products:
                 if not isinstance(item,dict): continue
                 c=item.get('commission') or {}
-                seller_price=_num(c.get('seller_price'))
-                sale_comm=_num(c.get('sale_commission'))
+                seller_price=decimal_amount(_num(c.get('seller_price')))
+                sale_comm=decimal_amount(_num(c.get('sale_commission')))
                 if _ozon_has_sales(row): sales += seller_price
                 # Positive signed cash-flow corrections reduce expenses.
                 commission -= sale_comm
                 delivery=item.get('delivery') or {}
-                d=_num(delivery.get('total_accrued'))
+                d=decimal_amount(_num(delivery.get('total_accrued')))
                 logistics -= d
-        fee_signed = sum(_walk_accrued(row.get(k)) for k in ('item_fees','non_item_fee','container_fees'))
+        fee_signed = sum((_walk_fee_decimal(row.get(k)) for k in ('item_fees','non_item_fee','container_fees')),decimal_amount(0))
         services -= fee_signed
-        finance_ad -= sum(_walk_ad_accrued(row.get(k)) for k in ('item_fees','non_item_fee','container_fees'))
+        finance_ad -= sum((_walk_fee_decimal(row.get(k),ads_only=True) for k in ('item_fees','non_item_fee','container_fees')),decimal_amount(0))
     now=_now()
     return [
-        MetricPoint(connection_id,data_date,'financial_sales',sales,'RUB',False,now),
-        MetricPoint(connection_id,data_date,'commission',commission,'RUB',False,now),
-        MetricPoint(connection_id,data_date,'logistics',logistics,'RUB',False,now),
-        MetricPoint(connection_id,data_date,'services',services,'RUB',False,now),
-        MetricPoint(connection_id,data_date,'marketplace_net',net,'RUB',False,now),
-        MetricPoint(connection_id,data_date,'finance_ad_spend',finance_ad,'RUB',False,now),
+        MetricPoint(connection_id,data_date,'financial_sales',money_value(sales),'RUB',False,now),
+        MetricPoint(connection_id,data_date,'commission',money_value(commission),'RUB',False,now),
+        MetricPoint(connection_id,data_date,'logistics',money_value(logistics),'RUB',False,now),
+        MetricPoint(connection_id,data_date,'services',money_value(services),'RUB',False,now),
+        MetricPoint(connection_id,data_date,'marketplace_net',money_value(net),'RUB',False,now),
+        MetricPoint(connection_id,data_date,'finance_ad_spend',money_value(finance_ad),'RUB',False,now),
     ]
 
 
@@ -219,6 +222,11 @@ def normalize_ozon_product_finance(payload: Any, data_date: str) -> list[Product
             if obs is None: continue
             total=-_walk_accrued(group.get('fees'))
             if total: obs.metrics['services']=obs.metrics.get('services',0.0)+total
+            # Billed advertising is a subset of services, never a second fee.
+            billed=-_walk_ad_accrued(group.get('fees'))
+            obs.metrics['finance_ad_spend']=money_sum([obs.metrics.get('finance_ad_spend',0),billed])
+    for obs in grouped.values():
+        obs.metrics={key:money_value(value) for key,value in obs.metrics.items()}
     return sorted(grouped.values(),key=lambda x:x.marketplace_sku)
 
 def normalize_wb_ad_stats(payload: Any, connection_id: int) -> dict[str,list[MetricPoint]]:

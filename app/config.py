@@ -82,6 +82,7 @@ class Settings:
     health_port: int
     log_format: str
     log_level: str
+    auto_backup_send_telegram: bool = False
 
 
     def credentials_for_profile(self, profile: str = "DEFAULT") -> MarketplaceCredentials:
@@ -151,6 +152,7 @@ class Settings:
             health_port=max(1, min(int(os.getenv("HEALTH_PORT") or os.getenv("PORT", "8080")), 65535)),
             log_format=os.getenv("LOG_FORMAT", "json").strip().lower(),
             log_level=os.getenv("LOG_LEVEL", "INFO").strip().upper(),
+            auto_backup_send_telegram=_bool("AUTO_BACKUP_SEND_TELEGRAM",False),
         )
 
 settings = Settings.from_env()

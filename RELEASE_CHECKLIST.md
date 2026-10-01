@@ -23,6 +23,8 @@
 - Keep exactly one persistent database shared by replicas that belong to the same bot instance. Runtime leases protect against accidental duplicate work, but SQLite is intended for one-host/small deployment, not a distributed database cluster.
 - Do not manually edit the SQLite file while the bot is running.
 - Keep automatic backups enabled and periodically test restore on a non-production copy.
+- Keep a copy outside the hosting account. Opt-in Telegram delivery is available through `AUTO_BACKUP_SEND_TELEGRAM`; it sends the whole DB to system owners only.
+- Use a pinned tested release or a manually managed client production branch. Avoid automatic updates from a development branch across all clients.
 - If `/health` reports an integrity failure, stop writes and restore/inspect the database instead of recreating sales data with zeros.
 - A partial marketplace API response must remain partial; never replace missing data with synthetic zero.
 

@@ -38,10 +38,12 @@ async def collect_and_send_daily(bot: Bot, ctx: AppContext):
     pref=ctx.preferences()
     tz=ZoneInfo(pref.timezone)
     day=datetime.now(tz).date()-timedelta(days=1)
-    outcomes=await ctx.collect_day(day)
+    try:outcomes=await ctx.collect_day(day)
+    except Exception:
+        log.exception('Daily orders failed; continuing independent sources')
+        outcomes=[]
     shop=ctx.repository.get_shop(ctx.shop_id)
     prefix=f'🏪 <b>{escape(shop.name)}</b>\n' if shop else ''
-    await send_to_owners(bot,ctx,prefix+format_daily(build_daily_report(ctx.repository,ctx.shop_id,day)))
     if not (outcomes and all(x.ok for x in outcomes)):
         queue_retry(ctx.repository,ctx.settings,ctx.shop_id,'daily',day.isoformat(),
             {'day':day.isoformat(),'notify':True},error='daily report remained partial',
@@ -50,7 +52,15 @@ async def collect_and_send_daily(bot: Bot, ctx: AppContext):
     # Delayed sources are independent: failure in advertising must not re-run finance unnecessarily.
     start=day-timedelta(days=pref.finance_lookback_days-1)
     try:
-        rec=await ctx.collect_reconciliation(start,day)
+        finance=await ctx.collect_finance(start,day)
+        if finance and not all(getattr(x,'ok',False) for x in finance):
+            raise RuntimeError('finance refresh remained partial')
+    except Exception as exc:
+        queue_retry(ctx.repository,ctx.settings,ctx.shop_id,'finance',f'{start}:{day}',
+            {'start':start.isoformat(),'end':day.isoformat()},error=str(exc),delay_seconds=300)
+        log.exception('Delayed finance refresh failed; retry queued')
+    try:
+        rec=await ctx.collect_reconciliation(start,day,include_finance=False)
         if rec and not all(getattr(x,'ok',False) for x in rec):
             raise RuntimeError('reconciliation refresh remained partial')
     except Exception as exc:
@@ -65,6 +75,9 @@ async def collect_and_send_daily(bot: Bot, ctx: AppContext):
         queue_retry(ctx.repository,ctx.settings,ctx.shop_id,'advertising',f'{start}:{day}',
             {'start':start.isoformat(),'end':day.isoformat()},error=str(exc),delay_seconds=300)
         log.exception('Delayed advertising refresh failed; retry queued')
+    # Publish only after delayed finance/reconciliation and ads have been
+    # attempted. Failed sources retain their last successful snapshots.
+    await send_to_owners(bot,ctx,prefix+format_daily(build_daily_report(ctx.repository,ctx.shop_id,day)))
     try:
         promos=await ctx.collect_promotions(day)
         if promos and not all(getattr(x,'ok',False) for x in promos):
@@ -207,25 +220,48 @@ async def multi_alerts_loop(bot: Bot, registry):
         await asyncio.sleep(60)
 
 
-async def automatic_backup_loop(registry):
+async def automatic_backup_once(registry,bot=None,now=None):
+    """Create once; retry delivery separately without making new DB copies."""
+    from app.services.backups import BackupService, _sha256
+    from aiogram.types import FSInputFile
+    settings=registry.settings
+    if not settings.auto_backup_enabled:return
+    now=now or datetime.now(ZoneInfo('UTC'));run_key=now.date().isoformat()
+    if now.hour<settings.auto_backup_hour_utc:return
+    repo=registry.repository;lease=f'scheduler:backup:{run_key}'
+    if not repo.acquire_lease(lease,settings.instance_id,3600):return
+    try:
+        service=BackupService(repo.db,repo,repo.db.path.parent/'backups')
+        if repo.get_job_state(registry.default_shop_id,'database_backup')!=run_key:
+            service.create(kind='automatic')
+            service.prune(settings.backup_retention_days)
+            repo.set_job_state(registry.default_shop_id,'database_backup',run_key)
+        if not settings.auto_backup_send_telegram or bot is None:return
+        with repo.db.connect() as c:
+            row=c.execute("SELECT * FROM backup_history WHERE kind='automatic' AND status='success' AND created_at LIKE ? ORDER BY id DESC LIMIT 1",(run_key+'%',)).fetchone()
+        if row is None:return
+        path=service.directory/row['filename']
+        if not path.exists() or _sha256(path)!=row['checksum']:
+            raise RuntimeError('Automatic backup file missing or checksum changed; delivery stopped')
+        for uid in settings.owner_ids:
+            key=f'database_backup_delivery:{uid}'
+            if repo.get_job_state(registry.default_shop_id,key)==run_key:continue
+            try:
+                if path.stat().st_size>45*1024*1024:
+                    await bot.send_message(uid,'💾 Backup создан, но превышает лимит отправки 45 MiB. Скачайте его из data/backups в панели хостинга.')
+                else:
+                    await bot.send_document(uid,FSInputFile(path),caption=f'💾 Автоматическая резервная копия всей БД · {run_key}\nSHA-256: {row["checksum"]}')
+                repo.set_job_state(registry.default_shop_id,key,run_key)
+            except asyncio.CancelledError:raise
+            except Exception:log.exception('Automatic backup delivery failed for system owner %s; will retry',uid)
+    finally:repo.release_lease(lease,settings.instance_id)
+
+
+async def automatic_backup_loop(registry,bot=None):
     """One verified online SQLite backup per UTC day."""
-    from app.services.backups import BackupService
     while True:
         try:
-            settings=registry.settings
-            if settings.auto_backup_enabled:
-                now=datetime.now(ZoneInfo('UTC')); run_key=now.date().isoformat()
-                repo=registry.repository
-                if now.hour >= settings.auto_backup_hour_utc and repo.get_job_state(registry.default_shop_id,'database_backup') != run_key:
-                    lease=f'scheduler:backup:{run_key}'
-                    if repo.acquire_lease(lease,settings.instance_id,3600):
-                        try:
-                            service=BackupService(repo.db,repo,repo.db.path.parent/'backups')
-                            service.create(kind='automatic')
-                            service.prune(settings.backup_retention_days)
-                            repo.set_job_state(registry.default_shop_id,'database_backup',run_key)
-                        finally:
-                            repo.release_lease(lease,settings.instance_id)
+            await automatic_backup_once(registry,bot)
         except asyncio.CancelledError: raise
         except Exception: log.exception('Automatic backup failed')
         await asyncio.sleep(300)

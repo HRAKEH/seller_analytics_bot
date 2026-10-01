@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import date,timedelta
 from html import escape
 from app.storage import Repository
+from app.services.money import money_sum
 
 EXPENSE_KEYS=('commission','logistics','storage','acceptance','acquiring','services','penalties')
 
@@ -33,6 +34,7 @@ class ManagementReport:
     days: int
     sources: tuple[ManagementSource,...]
     missing_sources: tuple[str,...] = ()
+    source_coverage: tuple = ()
 
 
 def build_management_report(repo: Repository, shop_id: int, end: date, days: int=7) -> ManagementReport:
@@ -51,7 +53,7 @@ def build_management_report(repo: Repository, shop_id: int, end: date, days: int
         if expected_units>0:
             coverage=min(covered,expected_units)/expected_units*100
         estimated_cogs=float(c.get('estimated_cost',0))
-        marketplace_expenses=sum(float(m.get(k,0)) for k in EXPENSE_KEYS)
+        marketplace_expenses=money_sum(m.get(k,0) for k in EXPENSE_KEYS)
         ad_spend=float(m.get('ad_spend',0)); compensation=float(m.get('compensation',0))
         performance_ad_spend=ad_spend if 'ad_spend' in m else None
         ads_from_finance=marketplace=='ozon' and 'marketplace_net' in m and 'services' in m
@@ -86,7 +88,7 @@ def build_management_report(repo: Repository, shop_id: int, end: date, days: int
         units_match=abs(units-expected_units)<=1e-9
         revenue_basis='ordered_revenue' in m and (units>0 or ordered_revenue==0)
         if has_cogs_basis and c.get('basis_complete',True) and units_match and revenue_basis and (units<=0 or covered+1e-9>=units):
-            result=ordered_revenue-estimated_cogs-marketplace_expenses-ad_spend+compensation
+            result=money_sum([ordered_revenue,-estimated_cogs,-marketplace_expenses,-ad_spend,compensation])
         rows.append(ManagementSource(marketplace,ordered_revenue,estimated_cogs,coverage,
             marketplace_expenses,ad_spend,compensation,result,
             float(m['financial_sales']) if 'financial_sales' in m else None,
@@ -97,11 +99,13 @@ def build_management_report(repo: Repository, shop_id: int, end: date, days: int
     connections=repo.list_connections(shop_id) if hasattr(repo,'list_connections') else []
     present={r.marketplace for r in rows}
     missing=tuple(sorted({c.marketplace for c in connections if c.enabled}-present))
-    return ManagementReport(start.isoformat(),end.isoformat(),days,tuple(rows),missing)
+    from .coverage import build_source_coverage
+    coverage=build_source_coverage(repo,shop_id,start.isoformat(),end.isoformat()) if hasattr(repo,'db') else ()
+    return ManagementReport(start.isoformat(),end.isoformat(),days,tuple(rows),missing,coverage)
 
 
 def _money(v: float | None) -> str:
-    return '—' if v is None else f'{v:,.0f}'.replace(',',' ')+' ₽'
+    return '—' if v is None else f'{v:,.2f}'.replace(',',' ')+' ₽'
 
 
 def format_management(report: ManagementReport) -> str:
@@ -139,4 +143,7 @@ def format_management(report: ManagementReport) -> str:
         lines.append('Суммарная оценка: — (денежные базы WB/Ozon не унифицированы; смотрите площадки отдельно)')
     else:
         lines.append(f'Суммарная оценка по известным расходам: <b>{_money(total)}</b>' if complete else 'Суммарная оценка: — (неполная себестоимость/данные)')
+    if report.source_coverage:
+        from .coverage import format_source_coverage
+        lines+=['',format_source_coverage(report.source_coverage)]
     return '\n'.join(lines)

@@ -19,9 +19,13 @@ A database backup can contain commercial data for every shop in the instance. AP
 
 Restore is system-owner-only, creates a pre-restore safety copy, validates SQLite integrity, removes ephemeral runtime leases/heartbeats and installs the restored file atomically.
 
+`AUTO_BACKUP_SEND_TELEGRAM=true` explicitly opts into daily delivery of the whole instance database to the IDs in `TELEGRAM_OWNER_ID`. It is disabled by default. Shop-only owners/viewers never receive this copy. Each system owner must start the bot to permit private delivery. Failed deliveries retry separately; files above 45 MiB require download from the hosting panel.
+
 ## Logs and exports
 
 Known configured secrets are redacted from normal log messages and tracebacks. Logs should still be access-controlled because operational metadata can be commercially sensitive.
+
+File logs rotate at 5 MiB with three retained older files. `.dockerignore` excludes environment secrets, live data, logs, database files and exports from the image build context.
 
 XLSX/CSV exports neutralize leading `=`, `+`, `-` and `@` strings to prevent spreadsheet formula injection from marketplace/user-controlled names or SKU values.
 

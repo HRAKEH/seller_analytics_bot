@@ -1,4 +1,6 @@
 .env
+.env.*
+!.env.example
 .venv/
 __pycache__/
 *.py[cod]
@@ -6,7 +8,9 @@ __pycache__/
 data/*.sqlite3
 data/*.sqlite3-*
 logs/*.log
+logs/*.log.*
 
 data/backups/
+data/
 *.xlsx
 *_csv.zip

@@ -665,7 +665,7 @@ class Repository:
                 endpoints=('statistics/orders','statistics/orders/backfill','analytics/orders','analytics/orders/backfill') if replace_order_snapshot else ('finance/accrual/by-day',)
                 keys=('ordered_units','ordered_revenue','cancellations_units','fulfillment_units') if replace_order_snapshot else (
                     'financial_sales','goods_payable','bank_payment','marketplace_net','commission','logistics',
-                    'storage','acceptance','acquiring','services','penalties','compensation','returns_amount','payout')
+                    'storage','acceptance','acquiring','services','penalties','compensation','returns_amount','payout','finance_ad_spend')
                 if replace_order_snapshot and run['endpoint'].startswith('analytics/orders'):
                     # Analytics does not attribute orders to warehouse schemes.
                     # Keep the independently collected operational breakdown.
@@ -1114,7 +1114,7 @@ class Repository:
         return [dict(r) for r in rows]
 
     def sku_financial_totals(self, shop_id: int, start_date: str, end_date: str) -> dict[tuple[str,str],dict[str,float]]:
-        keys=('financial_sales','goods_payable','commission','logistics','storage','acceptance','acquiring','services','penalties','compensation')
+        keys=('financial_sales','goods_payable','commission','logistics','storage','acceptance','acquiring','services','penalties','compensation','finance_ad_spend')
         placeholders=','.join('?' for _ in keys)
         with self.db.connect() as c:
             rows=c.execute(f'''WITH ranked AS (
@@ -1137,13 +1137,35 @@ class Repository:
 
     # --- advertising detail --------------------------------------------
     def save_ad_details(self, source_run_id: int, *, campaigns: Iterable[AdCampaignPoint] = (),
-                        products: Iterable[AdProductPoint] = ()) -> tuple[int,int]:
+                        products: Iterable[AdProductPoint] = (), replace_campaign_snapshot: bool=False,
+                        replace_product_snapshot: bool=False) -> tuple[int,int]:
         campaign_rows=list(campaigns); product_rows=list(products); now=utcnow()
         with self.db.connect() as c:
-            run=c.execute('SELECT connection_id,status FROM source_runs WHERE id=?',(source_run_id,)).fetchone()
+            run=c.execute('SELECT connection_id,status,endpoint,data_date FROM source_runs WHERE id=?',(source_run_id,)).fetchone()
             if not run or run['status'] not in ('success','partial'):
                 raise ValueError('Ad details require a successful/partial source run')
             conn_id=int(run['connection_id']); c.execute('BEGIN IMMEDIATE')
+            if replace_campaign_snapshot or replace_product_snapshot:
+                if run['status']!='success':raise ValueError('Replacing ad snapshots requires a complete successful response')
+                if any(p.data_date!=run['data_date'] for p in [*campaign_rows,*product_rows]):
+                    raise ValueError('Ad snapshot rows must belong to the source run day')
+                if replace_campaign_snapshot:
+                    current={str(p.campaign_id) for p in campaign_rows}
+                    old=c.execute('''WITH ranked AS (
+                        SELECT a.*,ROW_NUMBER() OVER(PARTITION BY a.campaign_id ORDER BY a.fetched_at DESC,a.id DESC) rn
+                        FROM ad_campaign_daily a JOIN source_runs sr ON sr.id=a.source_run_id
+                        WHERE a.connection_id=? AND a.data_date=? AND sr.endpoint=? AND sr.status IN ('success','partial'))
+                        SELECT * FROM ranked WHERE rn=1''',(conn_id,run['data_date'],run['endpoint'])).fetchall()
+                    campaign_rows += [AdCampaignPoint(conn_id,run['data_date'],r['campaign_id'],r['campaign_name']) for r in old if r['campaign_id'] not in current]
+                if replace_product_snapshot:
+                    current={(str(p.marketplace_sku),str(p.campaign_id)) for p in product_rows}
+                    old=c.execute('''WITH ranked AS (
+                        SELECT a.*,ROW_NUMBER() OVER(PARTITION BY a.marketplace_sku,a.campaign_id ORDER BY a.fetched_at DESC,a.id DESC) rn
+                        FROM ad_product_daily a JOIN source_runs sr ON sr.id=a.source_run_id
+                        WHERE a.connection_id=? AND a.data_date=? AND sr.endpoint=? AND sr.status IN ('success','partial'))
+                        SELECT * FROM ranked WHERE rn=1''',(conn_id,run['data_date'],run['endpoint'])).fetchall()
+                    product_rows += [AdProductPoint(conn_id,run['data_date'],r['marketplace_sku'],r['campaign_id'],r['campaign_name'],r['listing_id'])
+                        for r in old if (r['marketplace_sku'],r['campaign_id']) not in current]
             saved_campaigns=saved_products=0
             for p in campaign_rows:
                 if int(p.connection_id)!=conn_id: raise ValueError('Ad campaign belongs to another connection')
@@ -1206,6 +1228,38 @@ class Repository:
                 'ad_spend':float(r.get('spend') or 0),'ad_attributed_sales':float(r.get('attributed_sales') or 0),
                 'ad_orders':float(r.get('orders') or 0),'ad_clicks':float(r.get('clicks') or 0),'ad_impressions':float(r.get('impressions') or 0)}
         return out
+
+    def ozon_sku_ad_accounting(self, shop_id: int, start_date: str, end_date: str) -> dict[str,dict[str,float]]:
+        """Performance is an expense only on days without a complete accrual base.
+
+        Match by connection AND day before aggregating SKU/campaign rows. This
+        also protects legacy finance where billed ads have no separate metric.
+        Unallocated financial fees remain unallocated, never spread across SKU.
+        """
+        with self.db.connect() as c:
+            rows=c.execute('''WITH finance AS (
+                SELECT mv.connection_id,mv.data_date
+                FROM metric_values mv JOIN source_runs sr ON sr.id=mv.source_run_id
+                JOIN marketplace_connections mc ON mc.id=mv.connection_id
+                WHERE mc.shop_id=? AND mc.marketplace='ozon' AND mv.data_date BETWEEN ? AND ?
+                  AND mv.metric_key IN ('marketplace_net','services') AND sr.status IN ('success','partial')
+                GROUP BY mv.connection_id,mv.data_date HAVING COUNT(DISTINCT mv.metric_key)=2),
+              ranked AS (
+                SELECT a.*,ROW_NUMBER() OVER(PARTITION BY a.connection_id,a.data_date,a.marketplace_sku,a.campaign_id
+                    ORDER BY a.fetched_at DESC,a.id DESC) rn
+                FROM ad_product_daily a JOIN marketplace_connections mc ON mc.id=a.connection_id
+                JOIN source_runs sr ON sr.id=a.source_run_id
+                WHERE mc.shop_id=? AND mc.marketplace='ozon' AND a.data_date BETWEEN ? AND ?
+                  AND sr.status IN ('success','partial'))
+              SELECT a.marketplace_sku,
+                SUM(CASE WHEN f.connection_id IS NULL THEN a.spend ELSE 0 END) expense,
+                SUM(CASE WHEN f.connection_id IS NOT NULL THEN a.spend ELSE 0 END) reference,
+                COUNT(DISTINCT CASE WHEN f.connection_id IS NULL THEN a.data_date END) unbilled_days
+              FROM ranked a LEFT JOIN finance f ON f.connection_id=a.connection_id AND f.data_date=a.data_date
+              WHERE a.rn=1 GROUP BY a.marketplace_sku''',
+                (shop_id,start_date,end_date,shop_id,start_date,end_date)).fetchall()
+        return {str(r['marketplace_sku']):{'expense':float(r['expense'] or 0),
+                'reference':float(r['reference'] or 0),'unbilled_days':int(r['unbilled_days'])} for r in rows}
 
     def daily_shop_metric(self, shop_id: int, start_date: str, end_date: str, metric_key: str) -> dict[str,float]:
         conns=[c for c in self.list_connections(shop_id) if c.enabled]

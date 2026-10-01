@@ -619,9 +619,12 @@ class CollectionService:
                     product_days={}
                     for row in campaigns: campaign_days.setdefault(row.data_date,[]).append(row)
                     for row in self._resolve_ad_product_listings(wb_connection_id,products): product_days.setdefault(row.data_date,[]).append(row)
-                    all_days=sorted(set(grouped)|set(campaign_days)|set(product_days))
+                    all_days=[(start+timedelta(days=i)).isoformat() for i in range((end-start).days+1)]
                     for ds in all_days:
                         points=grouped.get(ds,[])
+                        if not points:
+                            points=[MetricPoint(wb_connection_id,ds,'ad_spend',0,'RUB'),
+                                    MetricPoint(wb_connection_id,ds,'ad_attributed_sales',0,'RUB')]
                         detail_payload={
                             'day':ds,
                             'campaigns':[vars(x) for x in campaign_days.get(ds,[])],
@@ -629,7 +632,8 @@ class CollectionService:
                         }
                         rid=self.repo.record_success(wb_connection_id,endpoint,ds,detail_payload,points,
                             attempts=result.attempts,store_raw=False)
-                        self.repo.save_ad_details(rid,campaigns=campaign_days.get(ds,[]),products=product_days.get(ds,[]))
+                        self.repo.save_ad_details(rid,campaigns=campaign_days.get(ds,[]),products=product_days.get(ds,[]),
+                            replace_campaign_snapshot=True,replace_product_snapshot=True)
                         outcomes.append(CollectionOutcome('wildberries',ds,True,rid,'ads loaded'))
 
         if ozon_connection_id is not None and self.ozon_performance is not None:
@@ -654,10 +658,13 @@ class CollectionService:
                             now=campaigns[0].data_date
                             points=[MetricPoint(ozon_connection_id,ds,'ad_spend',spend,'RUB',False,now),
                                     MetricPoint(ozon_connection_id,ds,'ad_attributed_sales',sales,'RUB',False,now)]
+                        if not points:
+                            points=[MetricPoint(ozon_connection_id,ds,'ad_spend',0,'RUB'),
+                                    MetricPoint(ozon_connection_id,ds,'ad_attributed_sales',0,'RUB')]
                         payload={'day':ds,'campaigns':[vars(x) for x in campaigns]}
                         rid=self.repo.record_success(ozon_connection_id,endpoint,ds,payload,points,
                             attempts=result.attempts,store_raw=False)
-                        self.repo.save_ad_details(rid,campaigns=campaigns)
+                        self.repo.save_ad_details(rid,campaigns=campaigns,replace_campaign_snapshot=True)
                         outcomes.append(CollectionOutcome('ozon',ds,True,rid,'campaign ads loaded'))
 
                 # SKU statistics is a newer Performance endpoint. Keep the collector
@@ -679,7 +686,7 @@ class CollectionService:
                             payload={'day':ds,'products':[vars(x) for x in products]}
                             rid=self.repo.record_success(ozon_connection_id,product_endpoint,ds,payload,[],
                                 attempts=detail.attempts,store_raw=False)
-                            self.repo.save_ad_details(rid,products=products)
+                            self.repo.save_ad_details(rid,products=products,replace_product_snapshot=True)
                             outcomes.append(CollectionOutcome('ozon',ds,True,rid,'SKU ads loaded'))
                 current += timedelta(days=1)
         return outcomes

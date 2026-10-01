@@ -27,7 +27,7 @@ def _first(row: dict[str, Any], *names: str, default=None):
 
 def normalize_wb_ad_detail(payload: Any, connection_id: int) -> tuple[list[AdCampaignPoint], list[AdProductPoint]]:
     """WB /adv/v3/fullstats: campaign/day plus nmId product detail inside apps[].nms[]."""
-    if not isinstance(payload, list):
+    if not isinstance(payload, list) or any(not isinstance(row,dict) for row in payload):
         raise AdvertisingNormalizationError('WB ad stats must be list')
     campaigns: dict[tuple[str, str], AdCampaignPoint] = {}
     products: dict[tuple[str, str, str], AdProductPoint] = {}
@@ -82,20 +82,24 @@ def normalize_wb_ad_detail(payload: Any, connection_id: int) -> tuple[list[AdCam
 
 
 def _rows(payload: Any) -> list[dict[str,Any]]:
+    def validated(value):
+        if any(not isinstance(x,dict) for x in value):
+            raise AdvertisingNormalizationError('Ozon advertising rows must be objects')
+        return value
     if isinstance(payload, list):
-        return [x for x in payload if isinstance(x,dict)]
+        return validated(payload)
     if not isinstance(payload, dict):
-        return []
+        raise AdvertisingNormalizationError('Ozon advertising response must contain rows')
     for key in ('rows','items','data','result','statistics','list'):
         value=payload.get(key)
         if isinstance(value,list):
-            return [x for x in value if isinstance(x,dict)]
+            return validated(value)
         if isinstance(value,dict):
             for sub in ('rows','items','data','list'):
                 nested=value.get(sub)
                 if isinstance(nested,list):
-                    return [x for x in nested if isinstance(x,dict)]
-    return []
+                    return validated(nested)
+    raise AdvertisingNormalizationError('Ozon advertising response has no supported row list')
 
 
 def normalize_ozon_ad_campaign_detail(payload: Any, connection_id: int,

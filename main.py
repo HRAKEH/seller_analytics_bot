@@ -86,7 +86,7 @@ async def main():
             asyncio.create_task(database_maintenance_loop(registry),name='database-maintenance'),
             asyncio.create_task(multi_scheduler_loop(bot,registry),name='multi-daily-scheduler'),
             asyncio.create_task(multi_alerts_loop(bot,registry),name='multi-alerts-scheduler'),
-            asyncio.create_task(automatic_backup_loop(registry),name='automatic-backup'),
+            asyncio.create_task(automatic_backup_loop(registry,bot),name='automatic-backup'),
         ]
         if settings.health_server_enabled:
             tasks.append(asyncio.create_task(health_http_server(registry),name='health-http-server'))

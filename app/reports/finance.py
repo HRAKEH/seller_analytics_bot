@@ -18,6 +18,7 @@ class FinanceReport:
     days: int
     sources: tuple[FinanceSource,...]
     missing_cost_products: int
+    source_coverage: tuple = ()
 
 def build_finance_report(repo: Repository, shop_id: int, end: date, days: int=7) -> FinanceReport:
     start=end-timedelta(days=days-1)
@@ -35,4 +36,6 @@ def build_finance_report(repo: Repository, shop_id: int, end: date, days: int=7)
         if m or c:
             sources.append(FinanceSource(marketplace,m,float(c.get('estimated_cost',0)),coverage))
     missing=len(repo.products_without_cost(shop_id,limit=10000))
-    return FinanceReport(start.isoformat(),end.isoformat(),days,tuple(sources),missing)
+    from .coverage import build_source_coverage
+    coverage=build_source_coverage(repo,shop_id,start.isoformat(),end.isoformat()) if hasattr(repo,'db') else ()
+    return FinanceReport(start.isoformat(),end.isoformat(),days,tuple(sources),missing,coverage)

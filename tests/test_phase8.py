@@ -128,8 +128,8 @@ def test_sku_economics_includes_actual_financial_components(tmp_path):
     row=report.rows[0]
     assert row.financial_metrics['financial_sales']==180
     text=format_sku_economics(report)
-    assert 'фин. продажи источника: 180 ₽' in text
-    assert 'известные расходы маркетплейса по SKU: 30 ₽' in text
+    assert 'фин. продажи источника: 180.00 ₽' in text
+    assert 'известные расходы маркетплейса по SKU: 30.00 ₽' in text
 
 @pytest.mark.asyncio
 async def test_collection_persists_wb_sku_finance(tmp_path):

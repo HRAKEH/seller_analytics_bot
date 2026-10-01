@@ -31,6 +31,9 @@ from app.services.supply import build_supply_plan, evaluate_forecast_quality, bu
 from app.services.actions import build_action_center
 from app.services.readiness import build_readiness, format_readiness, format_onboarding_help
 from app.services.demo import enable_demo, disable_demo
+from app.services.report_period import parse_report_period
+from app.services.report_refresh import format_refresh
+from app.reports.coverage import build_source_coverage, format_source_coverage
 from .context import AppContext
 from .keyboards import (
     main_keyboard, reports_keyboard, products_keyboard, money_keyboard, supply_keyboard,
@@ -1098,14 +1101,10 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
     @dp.message(Command('finance'))
     async def cmd_finance(message: types.Message):
         if not allowed(message): return await denied(message)
-        p=pref(); parts=(message.text or '').split()
+        p=pref()
         try:
-            days=int(parts[1]) if len(parts)>1 else p.finance_lookback_days
-            end=date.fromisoformat(parts[2]) if len(parts)>2 else local_now().date()-timedelta(days=1)
-            if len(parts)>3:raise ValueError('extra arguments')
+            days,start,end=parse_report_period(message.text or '',p.finance_lookback_days,local_now().date())
         except ValueError: return await message.answer('Формат: /finance [дней] [YYYY-MM-DD], например /finance 1 2026-09-30')
-        if end>local_now().date():return await message.answer('⚠️ Нельзя загружать финансы за будущую дату.')
-        days=max(1,min(days,31)); start=end-timedelta(days=days-1)
         if allowed(message,'operate') and not ctx.job_lock.locked():
             await message.answer(f'💰 Обновляю финансовые данные {start} — {end}…')
             try:
@@ -1123,10 +1122,8 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
     @dp.message(Command('ads'))
     async def cmd_ads(message: types.Message):
         if not allowed(message): return await denied(message)
-        p=pref(); parts=(message.text or '').split()
-        try: days=int(parts[1]) if len(parts)>1 else p.finance_lookback_days
-        except ValueError: return await message.answer('Формат: /ads или /ads 7')
-        days=max(1,min(days,31)); end=local_now().date()-timedelta(days=1); start=end-timedelta(days=days-1)
+        try: days,start,end=parse_report_period(message.text or '',pref().finance_lookback_days,local_now().date())
+        except ValueError: return await message.answer('Формат: /ads [дней] [YYYY-MM-DD] · от 1 до 31 дня, без будущих дат.')
         if allowed(message,'operate') and not ctx.job_lock.locked():
             await message.answer(f'📣 Обновляю рекламную статистику {start} — {end}…')
             try:
@@ -1144,10 +1141,8 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
     @dp.message(Command('management'))
     async def cmd_management(message: types.Message):
         if not allowed(message): return await denied(message)
-        p=pref(); parts=(message.text or '').split()
-        try: days=int(parts[1]) if len(parts)>1 else p.finance_lookback_days
-        except ValueError: return await message.answer('Формат: /management или /management 14')
-        days=max(1,min(days,31)); end=local_now().date()-timedelta(days=1); start=end-timedelta(days=days-1)
+        try: days,start,end=parse_report_period(message.text or '',pref().finance_lookback_days,local_now().date())
+        except ValueError: return await message.answer('Формат: /management [дней] [YYYY-MM-DD] · от 1 до 31 дня, без будущих дат.')
         if allowed(message,'operate') and not ctx.job_lock.locked():
             await message.answer(f'📈 Обновляю финансовые и рекламные данные {start} — {end}…')
             try:
@@ -1166,19 +1161,15 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
     @dp.message(Command('sku_finance'))
     async def cmd_sku_finance(message: types.Message):
         if not allowed(message): return await denied(message)
-        p=pref(); parts=(message.text or '').split()
-        try: days=int(parts[1]) if len(parts)>1 else p.finance_lookback_days
-        except ValueError: return await message.answer('Формат: /sku_finance или /sku_finance 14')
-        days=max(1,min(days,31)); end=local_now().date()-timedelta(days=1)
+        try: days,start,end=parse_report_period(message.text or '',pref().finance_lookback_days,local_now().date())
+        except ValueError: return await message.answer('Формат: /sku_finance [дней] [YYYY-MM-DD] · от 1 до 31 дня, без будущих дат.')
         await send(message,format_sku_economics(build_sku_economics(ctx.repository,ctx.shop_id,end,days)))
 
     @dp.message(Command('reconcile'))
     async def cmd_reconcile(message: types.Message):
         if not allowed(message): return await denied(message)
-        p=pref(); parts=(message.text or '').split()
-        try: days=int(parts[1]) if len(parts)>1 else p.finance_lookback_days
-        except ValueError: return await message.answer('Формат: /reconcile или /reconcile 14')
-        days=max(1,min(days,31)); end=local_now().date()-timedelta(days=1); start=end-timedelta(days=days-1)
+        try: days,start,end=parse_report_period(message.text or '',pref().finance_lookback_days,local_now().date())
+        except ValueError: return await message.answer('Формат: /reconcile [дней] [YYYY-MM-DD] · от 1 до 31 дня, без будущих дат.')
         if allowed(message,'operate'):
             if ctx.job_lock.locked():
                 return await message.answer('⏳ Уже выполняется другая загрузка.')
@@ -1194,6 +1185,41 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
         else:
             await message.answer('👁 Режим viewer: показываю последнюю сохранённую сверку без обновления API.')
         await send(message,format_reconciliation(build_reconciliation_report(ctx.repository,ctx.shop_id,end,days)))
+
+    @dp.message(Command('refresh'))
+    async def cmd_refresh(message: types.Message):
+        if not allowed(message,'operate'):return await denied(message,'operate')
+        try: days,start,end=parse_report_period(message.text or '',1,local_now().date())
+        except ValueError:return await message.answer('Формат: /refresh [дней] [YYYY-MM-DD], например /refresh 1 2026-09-28. Период: 1–31 день.')
+        if end>=local_now().date():return await message.answer('⚠️ Полное обновление доступно только за завершённые дни.')
+        if ctx.job_lock.locked():return await message.answer('⏳ Уже выполняется другая загрузка.')
+        progress=await message.answer(f'🔄 Обновляю все отчёты {start} — {end}. Запросы могут занять несколько минут из-за лимитов API.')
+        async def update_progress(label):
+            await progress.edit_text(f'🔄 {start} — {end}\n{label}…')
+        try: stages=await ctx.refresh_reports(start,end,progress=update_progress)
+        except RuntimeError as exc:return await message.answer(f'⚠️ {escape(str(exc)[:220])}')
+        await send(message,format_refresh(stages,start,end))
+        await send(message,format_finance(build_finance_report(ctx.repository,ctx.shop_id,end,days)))
+
+    @dp.message(Command('sources'))
+    async def cmd_sources(message: types.Message):
+        if not allowed(message):return await denied(message)
+        try: days,start,end=parse_report_period(message.text or '',pref().finance_lookback_days,local_now().date())
+        except ValueError:return await message.answer('Формат: /sources [дней] [YYYY-MM-DD] · от 1 до 31 дня, без будущих дат.')
+        await send(message,f'Период: {start} — {end}\n'+format_source_coverage(build_source_coverage(ctx.repository,ctx.shop_id,start.isoformat(),end.isoformat())))
+
+    @dp.message(Command('accruals'))
+    async def cmd_accruals(message: types.Message):
+        if not allowed(message):return await denied(message)
+        try: days,start,end=parse_report_period(message.text or '',1,local_now().date())
+        except ValueError:return await message.answer('Формат: /accruals [дней] [YYYY-MM-DD] · от 1 до 31 дня, без будущих дат.')
+        from app.reports.accruals import build_accrual_ledger, format_accrual_ledger, export_accrual_ledger
+        ledger=build_accrual_ledger(ctx.repository,ctx.shop_id,start.isoformat(),end.isoformat())
+        await send(message,format_accrual_ledger(ledger))
+        if ledger.rows:
+            with tempfile.TemporaryDirectory(prefix='sellerbot-accruals-') as folder:
+                path=export_accrual_ledger(ledger,Path(folder)/f'ozon_accruals_{start}_{end}.csv')
+                await message.answer_document(FSInputFile(path),caption='Операции из сохранённого ответа Ozon API. Расходы указаны положительно; корректировки — со знаком минус.')
 
     @dp.message(Command('cost'))
     async def cmd_cost(message: types.Message):
@@ -1593,7 +1619,7 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
 
     @dp.message(F.text == MENU_MONEY)
     async def menu_money(message: types.Message):
-        await show_submenu(message,'💰 <b>Деньги и реклама</b>\nФинансы, реклама и прибыль показывают сохранённые данные. «Обновить…» вызывает API. «Проверка расхождений» — полная тяжёлая сверка.',money_keyboard)
+        await show_submenu(message,'💰 <b>Деньги и реклама</b>\nФинансы, реклама и результат показывают сохранённые данные. «Обновить все отчёты» обновляет заказы, финансы, рекламу и сверку за выбранный период. Текущие остатки обновляются отдельно в «Товары».',money_keyboard)
 
     @dp.message(F.text == MENU_SUPPLY)
     async def menu_supply(message: types.Message):
@@ -1629,6 +1655,9 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
     # value is expected and the next message is routed to the same command
     # implementation used by power users.
     input_actions = {
+        'refresh': ('refresh', cmd_refresh),
+        'sources': ('sources', cmd_sources),
+        'accruals': ('accruals', cmd_accruals),
         'shop': ('shop', cmd_shop),
         'shop_add': ('shop_add', cmd_shop_add),
         'shop_profile': ('shop_profile', cmd_shop_profile),
@@ -1650,6 +1679,9 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
     }
 
     prompts = {
+        'refresh': '🔄 <b>Обновить все отчёты</b>\nВведите: <code>дней YYYY-MM-DD</code>\nОдин день: <code>1 2026-09-28</code>. Неделя до выбранной даты: <code>7 2026-09-28</code>. Максимум 31 день. Запросы могут занять несколько минут.',
+        'sources': '📡 <b>Полнота источников</b>\nВведите: <code>дней YYYY-MM-DD</code>, например <code>1 2026-09-28</code>. Читает БД без запросов API.',
+        'accruals': '🧮 <b>Начисления Ozon</b>\nВведите: <code>дней YYYY-MM-DD</code>, например <code>1 2026-09-28</code>. Покажет суммы и выгрузит операции в CSV из сохранённого ответа API.',
         'shop': '🔁 <b>Выбор магазина</b>\nВведите ID магазина. Его можно посмотреть кнопкой «🏪 Список магазинов».',
         'shop_add': '➕ <b>Новый магазин</b>\nВведите: <code>Название | PROFILE</code>\nПример: <code>Мой второй магазин | SHOP2</code>',
         'shop_profile': '🔐 <b>Профиль ключей</b>\nВведите имя профиля окружения, например <code>SHOP2</code>.',
@@ -1671,6 +1703,7 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
     }
 
     permissions = {
+        'refresh': 'operate', 'sources': 'view', 'accruals': 'view',
         'shop': 'view', 'shop_add': 'manage', 'shop_profile': 'manage',
         'shop_archive': 'manage', 'shop_restore': 'manage', 'shop_delete': 'manage',
         'user_add': 'manage', 'user_remove': 'manage', 'export': 'view',
@@ -1686,6 +1719,12 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
             return await system_denied(message)
         await start_menu_input(message,state,action,prompts[action])
 
+    @dp.message(F.text == COMMAND_BUTTONS['refresh'])
+    async def btn_menu_refresh(message: types.Message,state: FSMContext):await launch_input_action(message,state,'refresh')
+    @dp.message(F.text == COMMAND_BUTTONS['sources'])
+    async def btn_menu_sources(message: types.Message,state: FSMContext):await launch_input_action(message,state,'sources')
+    @dp.message(F.text == COMMAND_BUTTONS['accruals'])
+    async def btn_menu_accruals(message: types.Message,state: FSMContext):await launch_input_action(message,state,'accruals')
     @dp.message(F.text == COMMAND_BUTTONS['shop'])
     async def btn_menu_shop_select(message: types.Message,state: FSMContext):
         await state.clear(); await show_shop_picker(message,'select')

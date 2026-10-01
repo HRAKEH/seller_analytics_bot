@@ -102,6 +102,10 @@ class AppContext:
                 out.append(item)
             return out
 
+    async def refresh_reports(self, start: date, end: date, progress=None):
+        from app.services.report_refresh import refresh_reports
+        return await refresh_reports(self,start,end,progress)
+
     async def backfill_orders(self, start: date, end: date, marketplace: str = 'all'):
         """Incrementally load order history, reusing already-complete DB days.
 
@@ -189,7 +193,7 @@ class AppContext:
             return await self.collector.collect_finance(start=start,end=end,wb_connection_id=self.wb_connection_id,
                 ozon_connection_id=self.ozon_connection_id,shop_id=self.shop_id)
 
-    async def collect_reconciliation(self, start: date, end: date):
+    async def collect_reconciliation(self, start: date, end: date, *, include_finance: bool=True):
         if self.demo_mode(): return []
         """Refresh sources required for lifecycle reconciliation."""
         async with self.operation_lock('reconciliation'):
@@ -199,8 +203,9 @@ class AppContext:
             if self.wb_connection_id is not None:
                 outcomes += await self.collector.collect_wb_sales_range(shop_id=self.shop_id,
                     connection_id=self.wb_connection_id,start=start,end=end)
-            outcomes += await self.collector.collect_finance(start=start,end=end,shop_id=self.shop_id,
-                wb_connection_id=self.wb_connection_id,ozon_connection_id=self.ozon_connection_id)
+            if include_finance:
+                outcomes += await self.collector.collect_finance(start=start,end=end,shop_id=self.shop_id,
+                    wb_connection_id=self.wb_connection_id,ozon_connection_id=self.ozon_connection_id)
             return outcomes
 
     async def collect_advertising(self, start: date, end: date):

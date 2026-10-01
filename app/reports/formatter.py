@@ -194,6 +194,9 @@ def format_finance(report) -> str:
             lines.append(f'  оценка себестоимости заказанных ед.: {money(s.estimated_order_cogs)} · покрытие {cov}')
     if report.missing_cost_products:
         lines.append(f'\n⚠️ Без себестоимости: {report.missing_cost_products} товаров. Откройте «📦 Товары» → «📥 Импорт себестоимости».')
+    if getattr(report,'source_coverage',()):
+        from .coverage import format_source_coverage
+        lines.append('\n'+format_source_coverage(report.source_coverage))
     lines.append('\n<i>Финансовые данные приходят с задержкой. Продажи, начисления и банковская выплата — разные показатели.</i>')
     lines.append('<i>Себестоимость здесь относится к заказанным единицам и является оценкой, а не бухгалтерской прибылью.</i>')
     return '\n'.join(lines)

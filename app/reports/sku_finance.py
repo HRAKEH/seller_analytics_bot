@@ -10,6 +10,7 @@ from html import escape
 
 from app.storage import Repository
 from .management import EXPENSE_KEYS
+from app.services.money import money_sum
 
 @dataclass(frozen=True)
 class SkuEconomicsRow:
@@ -25,6 +26,9 @@ class SkuEconomicsRow:
     contribution_after_known_expenses: float | None
     financial_metrics: dict[str,float]
     advertising_metrics: dict[str,float]
+    performance_expense: float = 0.0
+    performance_reference: float = 0.0
+    warnings: tuple[str,...] = ()
 
 @dataclass(frozen=True)
 class SkuEconomicsReport:
@@ -38,24 +42,36 @@ def build_sku_economics(repo: Repository, shop_id: int, end: date, days: int = 7
     start=end-timedelta(days=days-1)
     actual=repo.sku_financial_totals(shop_id,start.isoformat(),end.isoformat())
     ads=repo.ad_product_totals_map(shop_id,start.isoformat(),end.isoformat())
+    ad_accounting=(repo.ozon_sku_ad_accounting(shop_id,start.isoformat(),end.isoformat())
+                   if hasattr(repo,'ozon_sku_ad_accounting') else None)
     rows=[]
     for raw in repo.sku_economics(shop_id,start.isoformat(),end.isoformat()):
         marketplace=str(raw['marketplace']); sku=str(raw['marketplace_sku'])
         units=float(raw.get('units') or 0); covered=float(raw.get('covered_units') or 0)
         revenue=float(raw.get('order_revenue') or 0); cost=float(raw.get('estimated_cost') or 0)
         coverage=(covered/units*100) if units>0 else None
-        contribution=(revenue-cost) if raw.get('data_complete',True) and units>0 and covered+1e-9>=units else None
+        contribution=money_sum([revenue,-cost]) if raw.get('data_complete',True) and units>0 and covered+1e-9>=units else None
         fm=actual.get((marketplace,sku),{}); am=ads.get((marketplace,sku),{})
-        known_marketplace=sum(float(fm.get(k,0)) for k in EXPENSE_KEYS)
+        known_marketplace=money_sum(fm.get(k,0) for k in EXPENSE_KEYS)
         ad_spend=float(am.get('ad_spend',0))
-        after=(contribution-known_marketplace-ad_spend+float(fm.get('compensation',0))) if contribution is not None else None
-        rows.append(SkuEconomicsRow(marketplace,str(raw['internal_sku']),sku,str(raw['name']),units,revenue,cost,coverage,contribution,after,fm,am))
+        reference=0.0; warnings=[]
+        if marketplace=='ozon':
+            if ad_accounting is not None:
+                accounting=ad_accounting.get(sku,{})
+                ad_spend=float(accounting.get('expense',0)); reference=float(accounting.get('reference',0))
+                if accounting.get('unbilled_days'):
+                    warnings.append('За дни без начислений расход рекламы взят из Performance; оценка предварительная.')
+            elif 'finance_ad_spend' in fm:
+                reference=ad_spend; ad_spend=0.0
+            warnings.append('Расходы Ozon без привязки к товару не распределены; это результат после известных SKU-расходов.')
+        after=money_sum([contribution,-known_marketplace,-ad_spend,fm.get('compensation',0)]) if contribution is not None else None
+        rows.append(SkuEconomicsRow(marketplace,str(raw['internal_sku']),sku,str(raw['name']),units,revenue,cost,coverage,contribution,after,fm,am,ad_spend,reference,tuple(warnings)))
     rows.sort(key=lambda x:x.order_revenue,reverse=True)
     return SkuEconomicsReport(start.isoformat(),end.isoformat(),days,tuple(rows))
 
 
 def _money(v: float) -> str:
-    return f'{v:,.0f}'.replace(',',' ')+' ₽'
+    return f'{v:,.2f}'.replace(',',' ')+' ₽'
 
 
 def format_sku_economics(report: SkuEconomicsReport, limit: int = 10) -> str:
@@ -84,10 +100,16 @@ def format_sku_economics(report: SkuEconomicsReport, limit: int = 10) -> str:
                 lines.append(f'   известные расходы маркетплейса по SKU: {_money(known)}')
             if 'goods_payable' in fm:
                 lines.append(f'   к перечислению за товар: {_money(fm["goods_payable"])}')
+            if 'finance_ad_spend' in fm:
+                lines.append(f'   из SKU-расходов — начисленная реклама: {_money(fm["finance_ad_spend"])} (уже учтена)')
         if row.advertising_metrics:
             am=row.advertising_metrics; spend=float(am.get('ad_spend',0)); sales=float(am.get('ad_attributed_sales',0))
             drr=(spend/sales*100) if sales>0 else None
-            lines.append(f'   реклама по SKU: {_money(spend)} · атриб. продажи {_money(sales)} · ДРР {"—" if drr is None else f"{drr:.1f}%"}')
+            label='Performance по SKU' if row.marketplace=='ozon' else 'реклама по SKU'
+            lines.append(f'   {label}: {_money(spend)} · атриб. продажи {_money(sales)} · ДРР {"—" if drr is None else f"{drr:.1f}%"}')
+            if row.performance_reference:
+                lines.append(f'   Performance справочно: {_money(row.performance_reference)} · повторно не вычитается')
         if row.contribution_after_known_expenses is not None:
             lines.append(f'   <b>после известных SKU-расходов: {_money(row.contribution_after_known_expenses)}</b>')
+        for warning in row.warnings:lines.append('   ℹ️ '+warning)
     return '\n'.join(lines)
