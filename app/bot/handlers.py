@@ -36,13 +36,14 @@ from app.services.report_period import parse_report_period
 from app.services.report_refresh import format_refresh
 from app.reports.coverage import build_source_coverage, format_source_coverage
 from .context import AppContext
+from .navigation import NavigationMessages, MenuCleanupMiddleware
 from .keyboards import (
     main_keyboard, reports_keyboard, products_keyboard, money_keyboard, supply_keyboard,
     control_keyboard, shop_keyboard, service_keyboard, technical_keyboard, input_keyboard, shop_picker_keyboard,
     shop_confirm_keyboard, backfill_source_keyboard, backfill_period_keyboard, backfill_running_keyboard,
     action_center_keyboard, action_item_keyboard, action_ref,
     report_date_keyboard, export_period_keyboard, export_format_keyboard,
-    users_admin_keyboard, retry_jobs_keyboard, COMMAND_BUTTONS,
+    users_admin_keyboard, retry_jobs_keyboard, COMMAND_BUTTONS, menu_button_texts,
     MENU_REPORTS, MENU_PRODUCTS, MENU_MONEY, MENU_SUPPLY, MENU_CONTROL, MENU_SHOP, MENU_SERVICE, MENU_TECH,
     HOME, BACK, CANCEL,
 )
@@ -77,6 +78,11 @@ class BackfillStates(StatesGroup):
 def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
     def allowed(message: types.Message, permission: str = 'view') -> bool:
         return bool(message.from_user and ctx.repository.can_user(message.from_user.id,ctx.shop_id,permission))
+
+    navigation=NavigationMessages(lambda: ctx.repository)
+    cleanup=MenuCleanupMiddleware(navigation,menu_button_texts(),allowed)
+    dp.message.middleware(cleanup)
+    dp.callback_query.middleware(cleanup)
 
     async def denied(message: types.Message, permission: str = 'view'):
         need={'view':'просмотр','operate':'аналитика/обновление данных','manage':'управление магазином'}.get(permission,permission)
@@ -116,24 +122,26 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
                 chunk or '—',
                 parse_mode='HTML',
                 reply_markup=keyboard_for(message) if idx==len(chunks)-1 else None)
+        await navigation.dismiss(message)
 
     def role_for(message: types.Message) -> str:
         uid=message.from_user.id if message.from_user else 0
         return ctx.repository.role_for_user(uid,ctx.shop_id) or 'viewer'
 
     async def show_main_menu(message: types.Message, *, text: str | None = None):
+        if not allowed(message): return await denied(message)
         shop=ctx.repository.get_shop(ctx.shop_id)
         title=text or (
             f'🏠 <b>{escape(shop.name if shop else "Магазин")}</b>\n'
             'Выберите, что хотите сделать:'
         )
-        await message.answer(title,parse_mode='HTML',reply_markup=main_keyboard(role_for(message)))
+        await navigation.show(message,title,parse_mode='HTML',reply_markup=main_keyboard(role_for(message)))
 
     async def start_menu_input(message: types.Message, state: FSMContext, action: str, prompt: str):
         await state.clear()
         await state.set_state(MenuInputStates.waiting_value)
         await state.update_data(menu_action=action)
-        await message.answer(prompt,parse_mode='HTML',reply_markup=input_keyboard())
+        await navigation.show(message,prompt,parse_mode='HTML',reply_markup=input_keyboard())
 
     def command_copy(message: types.Message, command: str, value: str, *, actor_user=None):
         text=f'/{command}' + (f' {value.strip()}' if value.strip() else '')
@@ -184,7 +192,7 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
         has_wb=ctx.wb_connection_id is not None
         if not has_ozon and not has_wb:
             return await message.answer('⚠️ В текущем магазине не подключены Ozon или Wildberries.')
-        await message.answer(
+        await navigation.show(message,
             '📥 <b>Загрузка истории</b>\nВыберите источник:',
             parse_mode='HTML',
             reply_markup=backfill_source_keyboard(has_ozon=has_ozon,has_wb=has_wb))
@@ -211,6 +219,7 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
             f'{wait_hint}\nУже загруженные дни берутся из БД и повторно не запрашиваются без необходимости.',
             parse_mode='HTML',
             reply_markup=backfill_running_keyboard())
+        await navigation.dismiss(message)
         try:
             outcomes=await ctx.backfill_orders(start,end,marketplace=source)
         except asyncio.CancelledError:
@@ -308,7 +317,7 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
                       'Для смены профиля ключей: «🔐 Профиль ключей».']
         picker=[registry.repository.get_shop(int(row['id'])) for row in shops]
         picker=[shop for shop in picker if shop is not None]
-        await message.answer('\n'.join(lines),parse_mode='HTML',
+        await navigation.show(message,'\n'.join(lines),parse_mode='HTML',
                              reply_markup=shop_picker_keyboard(picker,'select',current_shop_id=ctx.shop_id))
 
     async def show_shop_picker(message: types.Message, action: str):
@@ -317,21 +326,21 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
             shops=[registry.repository.get_shop(int(row['id'])) for row in registry.repository.shops_for_user(message.from_user.id)]
             shops=[shop for shop in shops if shop is not None]
             if not shops: return await message.answer('⚠️ Нет доступных магазинов.')
-            return await message.answer('🔁 <b>Выберите магазин</b>',parse_mode='HTML',
+            return await navigation.show(message,'🔁 <b>Выберите магазин</b>',parse_mode='HTML',
                 reply_markup=shop_picker_keyboard(shops,'select',current_shop_id=ctx.shop_id))
         if not is_system_owner(message): return await system_denied(message)
         if action=='archive':
             shops=registry.repository.list_shops(registry.seller_id)
             if len(shops)<=1:
                 return await message.answer('⚠️ Нельзя архивировать последний активный магазин.')
-            return await message.answer('🗄 <b>Какой магазин архивировать?</b>\nДанные сохранятся, API-запросы и scheduler для него остановятся.',
+            return await navigation.show(message,'🗄 <b>Какой магазин архивировать?</b>\nДанные сохранятся, API-запросы и scheduler для него остановятся.',
                 parse_mode='HTML',reply_markup=shop_picker_keyboard(shops,'archive',current_shop_id=ctx.shop_id))
         if action in {'restore','delete'}:
             shops=registry.repository.archived_shops(registry.seller_id)
             if not shops:
                 return await message.answer('🗂 Архив магазинов пуст.')
             title='♻️ <b>Какой магазин вернуть?</b>' if action=='restore' else '🗑 <b>Какой магазин удалить навсегда?</b>'
-            return await message.answer(title,parse_mode='HTML',reply_markup=shop_picker_keyboard(shops,action))
+            return await navigation.show(message,title,parse_mode='HTML',reply_markup=shop_picker_keyboard(shops,action))
         raise ValueError('unknown shop picker action')
 
     @dp.message(Command('shop'))
@@ -472,7 +481,7 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
     async def cb_shop_cancel(callback: types.CallbackQuery):
         await callback.answer('Отменено')
         if callback.message:
-            await callback.message.edit_text('❌ Действие отменено.')
+            await show_main_menu(command_copy(callback.message,'start','',actor_user=callback.from_user))
 
     @dp.callback_query(F.data.startswith('shop:select:'))
     async def cb_shop_select(callback: types.CallbackQuery):
@@ -490,7 +499,8 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
         if callback.message and shop:
             await callback.message.edit_text(f'✅ Текущий магазин: <b>#{shop.id} {escape(shop.name)}</b>',parse_mode='HTML')
             role=registry.repository.role_for_user(callback.from_user.id,shop_id) or 'viewer'
-            await callback.message.answer('🏠 Выберите раздел:',reply_markup=main_keyboard(role))
+            await navigation.show(callback.message,'🏠 Выберите раздел:',actor_user=callback.from_user,
+                                  reply_markup=main_keyboard(role))
 
     @dp.callback_query(F.data.startswith('shop:archive:'))
     async def cb_shop_archive_pick(callback: types.CallbackQuery):
@@ -537,6 +547,7 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
             await callback.message.edit_text(
                 f'🗄 Магазин <b>#{shop.id} {escape(shop.name)}</b> перемещён в архив.\n'
                 'Данные сохранены, фоновые запросы остановлены.'+suffix,parse_mode='HTML')
+            await navigation.retain(callback.message)
 
     @dp.callback_query(F.data.startswith('shop:restore:'))
     async def cb_shop_restore(callback: types.CallbackQuery):
@@ -557,6 +568,7 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
             await callback.message.edit_text(
                 f'♻️ Магазин <b>#{shop.id} {escape(shop.name)}</b> восстановлен.\n'
                 'Он снова участвует в scheduler и может обращаться к API.',parse_mode='HTML')
+            await navigation.retain(callback.message)
 
     @dp.callback_query(F.data.startswith('shop:delete:'))
     async def cb_shop_delete_pick(callback: types.CallbackQuery):
@@ -598,6 +610,7 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
             await callback.message.edit_text(
                 f'🗑 Магазин <b>#{shop.id} {escape(shop.name)}</b> удалён безвозвратно.',
                 parse_mode='HTML')
+            await navigation.retain(callback.message)
 
     @dp.message(Command('profiles'))
     async def cmd_profiles(message: types.Message):
@@ -676,6 +689,7 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
                 result=export_xlsx(ctx.repository,ctx.shop_id,end,days,path) if fmt=='xlsx' else export_csv_zip(ctx.repository,ctx.shop_id,end,days,path)
                 caption=f'📤 {shop.name if shop else "Магазин"} · {result.start} — {result.end}'
                 await message.answer_document(FSInputFile(str(result.path)),caption=caption)
+                await navigation.dismiss(message)
         except Exception as exc:
             await message.answer(f'⚠️ Экспорт не создан: {escape(str(exc)[:300])}')
 
@@ -708,7 +722,7 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
         if not is_system_owner(message): return await system_denied(message)
         if registry is None: return await message.answer('Restore требует multi-shop runtime.')
         await state.set_state(RestoreStates.waiting_file)
-        await message.answer('⚠️ <b>Восстановление базы</b>\nПришлите SQLite backup (.sqlite3 или .db). Перед заменой бот автоматически создаст pre-restore backup и проверит integrity/schema.\nНажмите «❌ Отмена», чтобы выйти.',parse_mode='HTML',reply_markup=input_keyboard())
+        await navigation.show(message,'⚠️ <b>Восстановление базы</b>\nПришлите SQLite backup (.sqlite3 или .db). Перед заменой бот автоматически создаст pre-restore backup и проверит integrity/schema.\nНажмите «❌ Отмена», чтобы выйти.',parse_mode='HTML',reply_markup=input_keyboard())
 
     @dp.message(StateFilter(RestoreStates.waiting_file), F.document)
     async def restore_file(message: types.Message, state: FSMContext):
@@ -758,7 +772,7 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
         if not allowed(message,'manage'): return await denied(message,'manage')
         await state.clear(); await state.set_state(SetupStates.shop_name)
         shop=ctx.repository.get_shop(ctx.shop_id)
-        await message.answer(
+        await navigation.show(message,
             '🧩 <b>Первичная настройка · 1/6</b>\n'
             f'Введите название магазина. Сейчас: <b>{escape(shop.name if shop else "Основной магазин")}</b>\n\n'
             'Для отмены нажмите «❌ Отмена».', parse_mode='HTML', reply_markup=input_keyboard())
@@ -774,7 +788,7 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
         except ValueError as exc:
             return await message.answer(f'⚠️ {escape(str(exc))}')
         await state.set_state(SetupStates.timezone)
-        await message.answer('🧩 <b>2/6</b> Введите часовой пояс IANA.\nПример: <code>Europe/Moscow</code>',parse_mode='HTML')
+        await navigation.show(message,'🧩 <b>2/6</b> Введите часовой пояс IANA.\nПример: <code>Europe/Moscow</code>',parse_mode='HTML',reply_markup=input_keyboard())
 
     @dp.message(StateFilter(SetupStates.timezone))
     async def setup_timezone(message: types.Message, state: FSMContext):
@@ -782,7 +796,7 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
         try: update_validated(ctx.repository,ctx.shop_id,timezone=(message.text or '').strip())
         except ValueError as exc: return await message.answer(f'⚠️ {escape(str(exc))}')
         await state.set_state(SetupStates.report_time)
-        await message.answer('🧩 <b>3/6</b> Время ежедневного отчёта в формате <code>HH:MM</code>.\nНапример: <code>09:00</code>',parse_mode='HTML')
+        await navigation.show(message,'🧩 <b>3/6</b> Время ежедневного отчёта в формате <code>HH:MM</code>.\nНапример: <code>09:00</code>',parse_mode='HTML',reply_markup=input_keyboard())
 
     @dp.message(StateFilter(SetupStates.report_time))
     async def setup_report_time(message: types.Message, state: FSMContext):
@@ -790,7 +804,7 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
         try: update_validated(ctx.repository,ctx.shop_id,report_time=(message.text or '').strip())
         except ValueError as exc: return await message.answer(f'⚠️ {escape(str(exc))}')
         await state.set_state(SetupStates.stock_risk_days)
-        await message.answer('🧩 <b>4/6</b> За сколько дней до окончания запаса предупреждать?\nНапример: <code>14</code>',parse_mode='HTML')
+        await navigation.show(message,'🧩 <b>4/6</b> За сколько дней до окончания запаса предупреждать?\nНапример: <code>14</code>',parse_mode='HTML',reply_markup=input_keyboard())
 
     @dp.message(StateFilter(SetupStates.stock_risk_days))
     async def setup_stock(message: types.Message, state: FSMContext):
@@ -798,7 +812,7 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
         try: update_validated(ctx.repository,ctx.shop_id,stock_risk_days=(message.text or '').strip())
         except ValueError as exc: return await message.answer(f'⚠️ {escape(str(exc))}')
         await state.set_state(SetupStates.order_drop_pct)
-        await message.answer('🧩 <b>5/6</b> При каком падении заказов присылать алерт? В процентах.\nНапример: <code>35</code>',parse_mode='HTML')
+        await navigation.show(message,'🧩 <b>5/6</b> При каком падении заказов присылать алерт? В процентах.\nНапример: <code>35</code>',parse_mode='HTML',reply_markup=input_keyboard())
 
     @dp.message(StateFilter(SetupStates.order_drop_pct))
     async def setup_order_drop(message: types.Message, state: FSMContext):
@@ -806,7 +820,7 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
         try: update_validated(ctx.repository,ctx.shop_id,alert_order_drop_pct=(message.text or '').strip())
         except ValueError as exc: return await message.answer(f'⚠️ {escape(str(exc))}')
         await state.set_state(SetupStates.drr_pct)
-        await message.answer('🧩 <b>6/6</b> Порог ДРР для предупреждения, %.\nНапример: <code>25</code>',parse_mode='HTML')
+        await navigation.show(message,'🧩 <b>6/6</b> Порог ДРР для предупреждения, %.\nНапример: <code>25</code>',parse_mode='HTML',reply_markup=input_keyboard())
 
     @dp.message(StateFilter(SetupStates.drr_pct))
     async def setup_drr(message: types.Message, state: FSMContext):
@@ -861,7 +875,7 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
     async def cmd_import_costs(message: types.Message, state: FSMContext):
         if not allowed(message,'operate'): return await denied(message,'operate')
         await state.set_state(CostImportStates.waiting_file)
-        await message.answer(
+        await navigation.show(message,
             '📥 <b>Импорт себестоимости</b>\nПришлите CSV или XLSX файлом.\n\n'
             'Обязательные колонки: <code>marketplace, sku, cost_price</code>\n'
             'Необязательные: <code>effective_date, internal_sku, name</code>.\n'
@@ -928,7 +942,7 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
         p=pref(); shop=ctx.repository.get_shop(ctx.shop_id)
         setup_hint='' if p.setup_completed else '\n⚠️ Первичная настройка не завершена: откройте «🏪 Магазин и доступ» → «🧩 Мастер настройки».\n'
         readiness_hint='\n🧪 Магазин работает в DEMO-режиме.' if p.demo_mode else ''
-        await message.answer(
+        await navigation.show(message,
             '🤖 <b>Seller Analytics · Ozon + Wildberries</b>\n'
             '━━━━━━━━━━━━━━━━\n'
             f'🏪 <b>{escape(shop.name if shop else "Магазин")}</b>\n'
@@ -1612,7 +1626,7 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
     # --- structured menu navigation --------------------------------------
     async def show_submenu(message: types.Message, title: str, keyboard):
         if not allowed(message): return await denied(message)
-        await message.answer(title,parse_mode='HTML',reply_markup=keyboard(role_for(message),system_owner=is_system_owner(message)))
+        await navigation.show(message,title,parse_mode='HTML',reply_markup=keyboard(role_for(message),system_owner=is_system_owner(message)))
 
     @dp.message(F.text == MENU_REPORTS)
     async def menu_reports(message: types.Message):
@@ -1776,18 +1790,20 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
         data=await state.get_data(); action=str(data.get('menu_action') or '')
         value=(message.text or '').strip()
         if action=='day_view':
-            await state.clear()
             try: target=date.fromisoformat(value)
             except ValueError: return await message.answer('⚠️ Неверная дата. Используйте YYYY-MM-DD.')
             if target > local_now().date():
                 return await message.answer('⚠️ Нельзя показать будущую дату.')
-            return await send(message,format_daily(await build_daily_report_with_currency(ctx.repository,ctx.shop_id,target)))
+            await send(message,format_daily(await build_daily_report_with_currency(ctx.repository,ctx.shop_id,target)))
+            await state.clear()
+            return
         pair=input_actions.get(action)
         if pair is None:
             await state.clear(); return await show_main_menu(message,text='⚠️ Действие меню устарело. Выберите его заново.')
         await state.clear()
         command,handler=pair
         await handler(command_copy(message,command,value))
+        await navigation.dismiss(message)
 
     # Direct command buttons ------------------------------------------------
     @dp.message(F.text == COMMAND_BUTTONS['shops'])
@@ -1907,7 +1923,7 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
     @dp.message(F.text == '🗓 Другая дата')
     async def btn_other_date(message: types.Message):
         if not allowed(message): return await denied(message)
-        await message.answer(
+        await navigation.show(message,
             '🗓 <b>Отчёт по дате</b>\nВыберите вариант. Заказы и цены читаются из БД; курс ЦБ при необходимости загружается автоматически.',
             parse_mode='HTML',reply_markup=report_date_keyboard())
 
@@ -1918,24 +1934,22 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
         value=(callback.data or '').split(':',1)[1]
         if value=='cancel':
             await callback.answer('Отменено')
-            if callback.message: await callback.message.edit_text('↩️ Выбор даты отменён.')
+            if callback.message:
+                await show_main_menu(command_copy(callback.message,'start','',actor_user=callback.from_user))
             return
         if value=='custom':
-            await state.clear(); await state.set_state(MenuInputStates.waiting_value)
-            await state.update_data(menu_action='day_view')
             await callback.answer()
             if callback.message:
-                await callback.message.edit_text('✍️ Введите дату: <code>YYYY-MM-DD</code>',parse_mode='HTML')
+                await start_menu_input(command_copy(callback.message,'day','',actor_user=callback.from_user),
+                                       state,'day_view','✍️ Введите дату: <code>YYYY-MM-DD</code>')
             return
         try: offset=max(1,int(value))
         except ValueError: return await callback.answer('Некорректная дата.',show_alert=True)
         target=local_now().date()-timedelta(days=offset)
         await callback.answer()
         if callback.message:
-            await callback.message.answer(
-                format_daily(await build_daily_report_with_currency(ctx.repository,ctx.shop_id,target)),
-                parse_mode='HTML',
-                reply_markup=main_keyboard(ctx.repository.role_for_user(callback.from_user.id,ctx.shop_id)))
+            await send(command_copy(callback.message,'day',target.isoformat(),actor_user=callback.from_user),
+                       format_daily(await build_daily_report_with_currency(ctx.repository,ctx.shop_id,target)))
 
     @dp.message(F.text == '📥 Догрузить данные')
     async def btn_backfill_simple(message: types.Message):
@@ -1952,7 +1966,7 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
     @dp.message(F.text == '📤 Экспорт')
     async def btn_export_picker(message: types.Message):
         if not allowed(message): return await denied(message)
-        await message.answer('📤 <b>Экспорт</b>\nЗа какой период?',parse_mode='HTML',reply_markup=export_period_keyboard())
+        await navigation.show(message,'📤 <b>Экспорт</b>\nЗа какой период?',parse_mode='HTML',reply_markup=export_period_keyboard())
 
     @dp.callback_query(F.data.startswith('export:'))
     async def cb_export(callback: types.CallbackQuery):
@@ -1962,7 +1976,8 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
         action=parts[1] if len(parts)>1 else ''
         if action=='cancel':
             await callback.answer('Отменено')
-            if callback.message: await callback.message.edit_text('↩️ Экспорт отменён.')
+            if callback.message:
+                await show_main_menu(command_copy(callback.message,'start','',actor_user=callback.from_user))
             return
         if action=='back':
             await callback.answer()

@@ -220,6 +220,7 @@ async def test_partial_finance_retry_is_not_marked_as_completed(tmp_path):
 @pytest.mark.asyncio
 async def test_actual_telegram_refresh_menu_routes_date_and_rejects_viewer(tmp_path):
     from aiogram import Bot, Dispatcher, types
+    from aiogram.methods import SendMessage, DeleteMessage
     from app.bot import AppContext, register_handlers
     from app.bot.keyboards import COMMAND_BUTTONS
     from app.services.report_refresh import RefreshStage
@@ -230,8 +231,10 @@ async def test_actual_telegram_refresh_menu_routes_date_and_rejects_viewer(tmp_p
     ctx.refresh_reports=AsyncMock(return_value=(RefreshStage('finance:Ozon','Начисления Ozon',True),))
     bot=Bot(settings.telegram_token);calls=[]
     async def record(bot,method,**kwargs):
+        if isinstance(method,DeleteMessage): return True
+        assert isinstance(method,SendMessage)
         calls.append(method)
-        return types.Message(message_id=len(calls)+100,date=datetime.now(timezone.utc),chat=types.Chat(id=101,type='private'),text=getattr(method,'text',''))
+        return types.Message(message_id=len(calls)+100,date=datetime.now(timezone.utc),chat=types.Chat(id=method.chat_id,type='private'),text=method.text)
     bot.session.make_request=AsyncMock(side_effect=record)
     dp=Dispatcher();register_handlers(dp,ctx)
     async def send(uid,text,number):

@@ -235,6 +235,25 @@ class Repository:
         if fallback_shop_id in allowed_ids: return fallback_shop_id
         return int(allowed[0]['id'])
 
+    def navigation_message(self, bot_id: int, chat_id: int, user_id: int) -> int | None:
+        with self.db.connect() as c:
+            row=c.execute('SELECT message_id FROM telegram_navigation WHERE bot_id=? AND chat_id=? AND user_id=?',
+                          (bot_id,chat_id,user_id)).fetchone()
+        return int(row['message_id']) if row else None
+
+    def save_navigation_message(self, bot_id: int, chat_id: int, user_id: int, message_id: int) -> None:
+        with self.db.connect() as c:
+            c.execute('''INSERT INTO telegram_navigation(bot_id,chat_id,user_id,message_id,updated_at)
+                VALUES(?,?,?,?,?) ON CONFLICT(bot_id,chat_id,user_id) DO UPDATE SET
+                message_id=excluded.message_id,updated_at=excluded.updated_at''',
+                (bot_id,chat_id,user_id,message_id,utcnow()))
+
+    def clear_navigation_message(self, bot_id: int, chat_id: int, user_id: int, message_id: int) -> None:
+        # Compare the ID: a slow report must never clear a newer menu.
+        with self.db.connect() as c:
+            c.execute('DELETE FROM telegram_navigation WHERE bot_id=? AND chat_id=? AND user_id=? AND message_id=?',
+                      (bot_id,chat_id,user_id,message_id))
+
     def get_job_state(self, shop_id: int, job_key: str) -> str | None:
         with self.db.connect() as c:
             r=c.execute("SELECT last_run_key FROM shop_job_state WHERE shop_id=? AND job_key=?",(shop_id,job_key)).fetchone()

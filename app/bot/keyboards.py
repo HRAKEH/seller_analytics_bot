@@ -107,6 +107,18 @@ def main_keyboard(role: str | None = 'owner'):
     return _build(buttons, columns=2)
 
 
+def menu_button_texts() -> frozenset[str]:
+    """Known reply-button taps; arbitrary typed arguments are never removed."""
+    texts=set(COMMAND_BUTTONS.values()) | {BACK, '📊 Сегодня'}
+    keyboards=(main_keyboard, reports_keyboard, products_keyboard, money_keyboard,
+               supply_keyboard, control_keyboard, shop_keyboard, service_keyboard,
+               technical_keyboard)
+    for keyboard in keyboards:
+        markup=keyboard('owner') if keyboard is main_keyboard else keyboard('owner',system_owner=True)
+        texts.update(button.text for row in markup.keyboard for button in row)
+    return frozenset(texts)
+
+
 def reports_keyboard(role: str | None = 'owner', *, system_owner: bool = False):
     role = _role(role)
     buttons = [

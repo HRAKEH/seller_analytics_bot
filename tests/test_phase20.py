@@ -248,7 +248,10 @@ def test_common_report_export_and_retry_flows_are_button_driven(monkeypatch):
 def test_report_date_button_reads_database_without_forcing_api_refresh():
     src=(ROOT/'app/bot/handlers.py').read_text(encoding='utf-8')
     assert "F.data.startswith('report_date:')" in src
-    assert "menu_action='day_view'" in src
+    assert any(isinstance(node,ast.Call) and isinstance(node.func,ast.Name)
+               and node.func.id=='start_menu_input'
+               and any(isinstance(arg,ast.Constant) and arg.value=='day_view' for arg in node.args)
+               for node in ast.walk(ast.parse(src)))
     start=src.index("if action=='day_view':")
     end=src.index('pair=input_actions.get(action)',start)
     block=src[start:end]

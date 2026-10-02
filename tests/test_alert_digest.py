@@ -116,3 +116,18 @@ async def test_single_shop_loop_uses_the_same_digest(monkeypatch):
     bot.send_message.assert_awaited_once()
     assert 'stock' in bot.send_message.await_args.args[1]
     assert 'recovered' in bot.send_message.await_args.args[1]
+
+
+@pytest.mark.asyncio
+async def test_many_stock_alerts_and_recoveries_are_one_bounded_delivery():
+    notes=[AlertNotification('low_stock',f'ozon:{i}','critical',
+           f'📦 Товар {i} <крем>: остаток 0, доступно 0 шт.') for i in range(150)]
+    notes.append(AlertNotification('low_stock','wb:restored','resolved','📦 Запас восстановлен'))
+    ctx=context(1,notes,[11])
+    bot=SimpleNamespace(send_message=AsyncMock())
+    await scheduler.send_alert_digest(bot,ctx,notes)
+    bot.send_message.assert_awaited_once()
+    text=bot.send_message.await_args.args[1]
+    assert 'Критичных: 150' in text and 'восстановлено: 1' in text
+    assert 'Ещё событий:' in text and 'Активные проблемы' in text
+    assert len(text.encode('utf-16-le'))//2<=3900

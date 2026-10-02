@@ -7,6 +7,7 @@ import logging
 from unittest.mock import AsyncMock
 
 from aiogram import Bot, Dispatcher, types
+from aiogram.methods import SendMessage, DeleteMessage
 import pytest
 
 from app.bot import AppContext, register_handlers
@@ -46,10 +47,13 @@ def dispatcher(tmp_path):
     calls=[]
 
     async def record(bot, method, **kwargs):
+        if isinstance(method,DeleteMessage):
+            return True
+        assert isinstance(method,SendMessage)
         calls.append(method)
         return types.Message(
             message_id=100+len(calls), date=datetime.now(timezone.utc),
-            chat=types.Chat(id=101, type='private'), text=method.text,
+            chat=types.Chat(id=method.chat_id, type='private'), text=method.text,
         )
 
     bot.session.make_request=AsyncMock(side_effect=record)
