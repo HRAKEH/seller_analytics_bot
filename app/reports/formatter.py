@@ -36,13 +36,14 @@ def format_daily(report: DailyReport) -> str:
         else:
             lines.append(f'{source_name(s.marketplace)}: <b>{num(s.units)} шт.</b>')
         if s.ordered_revenue is not None:
-            lines.append(f'  стоимость заказов до удержаний {money(s.ordered_revenue)} · на ед. {money(avg)}')
+            label = 'сумма заказов из аналитики API до удержаний' if s.marketplace == 'ozon' else 'стоимость заказов до удержаний'
+            lines.append(f'  {label} {money(s.ordered_revenue)} · на ед. {money(avg)}')
         if s.marketplace=='wildberries':
             label='Воронка продаж' if str(s.order_source or '').startswith('analytics/orders') else 'Статистика, резервный источник'
             lines.append(f'  источник: {label}')
         if s.marketplace=='ozon':
             if s.marketplace_net is not None:
-                lines.append(f'  начисления после удержаний за день: <b>{money(s.marketplace_net,precision=2)}</b>')
+                lines.append(f'  начисления после удержаний по дате начисления: <b>{money(s.marketplace_net,precision=2)}</b>')
             else:
                 lines.append(f'  начисления после удержаний: ⏳ ещё не загружены · /finance 1 {report.day}')
         if s.cancellations is not None:
@@ -66,7 +67,7 @@ def format_daily(report: DailyReport) -> str:
            not str(s.order_source or '').startswith('analytics/orders') for s in report.sources):
         lines.append('ℹ️ WB: источник может не включать заказы с неподтверждённой оплатой.')
     if any(s.marketplace=='ozon' for s in report.sources):
-        lines.append('ℹ️ Ozon: заказы и финансовые начисления за день относятся к разным наборам продаж.')
+        lines.append('ℹ️ Ozon: заказы сгруппированы по дате заказа, финансы — по дате начисления. Начисления могут включать заказы других дней.')
     return '\n'.join(lines)
 
 

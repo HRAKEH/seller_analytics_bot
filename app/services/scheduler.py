@@ -8,6 +8,7 @@ from zoneinfo import ZoneInfo
 from aiogram import Bot
 from app.bot.context import AppContext
 from app.reports import build_daily_report, format_daily
+from app.reports.alerts import format_alert_digest
 from app.services.alerts import AlertEngine
 from app.services.resilience import queue_retry
 from app.services.supply import evaluate_forecast_quality, build_supply_plan
@@ -33,6 +34,13 @@ async def send_to_owners(bot: Bot, ctx: AppContext, text: str):
         uid=int(row['telegram_user_id'])
         try: await bot.send_message(uid,text,parse_mode='HTML')
         except Exception: log.exception('Cannot send shop report to %s',uid)
+
+
+async def send_alert_digest(bot: Bot, ctx: AppContext, notes):
+    shop = ctx.repository.get_shop(ctx.shop_id)
+    text = format_alert_digest(notes, shop_name=shop.name if shop else None)
+    if text:
+        await send_to_owners(bot, ctx, text)
 
 async def collect_and_send_daily(bot: Bot, ctx: AppContext):
     pref=ctx.preferences()
@@ -131,9 +139,7 @@ async def alerts_loop(bot: Bot, ctx: AppContext):
                 drr_pct=pref.alert_drr_pct,
                 stock_risk_days=pref.stock_risk_days,
                 stock_velocity_days=pref.stock_velocity_days)
-            for n in notes:
-                title='✅ <b>Проблема восстановлена</b>' if n.severity=='resolved' else '🚨 <b>Автооповещение</b>'
-                await send_to_owners(bot,ctx,title+'\n'+escape(n.message))
+            await send_alert_digest(bot, ctx, notes)
         except asyncio.CancelledError: raise
         except Exception: log.exception('Alerts loop failed')
 
@@ -208,10 +214,7 @@ async def multi_alerts_loop(bot: Bot, registry):
                         order_lookback_days=pref.alert_order_lookback_days,api_stale_hours=pref.alert_api_stale_hours,
                         drr_pct=pref.alert_drr_pct,stock_risk_days=pref.stock_risk_days,
                         stock_velocity_days=pref.stock_velocity_days)
-                    shop=ctx.repository.get_shop(ctx.shop_id); prefix=f'🏪 <b>{escape(shop.name)}</b>\n' if shop else ''
-                    for n in notes:
-                        title='✅ <b>Проблема восстановлена</b>' if n.severity=='resolved' else '🚨 <b>Автооповещение</b>'
-                        await send_to_owners(bot,ctx,prefix+title+'\n'+escape(n.message))
+                    await send_alert_digest(bot, ctx, notes)
                 finally:
                     ctx.repository.set_job_state(ctx.shop_id,'alerts',now_utc.isoformat(timespec='seconds'))
                     ctx.repository.release_lease(lease,registry.settings.instance_id)
