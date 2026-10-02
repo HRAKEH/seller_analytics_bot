@@ -97,6 +97,10 @@ class OzonClient(MarketplaceClient):
         conservative page size even when a larger value is requested; cursor
         pagination still retrieves the full period without relying on a
         potentially unsupported large-page limit.
+
+        Request financial_data on every page and retain it unchanged. Its
+        presence does not establish a realization-price metric; callers can
+        inspect the original fields before choosing a calculation basis.
         """
         scheme=scheme.upper()
         if scheme not in {'FBO','FBS'}:
@@ -104,7 +108,8 @@ class OzonClient(MarketplaceClient):
         cursor=''; seen:set[str]=set(); all_postings:list[dict]=[]; attempts=0
         for _ in range(max_pages):
             payload={'cursor':cursor,'filter':{'since':since,'to':to},
-                     'limit':min(max(1,int(limit)),100),'sort_dir':'asc'}
+                     'limit':min(max(1,int(limit)),100),'sort_dir':'asc',
+                     'with':{'financial_data':True}}
             result=await (self.fbo_postings(payload) if scheme=='FBO' else self.fbs_postings(payload))
             attempts += result.attempts
             if not result.ok:
@@ -117,7 +122,10 @@ class OzonClient(MarketplaceClient):
             has_next=bool(body.get('has_next') if 'has_next' in body else (body.get('result') or {}).get('has_next'))
             next_cursor=str(body.get('cursor') or (body.get('result') or {}).get('cursor') or '')
             if not has_next:
-                return FetchResult.success(self.source,{'postings':all_postings,'has_next':False,'cursor':next_cursor},result.status_code or 200,attempts)
+                return FetchResult.success(self.source,{
+                    'postings':all_postings,'has_next':False,'cursor':next_cursor,
+                    'request_with':dict(payload['with']),
+                },result.status_code or 200,attempts)
             if not next_cursor or next_cursor==cursor or next_cursor in seen:
                 return FetchResult.failure(self.source,f'Ozon {scheme} postings cursor did not advance',result.status_code,attempts)
             seen.add(next_cursor); cursor=next_cursor

@@ -392,6 +392,9 @@ class CollectionService:
             current=start
             while current <= end:
                 ds=current.isoformat(); raw={'postings':raw_by_day.get(ds,[]),'scheme':scheme}
+                request_with=(result.data or {}).get('request_with')
+                if isinstance(request_with,dict):
+                    raw['request_with']=dict(request_with)
                 rid=self.repo.record_success(connection_id,endpoint,ds,raw,[],attempts=result.attempts)
                 self._save_fulfillment_observations(shop_id=shop_id,connection_id=connection_id,
                     marketplace='ozon',source_run_id=rid,observations=obs_by_day.get(ds,[]))
