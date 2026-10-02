@@ -21,6 +21,7 @@ from app.reports import (
     build_management_report, format_management, format_supply_plan, format_supply_product,
     format_inbound, format_forecast_quality, format_supply_calibration, format_action_center, format_action_history, format_promotions,
 )
+from app.reports.daily import build_daily_report_with_currency
 from app.services.alerts import AlertEngine
 from app.services.imports import import_costs
 from app.services.preferences import update_validated
@@ -240,7 +241,7 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
         await message.answer('\n'.join(lines),parse_mode='HTML')
         role=ctx.repository.role_for_user(uid,ctx.shop_id) or 'viewer'
         await message.answer(
-            format_daily(build_daily_report(ctx.repository,ctx.shop_id,end)),
+            format_daily(await build_daily_report_with_currency(ctx.repository,ctx.shop_id,end)),
             parse_mode='HTML',reply_markup=main_keyboard(role))
 
     async def collect_and_report(message: types.Message, day: date, force: bool = True):
@@ -250,7 +251,11 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
                 await ctx.collect_day(day)
             except Exception as exc:
                 await message.answer(f'⚠️ Неожиданная ошибка загрузки: {escape(str(exc)[:250])}')
-        await send(message, format_daily(build_daily_report(ctx.repository, ctx.shop_id, day)))
+            try:
+                await ctx.collect_buyer_prices(day)
+            except Exception as exc:
+                await message.answer(f'⚠️ Цены покупателей пока не обновлены: {escape(str(exc)[:250])}')
+        await send(message, format_daily(await build_daily_report_with_currency(ctx.repository, ctx.shop_id, day)))
 
     def settings_text() -> str:
         p=pref(); shop=ctx.repository.get_shop(ctx.shop_id)
@@ -1776,7 +1781,7 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
             except ValueError: return await message.answer('⚠️ Неверная дата. Используйте YYYY-MM-DD.')
             if target > local_now().date():
                 return await message.answer('⚠️ Нельзя показать будущую дату.')
-            return await send(message,format_daily(build_daily_report(ctx.repository,ctx.shop_id,target)))
+            return await send(message,format_daily(await build_daily_report_with_currency(ctx.repository,ctx.shop_id,target)))
         pair=input_actions.get(action)
         if pair is None:
             await state.clear(); return await show_main_menu(message,text='⚠️ Действие меню устарело. Выберите его заново.')
@@ -1903,7 +1908,7 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
     async def btn_other_date(message: types.Message):
         if not allowed(message): return await denied(message)
         await message.answer(
-            '🗓 <b>Отчёт по дате</b>\nВыберите вариант. Просмотр читает данные из БД и не делает новый API-запрос.',
+            '🗓 <b>Отчёт по дате</b>\nВыберите вариант. Заказы и цены читаются из БД; курс ЦБ при необходимости загружается автоматически.',
             parse_mode='HTML',reply_markup=report_date_keyboard())
 
     @dp.callback_query(F.data.startswith('report_date:'))
@@ -1928,7 +1933,7 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
         await callback.answer()
         if callback.message:
             await callback.message.answer(
-                format_daily(build_daily_report(ctx.repository,ctx.shop_id,target)),
+                format_daily(await build_daily_report_with_currency(ctx.repository,ctx.shop_id,target)),
                 parse_mode='HTML',
                 reply_markup=main_keyboard(ctx.repository.role_for_user(callback.from_user.id,ctx.shop_id)))
 

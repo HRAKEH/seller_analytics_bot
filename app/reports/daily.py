@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date, timedelta
 from app.storage import Repository, MarketplaceConnection
+from app.services.buyer_prices import BuyerPriceTotals, build_buyer_prices
+from app.services.currency import CurrencyRateError, ensure_cbr_rates
 
 @dataclass(frozen=True)
 class MarketplaceDaily:
@@ -18,6 +20,7 @@ class MarketplaceDaily:
     order_source: str | None = None
     marketplace_net: float | None = None
     finance_freshness: str | None = None
+    buyer_prices: BuyerPriceTotals | None = None
 
 @dataclass(frozen=True)
 class DailyReport:
@@ -80,5 +83,23 @@ def build_daily_report(repo: Repository, shop_id: int, day: date) -> DailyReport
             warning,
             source,float(finance['value']) if finance else None,
             finance['as_of'] if finance else None,
+            build_buyer_prices(repo, conn.id, day, units['value'] if units else None)
+            if conn.marketplace == 'ozon' else None,
         ))
     return DailyReport(ds, tuple(sources))
+
+
+async def build_daily_report_with_currency(repo: Repository, shop_id: int, day: date,
+                                          *, transport=None) -> DailyReport:
+    """Get missing reference rates automatically before publishing the report."""
+    report = build_daily_report(repo, shop_id, day)
+    needs_rates = any(s.buyer_prices and s.buyer_prices.complete and
+                      s.buyer_prices.foreign_currencies for s in report.sources)
+    if needs_rates:
+        try:
+            await ensure_cbr_rates(repo, day, transport=transport)
+        except CurrencyRateError:
+            # Original currencies remain usable; no invented rate or zero.
+            return report
+        report = build_daily_report(repo, shop_id, day)
+    return report

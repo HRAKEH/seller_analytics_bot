@@ -8,6 +8,7 @@ from zoneinfo import ZoneInfo
 from aiogram import Bot
 from app.bot.context import AppContext
 from app.reports import build_daily_report, format_daily
+from app.reports.daily import build_daily_report_with_currency
 from app.reports.alerts import format_alert_digest
 from app.services.alerts import AlertEngine
 from app.services.resilience import queue_retry
@@ -85,7 +86,7 @@ async def collect_and_send_daily(bot: Bot, ctx: AppContext):
         log.exception('Delayed advertising refresh failed; retry queued')
     # Publish only after delayed finance/reconciliation and ads have been
     # attempted. Failed sources retain their last successful snapshots.
-    await send_to_owners(bot,ctx,prefix+format_daily(build_daily_report(ctx.repository,ctx.shop_id,day)))
+    await send_to_owners(bot,ctx,prefix+format_daily(await build_daily_report_with_currency(ctx.repository,ctx.shop_id,day)))
     try:
         promos=await ctx.collect_promotions(day)
         if promos and not all(getattr(x,'ok',False) for x in promos):

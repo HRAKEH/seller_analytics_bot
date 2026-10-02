@@ -231,7 +231,7 @@ def test_invalid_cost_is_rejected_before_storage(setup,value):
 
 def test_schema_14_migration_preserves_history_and_makes_backup(tmp_path):
     import sqlite3
-    from app.storage.database import MIGRATIONS
+    from app.storage.database import MIGRATIONS, LATEST_SCHEMA_VERSION
     path=tmp_path/'old.sqlite3'
     with sqlite3.connect(path) as c:
         c.execute('CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY,applied_at TEXT NOT NULL)')
@@ -243,7 +243,7 @@ def test_schema_14_migration_preserves_history_and_makes_backup(tmp_path):
     listing=repo.ensure_listing(repo.ensure_product(shop.id,'A','Item').id,conn.id,'100')
     order(repo,conn,listing,DAY,1,100)
     order(repo,conn,listing,DAY,2,200)
-    assert db.initialize_safely(tmp_path/'backups')==15
+    assert db.initialize_safely(tmp_path/'backups')==LATEST_SCHEMA_VERSION
     backups=list((tmp_path/'backups').glob('pre_migration_v14_*.sqlite3'))
     assert len(backups)==1 and Database(backups[0]).schema_version()==14
     assert repo.count('source_runs')==2 and repo.metrics_for_day(conn.id,DAY)['ordered_units']==2

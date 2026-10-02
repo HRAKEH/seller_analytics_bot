@@ -683,7 +683,20 @@ def _migration_15(conn: sqlite3.Connection) -> None:
     conn.execute('CREATE INDEX idx_source_runs_version ON source_runs(connection_id,data_date,endpoint,id DESC)')
 
 
-MIGRATIONS: dict[int, Migration] = {1: _migration_1, 2: _migration_2, 3: _migration_3, 4: _migration_4, 5: _migration_5, 6: _migration_6, 7: _migration_7, 8: _migration_8, 9: _migration_9, 10: _migration_10, 11: _migration_11, 12: _migration_12, 13: _migration_13, 14: _migration_14, 15: _migration_15}
+def _migration_16(conn: sqlite3.Connection) -> None:
+    # Public reference rates are separate from marketplace API health/metrics.
+    # The original XML and both dates make historical estimates reproducible.
+    conn.execute('''CREATE TABLE currency_rate_snapshots (
+        source TEXT NOT NULL,
+        requested_date TEXT NOT NULL,
+        effective_date TEXT NOT NULL,
+        fetched_at TEXT NOT NULL,
+        payload BLOB NOT NULL,
+        PRIMARY KEY(source,requested_date)
+    )''')
+
+
+MIGRATIONS: dict[int, Migration] = {1: _migration_1, 2: _migration_2, 3: _migration_3, 4: _migration_4, 5: _migration_5, 6: _migration_6, 7: _migration_7, 8: _migration_8, 9: _migration_9, 10: _migration_10, 11: _migration_11, 12: _migration_12, 13: _migration_13, 14: _migration_14, 15: _migration_15, 16: _migration_16}
 LATEST_SCHEMA_VERSION = max(MIGRATIONS)
 
 

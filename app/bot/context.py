@@ -106,6 +106,13 @@ class AppContext:
         from app.services.report_refresh import refresh_reports
         return await refresh_reports(self,start,end,progress)
 
+    async def collect_buyer_prices(self, day: date):
+        if self.demo_mode() or self.ozon_connection_id is None:
+            return []
+        async with self.operation_lock('buyer_prices'):
+            return await self.collector.collect_ozon_fulfillment_range(
+                shop_id=self.shop_id, connection_id=self.ozon_connection_id, start=day, end=day)
+
     async def backfill_orders(self, start: date, end: date, marketplace: str = 'all'):
         """Incrementally load order history, reusing already-complete DB days.
 

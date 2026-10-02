@@ -390,6 +390,44 @@ class Repository:
         return dict(r) if r else None
 
     # --- source runs ------------------------------------------------------
+    def currency_rate_snapshot(self, requested_date: str, source: str = 'cbr') -> dict | None:
+        with self.db.connect() as c:
+            row = c.execute('''SELECT * FROM currency_rate_snapshots
+                WHERE source=? AND requested_date=?''', (source, requested_date)).fetchone()
+        return dict(row) if row else None
+
+    def save_currency_rate_snapshot(self, requested_date: str, effective_date: str,
+                                   payload: bytes, source: str = 'cbr') -> None:
+        if date.fromisoformat(effective_date) > date.fromisoformat(requested_date):
+            raise ValueError('Exchange rate belongs to a later date')
+        with self.db.connect() as c:
+            c.execute('''INSERT INTO currency_rate_snapshots
+                (source,requested_date,effective_date,fetched_at,payload) VALUES(?,?,?,?,?)
+                ON CONFLICT(source,requested_date) DO UPDATE SET
+                    effective_date=excluded.effective_date,fetched_at=excluded.fetched_at,
+                    payload=excluded.payload''',
+                (source,requested_date,effective_date,utcnow(),payload))
+
+    def latest_raw_source(self, connection_id: int, data_date: str,
+                          endpoints: tuple[str, ...]) -> dict | None:
+        placeholders = ','.join('?' for _ in endpoints)
+        if not endpoints:
+            return None
+        with self.db.connect() as c:
+            row = c.execute(f'''SELECT sr.*,rp.payload_json FROM source_runs sr
+                JOIN raw_payloads rp ON rp.source_run_id=sr.id
+                WHERE sr.connection_id=? AND sr.data_date=? AND sr.endpoint IN ({placeholders})
+                  AND sr.status IN ('success','partial')
+                ORDER BY sr.finished_at DESC,sr.id DESC LIMIT 1''',
+                (connection_id,data_date,*endpoints)).fetchone()
+        return dict(row) if row else None
+
+    def raw_payload_for_run(self, source_run_id: int) -> str | None:
+        with self.db.connect() as c:
+            row = c.execute('SELECT payload_json FROM raw_payloads WHERE source_run_id=?',
+                            (source_run_id,)).fetchone()
+        return row['payload_json'] if row else None
+
     def record_failure(self, connection_id: int, endpoint: str, data_date: str, error: str,
                        *, http_status: int | None = None, attempts: int = 1,
                        started_at: str | None = None) -> int:

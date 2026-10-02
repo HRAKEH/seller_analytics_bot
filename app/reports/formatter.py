@@ -1,6 +1,7 @@
 """Compact Telegram HTML formatter."""
 from __future__ import annotations
 from html import escape
+from decimal import Decimal, ROUND_HALF_UP
 from .daily import DailyReport, MarketplaceDaily
 
 def money(value: float | None, *, precision: int = 0) -> str:
@@ -20,6 +21,37 @@ def delta(current: float | None, previous: float | None, comparison: str = 'к �
 
 def source_name(source: str) -> str:
     return '🟣 Ozon' if source == 'ozon' else '🔵 Wildberries'
+
+
+def _buyer_price_lines(prices) -> list[str]:
+    if prices is None:
+        return ['  по цене покупателя: ⏳ цены ещё не загружены · обновите все отчёты']
+    def amount(value, currency):
+        value = value.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+        return f'{value:,.2f}'.replace(',', ' ') + (' ₽' if currency == 'RUB' else f' {currency}')
+    summary = ' + '.join(amount(t.amount, t.currency) for t in prices.totals)
+    label = 'по цене покупателя' if prices.complete else 'по полученным ценам покупателя, неполно'
+    lines = [f'  {label}: <b>{summary or "—"}</b>']
+    expected = str(prices.expected_units) if prices.expected_units is not None else '—'
+    lines.append(f'  цены получены для {prices.priced_units} ед. · заказов в аналитике {expected} ед.')
+    if prices.complete and prices.foreign_currencies:
+        if prices.rub_total is not None:
+            lines.append(f'  оценка в рублях по ЦБ: <b>≈ {amount(prices.rub_total, "RUB")}</b>')
+            quotes = []
+            for currency in prices.foreign_currencies:
+                rate = prices.rates.rate(currency)
+                # Keep enough digits for non-unit nominals and small FX rates.
+                value = format(rate, 'f').rstrip('0').rstrip('.') if '.' in format(rate, 'f') else format(rate, 'f')
+                quotes.append(f'1 {currency} = {value} ₽')
+            lines.append('  курс ЦБ: ' + ' · '.join(quotes) +
+                         f' · действует с {prices.rates.effective_date}, для {prices.rates.requested_date}')
+        else:
+            lines.append('  оценка в рублях: ⏳ нет курса ЦБ для ' + ', '.join(prices.missing_rates))
+    for warning in prices.warnings:
+        lines.append('  ⚠️ ' + escape(warning))
+    if prices.freshness:
+        lines.append('  <i>цены от ' + escape(prices.freshness) + '</i>')
+    return lines
 
 def format_daily(report: DailyReport) -> str:
     lines=[f'📊 <b>Заказы за {report.day}</b>', '━━━━━━━━━━━━━━━━']
@@ -42,6 +74,7 @@ def format_daily(report: DailyReport) -> str:
             label='Воронка продаж' if str(s.order_source or '').startswith('analytics/orders') else 'Статистика, резервный источник'
             lines.append(f'  источник: {label}')
         if s.marketplace=='ozon':
+            lines.extend(_buyer_price_lines(s.buyer_prices))
             if s.marketplace_net is not None:
                 lines.append(f'  начисления после удержаний по дате начисления: <b>{money(s.marketplace_net,precision=2)}</b>')
             else:
@@ -69,6 +102,8 @@ def format_daily(report: DailyReport) -> str:
     if any(s.marketplace=='ozon' for s in report.sources):
         if any(s.marketplace=='ozon' and s.ordered_revenue is not None for s in report.sources):
             lines.append('ℹ️ Ozon: сумму заказов сверяйте с колонкой «по предельной цене». «По цене реализации» — отдельный показатель.')
+        if any(s.marketplace=='ozon' and s.buyer_prices and s.buyer_prices.foreign_currencies for s in report.sources):
+            lines.append('ℹ️ Пересчёт по ЦБ — оценка. Рублёвая сумма в кабинете Ozon может отличаться.')
         lines.append('ℹ️ Ozon: заказы сгруппированы по дате заказа, финансы — по дате начисления. Начисления могут включать заказы других дней.')
     return '\n'.join(lines)
 
