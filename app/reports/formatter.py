@@ -36,7 +36,7 @@ def format_daily(report: DailyReport) -> str:
         else:
             lines.append(f'{source_name(s.marketplace)}: <b>{num(s.units)} шт.</b>')
         if s.ordered_revenue is not None:
-            label = 'сумма заказов из аналитики API до удержаний' if s.marketplace == 'ozon' else 'стоимость заказов до удержаний'
+            label = 'сумма заказов по предельной цене (API)' if s.marketplace == 'ozon' else 'стоимость заказов до удержаний'
             lines.append(f'  {label} {money(s.ordered_revenue)} · на ед. {money(avg)}')
         if s.marketplace=='wildberries':
             label='Воронка продаж' if str(s.order_source or '').startswith('analytics/orders') else 'Статистика, резервный источник'
@@ -67,6 +67,8 @@ def format_daily(report: DailyReport) -> str:
            not str(s.order_source or '').startswith('analytics/orders') for s in report.sources):
         lines.append('ℹ️ WB: источник может не включать заказы с неподтверждённой оплатой.')
     if any(s.marketplace=='ozon' for s in report.sources):
+        if any(s.marketplace=='ozon' and s.ordered_revenue is not None for s in report.sources):
+            lines.append('ℹ️ Ozon: сумму заказов сверяйте с колонкой «по предельной цене». «По цене реализации» — отдельный показатель.')
         lines.append('ℹ️ Ozon: заказы сгруппированы по дате заказа, финансы — по дате начисления. Начисления могут включать заказы других дней.')
     return '\n'.join(lines)
 
@@ -97,7 +99,8 @@ def format_product_report(report) -> str:
     for market in ('ozon','wildberries'):
         rows=report.top.get(market) or []
         if not rows: continue
-        lines.append(f'\n{labels.get(market,market)} · <b>Top-{len(rows)} по сумме заказов*</b>')
+        basis = ' (по предельной цене)' if market == 'ozon' else ''
+        lines.append(f'\n{labels.get(market,market)} · <b>Top-{len(rows)} по сумме заказов{basis}*</b>')
         for i,row in enumerate(rows,1):
             lines.append(f'{i}. {_product_name(row.name)} · {row.units:g} шт. · {money(row.order_amount)}')
 

@@ -54,9 +54,13 @@ def normalize_wb_orders(payload: Any, connection_id: int, data_date: str) -> lis
 def normalize_ozon_order_analytics(payload: Any, connection_id: int, data_date: str) -> list[MetricPoint]:
     """Normalize Ozon analytics ordered_units + revenue for one day.
 
-    `ordered_units` is the common cross-marketplace operational metric. Revenue is
-    stored as `ordered_revenue` and deliberately not aggregated with WB money until
-    an equivalent WB order-money definition is implemented and verified.
+    `ordered_units` is the common cross-marketplace operational metric. The
+    requested `revenue` is the ceiling-price order amount in the current source,
+    not the separate realization-price amount in the seller dashboard and not
+    net financial accruals. Store it unchanged as `ordered_revenue`; do not infer
+    buyer prices by subtracting commissions, services or financial-day totals.
+    It is deliberately not aggregated with WB money until an equivalent WB
+    order-money definition is implemented and verified.
     """
     if not isinstance(payload, dict):
         raise NormalizationError('Ozon analytics payload must be an object')
