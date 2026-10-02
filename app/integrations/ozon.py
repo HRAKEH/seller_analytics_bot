@@ -89,6 +89,20 @@ class OzonClient(MarketplaceClient):
     async def fbo_postings(self, payload: dict) -> FetchResult:
         return await self.request('POST', '/v3/posting/fbo/list', json=payload, headers=self._headers(), rate_key='postings', min_interval=1.0)
 
+    async def fbo_posting_details(self, posting_number: str) -> FetchResult:
+        """Request the financial fields available for an individual FBO posting.
+
+        The documented /v2/posting/fbo/get response includes customer_price
+        and customer_currency_code, unlike the current FBO list response.
+        Keep its original response for verification before using any prices.
+        """
+        if not isinstance(posting_number, str) or not posting_number.strip():
+            raise ValueError('FBO posting_number is required')
+        return await self.request('POST', '/v2/posting/fbo/get',
+                                  json={'posting_number': posting_number.strip(),
+                                        'with': {'financial_data': True}},
+                                  headers=self._headers(), rate_key='postings', min_interval=1.0)
+
     async def postings_all(self, scheme: str, since: str, to: str, *, limit: int = 100,
                            max_pages: int = 500) -> FetchResult:
         """Fetch current-version FBO/FBS postings with cursor pagination.

@@ -389,6 +389,7 @@ class CollectionService:
                 if not isinstance(posting,dict): continue
                 ds=posting_day(posting.get('created_at') or posting.get('in_process_at') or '')
                 if ds and start.isoformat() <= ds <= end.isoformat(): raw_by_day.setdefault(ds,[]).append(posting)
+            list_run_ids: dict[str, int] = {}
             current=start
             while current <= end:
                 ds=current.isoformat(); raw={'postings':raw_by_day.get(ds,[]),'scheme':scheme}
@@ -396,6 +397,7 @@ class CollectionService:
                 if isinstance(request_with,dict):
                     raw['request_with']=dict(request_with)
                 rid=self.repo.record_success(connection_id,endpoint,ds,raw,[],attempts=result.attempts)
+                list_run_ids[ds] = rid
                 self._save_fulfillment_observations(shop_id=shop_id,connection_id=connection_id,
                     marketplace='ozon',source_run_id=rid,observations=obs_by_day.get(ds,[]))
                 self._save_commerce_observations(shop_id=shop_id,connection_id=connection_id,
@@ -403,6 +405,87 @@ class CollectionService:
                     observations=normalize_ozon_posting_events(raw,fulfillment_scheme=scheme,start_date=ds,end_date=ds))
                 outcomes.append(CollectionOutcome('ozon',ds,True,rid,f'{scheme} fulfillment loaded'))
                 current += timedelta(days=1)
+            if scheme == 'FBO':
+                outcomes.extend(await self._collect_ozon_fbo_details_range(
+                    connection_id=connection_id, raw_by_day=raw_by_day, list_run_ids=list_run_ids,
+                    start=start, end=end))
+        return outcomes
+
+    async def _collect_ozon_fbo_details_range(self, *, connection_id: int,
+                                             raw_by_day: dict[str, list[dict]],
+                                             list_run_ids: dict[str, int],
+                                             start: date, end: date) -> list[CollectionOutcome]:
+        """Capture individual FBO responses independently of the list snapshot.
+
+        Use the list's Moscow date and unique posting number as the request
+        basis, including cancellations. Do not replace list fields or produce
+        order/finance metrics from these still-unverified customer prices.
+        """
+        outcomes: list[CollectionOutcome] = []
+        blocked_status: int | None = None
+        current = start
+        while current <= end:
+            ds = current.isoformat()
+            numbers: list[str] = []
+            errors: list[dict] = []
+            seen: set[str] = set()
+            for index, posting in enumerate(raw_by_day.get(ds, [])):
+                number = posting.get('posting_number')
+                if not isinstance(number, str) or not number.strip():
+                    errors.append({'posting_number': None, 'list_index': index,
+                                   'message': 'FBO list entry has no posting_number',
+                                   'http_status': None, 'skipped': True})
+                    continue
+                number = number.strip()
+                if number not in seen:
+                    numbers.append(number)
+                    seen.add(number)
+            raw = {'scheme': 'FBO', 'request_endpoint': '/v2/posting/fbo/get',
+                   'request_with': {'financial_data': True},
+                   'list_source_run_id': list_run_ids[ds], 'expected_postings': numbers,
+                   'requested_postings': [], 'responses': [], 'errors': errors}
+            attempts = 0
+            for number in numbers:
+                if blocked_status is not None:
+                    errors.append({'posting_number': number, 'http_status': None,
+                                   'blocked_http_status': blocked_status, 'skipped': True,
+                                   'message': f'Lookup skipped after HTTP {blocked_status} in this refresh'})
+                    continue
+                raw['requested_postings'].append(number)
+                result = await self.ozon.fbo_posting_details(number)
+                attempts += result.attempts
+                body = result.data
+                detail = body.get('result') if isinstance(body, dict) else None
+                error = result.error or 'FBO detail request failed'
+                if result.ok:
+                    if not isinstance(detail, dict):
+                        error = 'FBO detail response has no result object'
+                    elif detail.get('posting_number') != number:
+                        error = 'FBO detail response posting_number does not match the request'
+                    else:
+                        raw['responses'].append({'posting_number': number,
+                                                 'http_status': result.status_code,
+                                                 'response': body})
+                        continue
+                failure = {'posting_number': number, 'http_status': result.status_code,
+                           'message': error[:1500], 'skipped': False}
+                if result.ok:
+                    # Retain malformed successful HTTP bodies for diagnosis,
+                    # without accepting another posting's prices as this one's.
+                    failure['response'] = body
+                errors.append(failure)
+                self.repo.record_failure(connection_id, 'postings/fbo/get', ds,
+                                         f'{number}: {error}', http_status=result.status_code,
+                                         attempts=result.attempts)
+                if result.status_code in {401, 403, 429}:
+                    blocked_status = result.status_code
+            complete = not errors
+            raw['complete'] = complete
+            rid = self.repo.record_success(connection_id, 'postings/fbo/details', ds, raw, [],
+                                           attempts=attempts, status='success' if complete else 'partial')
+            outcomes.append(CollectionOutcome('ozon', ds, complete, rid,
+                                               f'FBO details: {len(raw["responses"])}/{len(numbers)} loaded'))
+            current += timedelta(days=1)
         return outcomes
 
     async def collect_wb_sales_range(self, *, shop_id: int, connection_id: int,
