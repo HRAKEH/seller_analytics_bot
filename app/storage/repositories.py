@@ -547,6 +547,15 @@ class Repository:
                     (connection_id, *endpoints, data_date)).fetchone()
                 if previous and previous['status'] == 'success' and previous['payload_hash'] == digest:
                     c.execute('UPDATE source_runs SET finished_at=? WHERE id=?', (now, previous['id']))
+                    # Identical quantities are still a fresh API verification.
+                    # Keep one snapshot, but refresh its capture time only when
+                    # this same source response was actually fetched again.
+                    c.execute('UPDATE inventory_snapshots SET captured_at=? WHERE source_run_id=?',
+                              (now,previous['id']))
+                    if store_raw:
+                        c.execute('''INSERT INTO raw_payloads(source_run_id,payload_json,created_at)
+                            SELECT ?,?,? WHERE NOT EXISTS(SELECT 1 FROM raw_payloads WHERE source_run_id=?)''',
+                            (previous['id'],body,now,previous['id']))
                     # New normalizer versions may add metrics to an unchanged
                     # payload (for example billed advertising on an upgrade).
                     existing={r['metric_key'] for r in c.execute(
@@ -904,39 +913,46 @@ class Repository:
 
     def latest_inventory_by_listing(self, shop_id: int) -> list[dict[str,Any]]:
         """Aggregate newest snapshot per listing+scheme without dropping another scheme."""
+        grouped={}
+        for row in self.latest_inventory_by_scheme(shop_id):
+            key=int(row['listing_id'])
+            if key not in grouped:
+                grouped[key]={k:v for k,v in row.items() if k!='fulfillment_scheme'}
+                continue
+            bucket=grouped[key]
+            for k in ('available_units','reserved_units'):bucket[k]+=float(row[k] or 0)
+            bucket['captured_at']=min(bucket['captured_at'],row['captured_at'])
+        return sorted(grouped.values(),key=lambda r:r['available_units'])
+
+    def latest_inventory_by_scheme(self, shop_id: int) -> list[dict[str,Any]]:
+        """Newest inventory run per listing+scheme, aggregated over its warehouses."""
         with self.db.connect() as c:
-            rows=c.execute("""WITH latest_run AS (
-                SELECT i.listing_id,i.fulfillment_scheme,MAX(i.source_run_id) source_run_id
-                FROM inventory_snapshots i JOIN product_listings pl ON pl.id=i.listing_id
-                JOIN products p ON p.id=pl.product_id WHERE p.shop_id=?
-                GROUP BY i.listing_id,i.fulfillment_scheme)
+            rows=c.execute("""WITH source_versions AS (
+                SELECT sr.*,ROW_NUMBER() OVER(PARTITION BY sr.connection_id,sr.endpoint
+                  ORDER BY sr.finished_at DESC,sr.id DESC) source_rank
+                FROM source_runs sr JOIN marketplace_connections mc ON mc.id=sr.connection_id
+                WHERE mc.shop_id=? AND mc.enabled=1 AND sr.status='success'
+                  AND (sr.endpoint IN ('product/info/stocks','analytics/stocks/fbo',
+                    'analytics/stocks/wb-warehouses','analytics/stocks/seller-warehouses')
+                    OR EXISTS(SELECT 1 FROM inventory_snapshots i WHERE i.source_run_id=sr.id))),
+              candidates AS (
+                SELECT DISTINCT i.listing_id,i.fulfillment_scheme,i.source_run_id,s.finished_at
+                FROM inventory_snapshots i JOIN source_versions s ON s.id=i.source_run_id AND s.source_rank=1
+                WHERE NOT(i.fulfillment_scheme='FBO' AND s.endpoint='product/info/stocks'
+                  AND EXISTS(SELECT 1 FROM source_versions f WHERE f.connection_id=s.connection_id
+                    AND f.endpoint='analytics/stocks/fbo'))),
+              latest_run AS (
+                SELECT *,ROW_NUMBER() OVER(PARTITION BY listing_id,fulfillment_scheme
+                    ORDER BY finished_at DESC,source_run_id DESC) rn FROM candidates)
               SELECT p.id product_id,p.internal_sku,p.name,pl.id listing_id,pl.marketplace_sku,pl.offer_id,
-                     pl.connection_id,mc.marketplace,
+                     pl.connection_id,mc.marketplace,i.fulfillment_scheme,
                      SUM(i.available_units) available_units,SUM(i.reserved_units) reserved_units,
                      MIN(i.captured_at) captured_at
               FROM latest_run lr JOIN inventory_snapshots i ON i.listing_id=lr.listing_id
                 AND i.fulfillment_scheme=lr.fulfillment_scheme AND i.source_run_id=lr.source_run_id
               JOIN product_listings pl ON pl.id=i.listing_id JOIN products p ON p.id=pl.product_id
               JOIN marketplace_connections mc ON mc.id=pl.connection_id
-              GROUP BY pl.id ORDER BY available_units ASC""",(shop_id,)).fetchall()
-        return [dict(r) for r in rows]
-
-    def latest_inventory_by_scheme(self, shop_id: int) -> list[dict[str,Any]]:
-        """Newest inventory run per listing+scheme, aggregated over its warehouses."""
-        with self.db.connect() as c:
-            rows=c.execute("""WITH latest_run AS (
-                SELECT i.listing_id,i.fulfillment_scheme,MAX(i.source_run_id) source_run_id
-                FROM inventory_snapshots i JOIN product_listings pl ON pl.id=i.listing_id
-                JOIN products p ON p.id=pl.product_id WHERE p.shop_id=?
-                GROUP BY i.listing_id,i.fulfillment_scheme)
-              SELECT p.id product_id,p.internal_sku,p.name,pl.id listing_id,pl.marketplace_sku,pl.offer_id,
-                     pl.connection_id,mc.marketplace,i.fulfillment_scheme,
-                     SUM(i.available_units) available_units,SUM(i.reserved_units) reserved_units,
-                     MAX(i.captured_at) captured_at
-              FROM latest_run lr JOIN inventory_snapshots i ON i.listing_id=lr.listing_id
-                AND i.fulfillment_scheme=lr.fulfillment_scheme AND i.source_run_id=lr.source_run_id
-              JOIN product_listings pl ON pl.id=i.listing_id JOIN products p ON p.id=pl.product_id
-              JOIN marketplace_connections mc ON mc.id=pl.connection_id
+              WHERE lr.rn=1
               GROUP BY pl.id,i.fulfillment_scheme ORDER BY mc.marketplace,pl.id,i.fulfillment_scheme""",
               (shop_id,)).fetchall()
         return [dict(r) for r in rows]

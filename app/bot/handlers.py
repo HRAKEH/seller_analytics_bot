@@ -102,24 +102,8 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
         return main_keyboard(ctx.repository.role_for_user(uid,ctx.shop_id))
 
     async def send(message: types.Message, text: str):
-        # Telegram rejects messages over 4096 chars. Most report formatters place
-        # HTML tags within individual lines, so line-based chunking keeps markup valid.
-        limit=3900
-        lines=(text or '').split('\n')
-        chunks=[]; current=''
-        for line in lines:
-            candidate=line if not current else current+'\n'+line
-            if len(candidate)<=limit:
-                current=candidate
-                continue
-            if current:
-                chunks.append(current)
-            current=line
-            while len(current)>limit:
-                chunks.append(current[:limit])
-                current=current[limit:]
-        if current or not chunks:
-            chunks.append(current)
+        from app.reports.text import split_report_html
+        chunks=split_report_html(text)
         for idx,chunk in enumerate(chunks):
             await message.answer(
                 chunk or '—',
@@ -138,7 +122,7 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
             f'🏠 <b>{escape(shop.name if shop else "Магазин")}</b>\n'
             'Выберите, что хотите сделать:'
         )
-        await navigation.show(message,title,parse_mode='HTML',reply_markup=main_keyboard(role_for(message)))
+        await menu_help.show_root(message,title)
 
     async def start_menu_input(message: types.Message, state: FSMContext, action: str, prompt: str):
         await state.clear()
@@ -1258,6 +1242,19 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
             await message.answer(f'✅ Себестоимость SKU {escape(parts[2])} с {day}: {cost:.2f} ₽')
         else: await message.answer('SKU пока не найден. Сначала выполните /backfill.')
 
+    @dp.message(Command('wb_accruals'))
+    async def cmd_wb_accruals(message: types.Message):
+        if not allowed(message):return await denied(message)
+        try: days,start,end=parse_report_period(message.text or '',1,local_now().date())
+        except ValueError:return await message.answer('Формат: /wb_accruals [дней] [YYYY-MM-DD] · от 1 до 31 дня.')
+        from app.reports.wb_accruals import build_wb_accrual_ledger, format_wb_accrual_ledger, export_wb_accrual_ledger
+        ledger=build_wb_accrual_ledger(ctx.repository,ctx.shop_id,start.isoformat(),end.isoformat())
+        await send(message,format_wb_accrual_ledger(ledger))
+        if ledger.rows:
+            with tempfile.TemporaryDirectory(prefix='sellerbot-wb-accruals-') as folder:
+                path=export_wb_accrual_ledger(ledger,Path(folder)/f'wb_accruals_{start}_{end}.csv')
+                await message.answer_document(FSInputFile(path),caption='Итоги сохранённых финансовых отчётов WB: номера, периоды, суммы. Это строки отчётов, не новые заказы.')
+
     @dp.message(Command('alerts'))
     async def cmd_alerts(message: types.Message):
         if not allowed(message): return await denied(message)
@@ -1267,31 +1264,10 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
             notes=engine.evaluate(ctx.shop_id,today=local_now().date(),order_drop_pct=p.alert_order_drop_pct,
                 order_lookback_days=p.alert_order_lookback_days,api_stale_hours=p.alert_api_stale_hours,
                 drr_pct=p.alert_drr_pct,stock_risk_days=p.stock_risk_days,stock_velocity_days=p.stock_velocity_days)
-        active=ctx.repository.active_alert_states(ctx.shop_id); lines=[]
-        lines += ['🚨 <b>Изменения алертов</b>']+['• '+escape(n.message) for n in notes] if notes else ['✅ Новых изменений алертов нет.']
-        if active:
-            lines += ['', '<b>Активные проблемы</b>']
-            rule_labels={
-                'api_stale':'Данные давно не обновлялись',
-                'order_drop':'Падение заказов',
-                'low_stock':'Мало остатка',
-                'high_drr':'Высокий ДРР',
-            }
-            subject_labels={'wildberries':'Wildberries','wb':'Wildberries','ozon':'Ozon'}
-            for row in active[:20]:
-                rule=str(row.get('rule_key') or '')
-                subject=str(row.get('subject_key') or '')
-                label=rule_labels.get(rule,rule.replace('_',' '))
-                subject_label=subject_labels.get(subject.lower(),subject)
-                value='' if row.get('last_value') is None else f" · значение {float(row['last_value']):.1f}"
-                if rule=='api_stale':
-                    lines.append(f"• ⚠️ <b>{escape(subject_label)}</b>: {escape(label.lower())}.")
-                else:
-                    lines.append(f"• {escape(label)} · {escape(subject_label)}{value}")
-            if any(str(x.get('rule_key'))=='api_stale' for x in active):
-                lines += ['', 'Что делать: откройте «📡 Состояние данных». Если нужно обновить данные — «📊 Отчёты» → «🔄 Обновить вчера».']
-        else: lines += ['', '🟢 Активных проблем нет.']
-        await send(message,'\n'.join(lines))
+        from app.reports.alerts import format_active_alerts
+        report=build_product_report(ctx.repository,ctx.shop_id,local_now().date()-timedelta(days=1),
+            stock_lookback_days=p.stock_velocity_days,stock_risk_days=p.stock_risk_days)
+        await send(message,format_active_alerts(ctx.repository,ctx.shop_id,report))
 
     def current_action_center():
         end=local_now().date()-timedelta(days=1)
@@ -1628,7 +1604,9 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
     # --- structured menu navigation --------------------------------------
     async def show_submenu(message: types.Message, title: str, keyboard):
         if not allowed(message): return await denied(message)
-        await navigation.show(message,title,parse_mode='HTML',reply_markup=keyboard(role_for(message),system_owner=is_system_owner(message)))
+        section=keyboard.__name__.removesuffix('_keyboard')
+        # The problems keyboard was historically called control_keyboard.
+        await menu_help.show_section(message,section)
 
     @dp.message(F.text == MENU_REPORTS)
     async def menu_reports(message: types.Message):
@@ -1679,6 +1657,9 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
         'refresh': ('refresh', cmd_refresh),
         'sources': ('sources', cmd_sources),
         'accruals': ('accruals', cmd_accruals),
+        'wb_accruals': ('wb_accruals', cmd_wb_accruals),
+        'finance_update': ('finance',cmd_finance),
+        'ads_update': ('ads',cmd_ads),
         'shop': ('shop', cmd_shop),
         'shop_add': ('shop_add', cmd_shop_add),
         'shop_profile': ('shop_profile', cmd_shop_profile),
@@ -1703,6 +1684,7 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
         'refresh': '🔄 <b>Обновить все отчёты</b>\nВведите: <code>дней YYYY-MM-DD</code>\nОдин день: <code>1 2026-09-28</code>. Неделя до выбранной даты: <code>7 2026-09-28</code>. Максимум 31 день. Запросы могут занять несколько минут.',
         'sources': '📡 <b>Полнота источников</b>\nВведите: <code>дней YYYY-MM-DD</code>, например <code>1 2026-09-28</code>. Читает БД без запросов API.',
         'accruals': '🧮 <b>Начисления Ozon</b>\nВведите: <code>дней YYYY-MM-DD</code>, например <code>1 2026-09-28</code>. Покажет суммы и выгрузит операции в CSV из сохранённого ответа API.',
+        'wb_accruals': '🧮 <b>Начисления WB</b>\nВыберите период кнопками. Покажет сохранённые итоги финансовых отчётов WB и CSV.',
         'shop': '🔁 <b>Выбор магазина</b>\nВведите ID магазина. Его можно посмотреть кнопкой «🏪 Список магазинов».',
         'shop_add': '➕ <b>Новый магазин</b>\nВведите: <code>Название | PROFILE</code>\nПример: <code>Мой второй магазин | SHOP2</code>',
         'shop_profile': '🔐 <b>Профиль ключей</b>\nВведите имя профиля окружения, например <code>SHOP2</code>.',
@@ -1725,6 +1707,7 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
 
     permissions = {
         'refresh': 'operate', 'sources': 'view', 'accruals': 'view',
+        'wb_accruals': 'view',
         'shop': 'view', 'shop_add': 'manage', 'shop_profile': 'manage',
         'shop_archive': 'manage', 'shop_restore': 'manage', 'shop_delete': 'manage',
         'user_add': 'manage', 'user_remove': 'manage', 'export': 'view',
@@ -1740,12 +1723,50 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
             return await system_denied(message)
         await start_menu_input(message,state,action,prompts[action])
 
+    async def saved_finance(message):
+        if not allowed(message):return await denied(message)
+        days,_,end=parse_report_period(message.text,1,local_now().date())
+        await send(message,format_finance(build_finance_report(ctx.repository,ctx.shop_id,end,days)))
+
+    async def saved_ads(message):
+        if not allowed(message):return await denied(message)
+        days,_,end=parse_report_period(message.text,1,local_now().date())
+        await send(message,format_advertising(build_advertising_report(ctx.repository,ctx.shop_id,end,days)))
+
+    async def saved_management(message):
+        if not allowed(message):return await denied(message)
+        days,_,end=parse_report_period(message.text,1,local_now().date())
+        await send(message,format_management(build_management_report(ctx.repository,ctx.shop_id,end,days)))
+
+    from .period_picker import PeriodPicker
+    period_actions={
+        'refresh':('🔄 <b>Обновить все отчёты</b>','operate',cmd_refresh),
+        'finance_update':('🔄 <b>Обновить финансы</b>','operate',cmd_finance),
+        'ads_update':('🔄 <b>Обновить рекламу</b>','operate',cmd_ads),
+        'sources':('📡 <b>Полнота источников</b>','view',cmd_sources),
+        'accruals':('🧮 <b>Начисления Ozon</b>','view',cmd_accruals),
+        'wb_accruals':('🧮 <b>Начисления WB</b>','view',cmd_wb_accruals),
+        'finance':('💰 <b>Финансы</b>','view',saved_finance),
+        'ads':('📣 <b>Реклама</b>','view',saved_ads),
+        'management':('📈 <b>Результат магазина</b>','view',saved_management),
+        'sku_finance':('🧾 <b>Экономика по товарам</b>','view',cmd_sku_finance),
+    }
+    for key,(_,_,handler) in period_actions.items():
+        input_actions[key]=(key,handler)
+    period_picker=PeriodPicker(ctx,navigation,lambda:local_now().date(),period_actions,on_cancel=show_main_menu)
+
+    @dp.callback_query(F.data.startswith('p:'))
+    async def cb_report_period(callback: types.CallbackQuery,state: FSMContext):
+        await period_picker.handle(callback,state,command_copy)
+
     @dp.message(F.text == COMMAND_BUTTONS['refresh'])
-    async def btn_menu_refresh(message: types.Message,state: FSMContext):await launch_input_action(message,state,'refresh')
+    async def btn_menu_refresh(message: types.Message,state: FSMContext):await period_picker.launch(message,state,'refresh')
     @dp.message(F.text == COMMAND_BUTTONS['sources'])
-    async def btn_menu_sources(message: types.Message,state: FSMContext):await launch_input_action(message,state,'sources')
+    async def btn_menu_sources(message: types.Message,state: FSMContext):await period_picker.launch(message,state,'sources')
     @dp.message(F.text == COMMAND_BUTTONS['accruals'])
-    async def btn_menu_accruals(message: types.Message,state: FSMContext):await launch_input_action(message,state,'accruals')
+    async def btn_menu_accruals(message: types.Message,state: FSMContext):await period_picker.launch(message,state,'accruals')
+    @dp.message(F.text == COMMAND_BUTTONS['wb_accruals'])
+    async def btn_menu_wb_accruals(message: types.Message,state: FSMContext):await period_picker.launch(message,state,'wb_accruals')
     @dp.message(F.text == COMMAND_BUTTONS['shop'])
     async def btn_menu_shop_select(message: types.Message,state: FSMContext):
         await state.clear(); await show_shop_picker(message,'select')
@@ -1790,6 +1811,9 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
     @dp.message(StateFilter(MenuInputStates.waiting_value), F.text)
     async def menu_input_value(message: types.Message,state: FSMContext):
         data=await state.get_data(); action=str(data.get('menu_action') or '')
+        if data.get('picker_shop') is not None and (data['picker_shop']!=ctx.shop_id or data.get('picker_user')!=message.from_user.id):
+            await state.clear()
+            return await show_main_menu(message,text='⚠️ Выбор периода устарел. Выберите функцию для текущего магазина заново.')
         value=(message.text or '').strip()
         if action=='day_view':
             try: target=date.fromisoformat(value)
@@ -1845,22 +1869,13 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
     @dp.message(F.text == COMMAND_BUTTONS['products'])
     async def btn_menu_products_report(message: types.Message): await cmd_products(command_copy(message,'products',''))
     @dp.message(F.text == COMMAND_BUTTONS['finance'])
-    async def btn_menu_finance(message: types.Message):
-        if not allowed(message): return await denied(message)
-        p=pref(); days=p.finance_lookback_days; end=local_now().date()-timedelta(days=1)
-        await send(message,format_finance(build_finance_report(ctx.repository,ctx.shop_id,end,days)))
+    async def btn_menu_finance(message: types.Message,state: FSMContext):await period_picker.launch(message,state,'finance')
     @dp.message(F.text == COMMAND_BUTTONS['ads'])
-    async def btn_menu_ads(message: types.Message):
-        if not allowed(message): return await denied(message)
-        p=pref(); days=p.finance_lookback_days; end=local_now().date()-timedelta(days=1)
-        await send(message,format_advertising(build_advertising_report(ctx.repository,ctx.shop_id,end,days)))
+    async def btn_menu_ads(message: types.Message,state: FSMContext):await period_picker.launch(message,state,'ads')
     @dp.message(F.text == COMMAND_BUTTONS['management'])
-    async def btn_menu_management(message: types.Message):
-        if not allowed(message): return await denied(message)
-        p=pref(); days=p.finance_lookback_days; end=local_now().date()-timedelta(days=1)
-        await send(message,format_management(build_management_report(ctx.repository,ctx.shop_id,end,days)))
+    async def btn_menu_management(message: types.Message,state: FSMContext):await period_picker.launch(message,state,'management')
     @dp.message(F.text == COMMAND_BUTTONS['sku_finance'])
-    async def btn_menu_sku_finance(message: types.Message): await cmd_sku_finance(command_copy(message,'sku_finance',''))
+    async def btn_menu_sku_finance(message: types.Message,state: FSMContext):await period_picker.launch(message,state,'sku_finance')
     @dp.message(F.text == COMMAND_BUTTONS['reconcile'])
     async def btn_menu_reconcile(message: types.Message): await cmd_reconcile(command_copy(message,'reconcile',''))
     @dp.message(F.text == COMMAND_BUTTONS['actions'])
@@ -2052,12 +2067,10 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
         await cmd_stocks(message)
 
     @dp.message(F.text == '🔄 Обновить финансы')
-    async def btn_finance_refresh(message: types.Message):
-        await cmd_finance(command_copy(message,'finance',''))
+    async def btn_finance_refresh(message: types.Message,state: FSMContext):await period_picker.launch(message,state,'finance_update')
 
     @dp.message(F.text == '🔄 Обновить рекламу')
-    async def btn_ads_refresh(message: types.Message):
-        await cmd_ads(command_copy(message,'ads',''))
+    async def btn_ads_refresh(message: types.Message,state: FSMContext):await period_picker.launch(message,state,'ads_update')
 
     @dp.message(F.text == '🚚 Поставка')
     async def btn_supply(message: types.Message):
@@ -2093,3 +2106,91 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
 
     @dp.message(F.text == '⚙️ Статус')
     async def btn_status(message: types.Message): await cmd_status(message)
+
+    # Bind help cards to the same handlers as the canonical Telegram buttons.
+    from .menu_help import MenuHelp
+    menu_routes = {
+        'accruals': (btn_menu_accruals, True),
+        'action_ack': (btn_menu_action_ack, True),
+        'action_history': (btn_menu_action_history, False),
+        'action_snooze': (btn_menu_action_snooze, True),
+        'actions': (btn_menu_actions, False),
+        'ads': (btn_menu_ads, True),
+        'ads_update': (btn_ads_refresh, True),
+        'alerts': (btn_menu_alerts, False),
+        'backfill': (btn_backfill_simple, False),
+        'backup': (btn_menu_backup, False),
+        'backups': (btn_menu_backups, False),
+        'cancel': (btn_cancel_any, True),
+        'connect_check': (btn_menu_connect_check, False),
+        'cost': (btn_menu_cost, True),
+        'date_picker': (btn_other_date, False),
+        'day': (btn_menu_day, True),
+        'demo_off': (btn_menu_demo_off, False),
+        'demo_on': (btn_menu_demo_on, False),
+        'diagnostics': (btn_menu_diagnostics, False),
+        'export': (btn_export_picker, False),
+        'finance': (btn_menu_finance, True),
+        'finance_update': (btn_finance_refresh, True),
+        'forecast_quality': (btn_menu_forecast_quality, False),
+        'health': (btn_menu_health, False),
+        'help': (btn_menu_help, False),
+        'history': (btn_history_simple, False),
+        'import_costs': (btn_menu_import_costs, True),
+        'inbound': (btn_menu_inbound, False),
+        'inbound_refresh': (btn_menu_inbound_refresh, False),
+        'job_retry': (btn_menu_job_retry, True),
+        'jobs': (btn_menu_jobs, False),
+        'link': (btn_menu_link, True),
+        'management': (btn_menu_management, True),
+        'month': (btn_month, False),
+        'my_access': (btn_menu_my_access, False),
+        'products': (btn_menu_products_report, False),
+        'profiles': (btn_menu_profiles, False),
+        'promotions': (btn_menu_promotions, False),
+        'promotions_refresh': (btn_menu_promotions_refresh, False),
+        'readiness': (btn_menu_readiness, False),
+        'reconcile': (btn_menu_reconcile, False),
+        'refresh': (btn_menu_refresh, True),
+        'refresh_yesterday': (btn_refresh, False),
+        'restore': (btn_menu_restore, True),
+        'settings': (btn_menu_settings, False),
+        'setup': (btn_menu_setup, True),
+        'shop': (btn_menu_shop_select, True),
+        'shop_add': (btn_menu_shop_add, True),
+        'shop_archive': (btn_menu_shop_archive, True),
+        'shop_archived': (btn_menu_shop_archived, False),
+        'shop_delete': (btn_menu_shop_delete, True),
+        'shop_profile': (btn_menu_shop_profile, True),
+        'shop_restore': (btn_menu_shop_restore, True),
+        'shops': (btn_menu_shops, False),
+        'sku_finance': (btn_menu_sku_finance, True),
+        'sources': (btn_menu_sources, True),
+        'start': (btn_home_any, True),
+        'status': (btn_menu_status, False),
+        'stocks': (btn_stocks, False),
+        'stocks_update': (btn_stocks_refresh, False),
+        'supply': (btn_menu_supply_plan, False),
+        'supply_calibration': (btn_menu_supply_calibration, False),
+        'supply_calibration_refresh': (btn_menu_supply_calibration_refresh, False),
+        'supply_defaults': (btn_menu_supply_defaults, True),
+        'supply_refresh': (btn_menu_supply_refresh, False),
+        'supply_set': (btn_menu_supply_set, True),
+        'supply_settings': (btn_menu_supply_settings, False),
+        'supply_sku': (btn_menu_supply_sku, True),
+        'user_add': (btn_menu_user_add, True),
+        'user_remove': (btn_menu_user_remove, True),
+        'users': (btn_menu_users, False),
+        'wb_accruals': (btn_menu_wb_accruals, True),
+        'week': (btn_week, False),
+        'yesterday': (btn_yesterday, False),
+    }
+    menu_help=MenuHelp(ctx,navigation,{
+        'root':main_keyboard,'reports':reports_keyboard,'products':products_keyboard,
+        'money':money_keyboard,'supply':supply_keyboard,'control':control_keyboard,
+        'shop':shop_keyboard,'service':service_keyboard,'technical':technical_keyboard,
+    },menu_routes,role_for,is_system_owner,show_main_menu,command_copy)
+
+    @dp.callback_query(F.data.startswith('mh:'))
+    async def cb_menu_help(callback: types.CallbackQuery,state: FSMContext):
+        await menu_help.handle(callback,state)

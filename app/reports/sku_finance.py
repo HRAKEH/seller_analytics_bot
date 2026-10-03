@@ -29,6 +29,7 @@ class SkuEconomicsRow:
     performance_expense: float = 0.0
     performance_reference: float = 0.0
     warnings: tuple[str,...] = ()
+    data_complete: bool = True
 
 @dataclass(frozen=True)
 class SkuEconomicsReport:
@@ -64,8 +65,11 @@ def build_sku_economics(repo: Repository, shop_id: int, end: date, days: int = 7
             elif 'finance_ad_spend' in fm:
                 reference=ad_spend; ad_spend=0.0
             warnings.append('Расходы Ozon без привязки к товару не распределены; это результат после известных SKU-расходов.')
+        else:
+            warnings.append('Комиссия WB показывается только при явной детализации. Сумма «к перечислению за товар» уже учитывает удержания по товару.')
+        if not raw.get('data_complete',True):warnings.append('Заказы и суммы загружены не полностью: результат не рассчитывается.')
         after=money_sum([contribution,-known_marketplace,-ad_spend,fm.get('compensation',0)]) if contribution is not None else None
-        rows.append(SkuEconomicsRow(marketplace,str(raw['internal_sku']),sku,str(raw['name']),units,revenue,cost,coverage,contribution,after,fm,am,ad_spend,reference,tuple(warnings)))
+        rows.append(SkuEconomicsRow(marketplace,str(raw['internal_sku']),sku,str(raw['name']),units,revenue,cost,coverage,contribution,after,fm,am,ad_spend,reference,tuple(warnings),bool(raw.get('data_complete',True))))
     rows.sort(key=lambda x:x.order_revenue,reverse=True)
     return SkuEconomicsReport(start.isoformat(),end.isoformat(),days,tuple(rows))
 
@@ -74,22 +78,30 @@ def _money(v: float) -> str:
     return f'{v:,.2f}'.replace(',',' ')+' ₽'
 
 
-def format_sku_economics(report: SkuEconomicsReport, limit: int = 10) -> str:
+def format_sku_economics(report: SkuEconomicsReport, limit: int = 5) -> str:
     lines=[f'🧾 <b>SKU-экономика · {report.start} — {report.end}</b>',
            '━━━━━━━━━━━━━━━━',
            'Это оценка по заказам, <b>не чистая прибыль</b>. Комиссии, логистика и реклама не распределяются по SKU без подтверждённой детализации источника.']
     if not report.rows:
         return '\n'.join(lines+['','📭 Товарных данных за период нет.'])
-    for i,row in enumerate(report.rows[:limit],start=1):
+    selected=[]
+    for market in ('wildberries','ozon'):
+        rows=[r for r in report.rows if r.marketplace==market and (r.units or r.order_revenue or r.financial_metrics or r.advertising_metrics)]
+        label='WB' if market=='wildberries' else 'Ozon'
+        lines.append(f'\n{label}: товаров с данными — {len(rows)}. Показаны первые {min(limit,len(rows))} по сумме заказов.')
+        selected.extend(rows[:limit])
+    for i,row in enumerate(selected,start=1):
         icon='🟣' if row.marketplace=='ozon' else '🔵'
         cov='—' if row.coverage_pct is None else f'{row.coverage_pct:.0f}%'
-        lines += ['',f'{i}. {icon} <b>{escape(row.name)}</b>',
+        market='Ozon' if row.marketplace=='ozon' else 'WB'
+        lines += ['',f'{i}. {icon} {market} · <b>{escape(row.name)}</b>',
                   f'   SKU {escape(row.marketplace_sku)} · {row.units:g} ед. · {_money(row.order_revenue)}',
-                  f'   оценка себестоимости: {_money(row.estimated_cost)} · покрытие {cov}']
+                  f'   себестоимость заполненных товаров: {_money(row.estimated_cost) if row.coverage_pct else "не задана"} · покрытие {cov}']
         if row.contribution_before_marketplace is not None:
             lines.append(f'   до расходов маркетплейса: <b>{_money(row.contribution_before_marketplace)}</b>')
         else:
-            lines.append('   до расходов маркетплейса: — (себестоимость заполнена не полностью)')
+            reason='данные заказов неполные' if not row.data_complete else 'себестоимость заполнена не полностью'
+            lines.append(f'   до расходов маркетплейса: — ({reason})')
         if row.financial_metrics:
             fm=row.financial_metrics
             if 'financial_sales' in fm:
@@ -112,4 +124,5 @@ def format_sku_economics(report: SkuEconomicsReport, limit: int = 10) -> str:
         if row.contribution_after_known_expenses is not None:
             lines.append(f'   <b>после известных SKU-расходов: {_money(row.contribution_after_known_expenses)}</b>')
         for warning in row.warnings:lines.append('   ℹ️ '+warning)
+    lines.append('\nℹ️ Заказы и финансовые начисления могут относиться к разным продажам. Эта оценка не заменяет расчёт прибыли по выкупленным товарам.')
     return '\n'.join(lines)

@@ -59,6 +59,8 @@ class SupplyRow:
     inventory_age_days: int | None
     inventory_stale: bool
     calibration_confidence: str
+    marketplaces: tuple[str,...] = ()
+    missing_inventory_marketplaces: tuple[str,...] = ()
 
     @property
     def needs_order(self) -> bool:
@@ -302,6 +304,15 @@ def build_supply_plan(repo: Repository, shop_id: int, as_of: date, *, lookback_d
         method_version=QUALITY_METHOD_VERSION,horizon_days=int(pref.get('forecast_horizon_days',7)))
 
     inventory_rows=repo.latest_inventory_by_listing(shop_id); inventory: dict[int,dict[str,Any]]={}
+    known_listings={int(r['listing_id']) for r in inventory_rows}
+    listing_markets={}; missing_markets={}
+    with repo.db.connect() as c:
+        listing_rows=c.execute('''SELECT pl.id,pl.product_id,mc.marketplace FROM product_listings pl
+            JOIN products p ON p.id=pl.product_id JOIN marketplace_connections mc ON mc.id=pl.connection_id
+            WHERE p.shop_id=? AND p.active=1 AND mc.enabled=1''',(shop_id,)).fetchall()
+    for row in listing_rows:
+        pid=int(row['product_id']); listing_markets.setdefault(pid,set()).add(str(row['marketplace']))
+        if int(row['id']) not in known_listings:missing_markets.setdefault(pid,set()).add(str(row['marketplace']))
     for row in inventory_rows:
         pid=int(row['product_id']); x=inventory.setdefault(pid,{'available':0.0,'as_of':None})
         x['available']+=float(row['available_units'] or 0); ts=row.get('captured_at')
@@ -345,7 +356,7 @@ def build_supply_plan(repo: Repository, shop_id: int, as_of: date, *, lookback_d
         next7=_demand_for_dates(baseline,next7_dates,factors,promo_dates=promo_dates,promo_factor=promo_factor)
         seasonal_strength=max(abs(v-1.0) for v in factors.values()) if factors else 0.0
         trend=_trend(values); xyz,_cv=_xyz(values,xyz_weeks,eligible)
-        inv=inventory.get(pid); available=float(inv['available']) if inv is not None else None
+        inv=inventory.get(pid); available=float(inv['available']) if inv is not None and pid not in missing_markets else None
         days_cover=(available/baseline) if available is not None and baseline>1e-9 else None
         lead=int(p['lead_time_days']); safety=int(p['safety_stock_days']); target=int(p['target_stock_days'])
         cal=calibration_by_product.get(pid)
@@ -380,7 +391,7 @@ def build_supply_plan(repo: Repository, shop_id: int, as_of: date, *, lookback_d
             lead,lead_buffer,effective_lead,safety,safety_buffer,effective_safety,target,reorder,target_units,
             recommended,float(p['pack_size'] or 1),float(p['min_order_qty'] or 0),confidence,len(values),
             eligible[0] if eligible else None,eligible[-1] if eligible else None,inv_as_of,inv_age,inv_stale,
-            cal.confidence if cal else 'low')
+            cal.confidence if cal else 'low',tuple(sorted(listing_markets.get(pid,()))),tuple(sorted(missing_markets.get(pid,()))))
         rows.append(row)
         snapshot.append({'product_id':pid,'abc_class':row.abc_class,'xyz_class':row.xyz_class,
             'avg_daily_units':row.avg_daily_units,'forecast_daily_units':row.forecast_daily_units,

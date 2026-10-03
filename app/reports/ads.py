@@ -31,6 +31,8 @@ class AdvertisingReport:
     days: int
     campaigns: tuple[AdRow,...]
     products: tuple[AdRow,...]
+    source_coverage: tuple = ()
+    warnings: tuple[str,...] = ()
 
 
 def build_advertising_report(repo: Repository, shop_id: int, end: date, days: int = 7) -> AdvertisingReport:
@@ -46,7 +48,17 @@ def build_advertising_report(repo: Repository, shop_id: int, end: date, days: in
             float(r.get('spend') or 0),float(r.get('attributed_sales') or 0),float(r.get('orders') or 0),
             float(r.get('clicks') or 0),float(r.get('impressions') or 0)))
     campaigns.sort(key=lambda x:x.spend,reverse=True); products.sort(key=lambda x:x.spend,reverse=True)
-    return AdvertisingReport(start.isoformat(),end.isoformat(),days,tuple(campaigns),tuple(products))
+    from .coverage import build_source_coverage
+    coverage=tuple(r for r in build_source_coverage(repo,shop_id,start.isoformat(),end.isoformat()) if r.component=='Рекламная статистика')
+    warnings=[]
+    for conn in repo.list_connections(shop_id):
+        if conn.enabled and conn.marketplace=='ozon':
+            run=repo.latest_run(conn.id,'performance/product-stats')
+            if run and run.status=='failed' and 'OZON_PERF_CLIENT_ID' in (run.error or ''):
+                warnings.append('Реклама Ozon не подключена. Владельцу нужны отдельные Client ID и Client Secret из Ozon Performance. После подключения нажмите «Обновить рекламу».')
+            elif not any(r.marketplace=='ozon' and r.available_days for r in coverage):
+                warnings.append('Ozon: нет загруженной рекламной статистики за период. Проверьте отдельное подключение Ozon Performance через «Проверить API», затем нажмите «Обновить рекламу».')
+    return AdvertisingReport(start.isoformat(),end.isoformat(),days,tuple(campaigns),tuple(products),coverage,tuple(warnings))
 
 
 def _money(v: float) -> str:
@@ -60,6 +72,10 @@ def format_advertising(report: AdvertisingReport, limit: int = 7) -> str:
     lines=[f'📣 <b>Реклама · {report.start} — {report.end}</b>','━━━━━━━━━━━━━━━━',
            'ДРР здесь считается только из рекламно-атрибутированной выручки конкретного источника.',
            'ℹ️ Рекламная атрибуция не равна финансовому признанию продажи или выплате маркетплейса.']
+    for warning in report.warnings:lines.append('⚠️ '+escape(warning))
+    for c in report.source_coverage:
+        label='WB' if c.marketplace=='wildberries' else 'Ozon'
+        lines.append(f'{label}: загружено {c.available_days}/{c.expected_days} дней' + (' · есть ошибка обновления' if c.failed_dates else ''))
     if not report.campaigns and not report.products:
         return '\n'.join(lines+['','📭 Детальной рекламной статистики за период нет.'])
     if report.campaigns:

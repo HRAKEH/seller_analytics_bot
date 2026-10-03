@@ -156,14 +156,16 @@ class OzonClient(MarketplaceClient):
         all_items: list[dict] = []
         total_attempts = 0
         for _ in range(max_pages):
-            payload = {'cursor': cursor, 'filter': {'visibility': 'ALL', 'with_quant': {'created': True, 'exists': True}}, 'limit': min(max(1, limit), 1000)}
+            # with_quant filters economy/quant products. Applying it globally
+            # silently excludes ordinary products (including a non-empty shop).
+            payload = {'cursor': cursor, 'filter': {'visibility': 'ALL'}, 'limit': min(max(1, limit), 1000)}
             result = await self.product_stocks(payload)
             total_attempts += result.attempts
             if not result.ok:
                 return FetchResult.failure(self.source, result.error or 'Ozon stocks error',
                                            result.status_code, total_attempts)
             body = result.data if isinstance(result.data, dict) else {}
-            items = body.get('items') or []
+            items = body.get('items')
             if not isinstance(items, list):
                 return FetchResult.failure(self.source, 'Ozon stocks items are not a list',
                                            result.status_code, total_attempts)
@@ -180,6 +182,28 @@ class OzonClient(MarketplaceClient):
             cursor = next_cursor
         return FetchResult.failure(self.source, f'Ozon stocks pagination safety limit reached ({max_pages})',
                                    200, total_attempts)
+
+    async def fbo_stocks(self, skus: list[str]) -> FetchResult:
+        """FBO analytical stocks, independently of Seller-warehouse quantities.
+
+        /v1/analytics/stocks requires explicit SKUs; small independent batches
+        avoid truncating a larger catalogue. An unknown response fails closed.
+        """
+        unique=list(dict.fromkeys(str(s) for s in skus if str(s).isdigit() and int(s)>0))
+        if not unique:
+            return FetchResult.failure(self.source,'Нет известных SKU Ozon. Сначала загрузите историю заказов.',None,0)
+        items=[]; attempts=0
+        for offset in range(0,len(unique),100):
+            result=await self.request('POST','/v1/analytics/stocks',json={'skus':unique[offset:offset+100]},
+                headers=self._headers(),rate_key='analytics_stocks',min_interval=1.0)
+            attempts+=result.attempts
+            if not result.ok:
+                return FetchResult.failure(self.source,result.error or 'Ozon FBO stocks error',result.status_code,attempts)
+            rows=result.data.get('items') if isinstance(result.data,dict) else None
+            if not isinstance(rows,list):
+                return FetchResult.failure(self.source,'Ozon FBO stocks response must contain items',result.status_code,attempts)
+            items.extend(rows)
+        return FetchResult.success(self.source,{'items':items,'requested_skus':unique},200,attempts)
 
     async def finance_accrual_types(self) -> FetchResult:
         """Current Ozon Seller Finance dictionary of accrual types."""
@@ -239,10 +263,13 @@ class OzonClient(MarketplaceClient):
     async def supply_orders_page(self, *, states: list[str] | None=None, last_id: str='',
                                  limit: int=100) -> FetchResult:
         active=states or [
-            'ORDER_STATE_DATA_FILLING','ORDER_STATE_READY_TO_SUPPLY','ORDER_STATE_ACCEPTED_AT_SUPPLY_WAREHOUSE',
-            'ORDER_STATE_IN_TRANSIT','ORDER_STATE_ACCEPTANCE_AT_STORAGE_WAREHOUSE',
-            'ORDER_STATE_REPORTS_CONFIRMATION_AWAITING','ORDER_STATE_REPORT_REJECTED',
+            'DATA_FILLING','READY_TO_SUPPLY','ACCEPTED_AT_SUPPLY_WAREHOUSE',
+            'IN_TRANSIT','ACCEPTANCE_AT_STORAGE_WAREHOUSE',
+            'REPORTS_CONFIRMATION_AWAITING','REPORT_REJECTED',
         ]
+        # v3 uses short state names. v2 ORDER_STATE_* values are ignored by
+        # the new protobuf enum and leave filter.states empty (HTTP 400).
+        active=[str(state).removeprefix('ORDER_STATE_') for state in active]
         payload={'filter':{'states':active},'last_id':last_id,'limit':min(max(1,int(limit)),100),
                  'sort_by':'ORDER_STATE_UPDATED_AT','sort_dir':'DESC'}
         return await self.request('POST','/v3/supply-order/list',json=payload,headers=self._headers(),

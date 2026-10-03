@@ -193,7 +193,7 @@ def normalize_wb_stocks(payload: Any, *, fulfillment_scheme: str) -> list[StockO
 def normalize_ozon_stocks(payload: Any) -> list[StockObservation]:
     if not isinstance(payload, dict):
         raise ProductNormalizationError('Ozon stock payload must be an object')
-    items = payload.get('items') or []
+    items = payload.get('items')
     if not isinstance(items, list):
         raise ProductNormalizationError('Ozon stock items must be a list')
     now = _now()
@@ -202,14 +202,16 @@ def normalize_ozon_stocks(payload: Any) -> list[StockObservation]:
         if not isinstance(item, dict):
             continue
         offer_id = str(item.get('offer_id') or '').strip() or None
-        product_id = str(item.get('product_id') or '').strip()
         raw_stocks = item.get('stocks') or []
-        stocks = list(raw_stocks.values()) if isinstance(raw_stocks, dict) else raw_stocks
+        stocks = [dict(v,type=v.get('type') or k) for k,v in raw_stocks.items() if isinstance(v,dict)] if isinstance(raw_stocks, dict) else raw_stocks
+        if not isinstance(stocks,list):raise ProductNormalizationError('Ozon stocks must contain stock objects')
         for stock in stocks:
             if not isinstance(stock, dict):
                 continue
-            sku = str(stock.get('sku') or product_id or offer_id or '').strip()
-            if not sku:
+            sku = str(stock.get('sku') or '').strip()
+            if not sku or sku=='0':
+                if _num(stock.get('present'),'Ozon present') or _num(stock.get('reserved'),'Ozon reserved'):
+                    raise ProductNormalizationError('Ozon stock has quantity but no SKU; product_id is not a SKU')
                 continue
             scheme = _ozon_scheme(stock.get('type') or stock.get('shipment_type'))
             key = (sku, offer_id, scheme)
@@ -219,6 +221,36 @@ def normalize_ozon_stocks(payload: Any) -> list[StockObservation]:
     return [StockObservation(sku, offer or f'Ozon {sku}', present, reserved, scheme,
                              'ALL', offer_id=offer, as_of=now)
             for (sku, offer, scheme), (present, reserved) in sorted(grouped.items(), key=lambda x: str(x[0]))]
+
+
+def normalize_ozon_fbo_stocks(payload: Any) -> list[StockObservation]:
+    """Only explicit free-to-sell FBO stock is counted as available.
+
+    Transit, promised and defective quantities are never available stock. Rows
+    are per warehouse/cluster; repeated aggregate rows must not be added twice.
+    """
+    items=payload.get('items') if isinstance(payload,dict) else None
+    if not isinstance(items,list):raise ProductNormalizationError('Ozon FBO stocks must contain items')
+    grouped={}; now=_now()
+    for item in items:
+        if not isinstance(item,dict):raise ProductNormalizationError('Ozon FBO stock row must be an object')
+        sku=str(item.get('sku') or '').strip()
+        if not sku or sku=='0':raise ProductNormalizationError('Ozon FBO stock row has no SKU')
+        field=next((k for k in ('free_to_sell_amount','available_stock_count') if k in item),None)
+        if field is None or item[field] is None:raise ProductNormalizationError('Ozon FBO stock row has no explicit available quantity')
+        qty=_num(item[field],'Ozon FBO available')
+        warehouse=str(item.get('warehouse_id') or item.get('cluster_id') or 'ALL')
+        key=(sku,warehouse)
+        previous=grouped.get(key)
+        if previous is not None:
+            if previous.available_units!=qty:
+                raise ProductNormalizationError('Conflicting Ozon FBO stock rows for the same SKU/location')
+            continue
+        offer=str(item.get('offer_id') or '').strip() or None
+        reserved=_num(item.get('reserved_amount',0),'Ozon FBO reserved')
+        grouped[key]=StockObservation(sku,str(item.get('item_name') or item.get('name') or offer or f'Ozon {sku}'),
+            qty,reserved,'FBO',warehouse,offer,now)
+    return list(grouped.values())
 
 
 def normalize_ozon_postings(payload: Any, *, fulfillment_scheme: str,

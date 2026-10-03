@@ -99,16 +99,129 @@ async def press(ui,text,*,user=101,chat=None,bot=None):
     return message.message_id
 
 
-async def callback(ui,message_id,data):
+async def callback(ui,message_id,data,*,user=101):
     ui.update_id+=1
-    message=ui.telegram.messages[(101,message_id)]
+    message=ui.telegram.messages[(user,message_id)]
     await ui.dp.feed_update(ui.bot,types.Update(update_id=ui.update_id,callback_query=types.CallbackQuery(
-        id=str(ui.update_id),from_user=types.User(id=101,is_bot=False,first_name='User'),
+        id=str(ui.update_id),from_user=types.User(id=user,is_bot=False,first_name='User'),
         chat_instance='chat',message=message,data=data)))
 
 
 def active(ui,user=101,bot=None):
     return ui.repo.navigation_message((bot or ui.bot).id,user,user)
+
+
+def inline_data(ui,message_id,label,*,user=101):
+    markup=ui.telegram.messages[(user,message_id)].reply_markup
+    return next(button.callback_data for row in markup.inline_keyboard for button in row if button.text==label)
+
+
+@pytest.mark.asyncio
+async def test_help_expands_and_collapses_in_same_menu_message_without_api(ui):
+    ui.ctx.refresh_reports=AsyncMock(side_effect=AssertionError('Help must not load marketplaces'))
+    await press(ui,HOME); menu=active(ui)
+    await callback(ui,menu,inline_data(ui,menu,MENU_PRODUCTS))
+    assert active(ui)==menu and '<b>Товары</b>' in ui.telegram.messages[(101,menu)].text
+    await callback(ui,menu,inline_data(ui,menu,COMMAND_BUTTONS['stocks']))
+    brief=ui.telegram.messages[(101,menu)].text
+    await callback(ui,menu,inline_data(ui,menu,'Подробнее'))
+    assert '3 штуки' in ui.telegram.messages[(101,menu)].text
+    assert active(ui)==menu
+    await callback(ui,menu,inline_data(ui,menu,'Свернуть'))
+    assert ui.telegram.messages[(101,menu)].text==brief
+    assert len([m for (chat,_),m in ui.telegram.messages.items() if chat==101 and m.from_user.is_bot])==1
+    ui.ctx.refresh_reports.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_open_from_help_preserves_new_period_picker(ui):
+    from app.bot.keyboards import MENU_MONEY
+    await press(ui,HOME); menu=active(ui)
+    await callback(ui,menu,inline_data(ui,menu,MENU_MONEY))
+    await callback(ui,menu,inline_data(ui,menu,COMMAND_BUTTONS['refresh']))
+    await callback(ui,menu,inline_data(ui,menu,'▶️ Открыть'))
+    picker=active(ui)
+    assert picker!=menu and (101,picker) in ui.telegram.messages
+    assert 'Выберите период кнопками' in ui.telegram.messages[(101,picker)].text
+    assert inline_data(ui,picker,'Вчера').startswith('p:')
+
+
+@pytest.mark.asyncio
+async def test_calendar_range_runs_exactly_selected_dates_without_typing(ui):
+    from datetime import date
+    ui.ctx.refresh_reports=AsyncMock(return_value=[])
+    await press(ui,COMMAND_BUTTONS['refresh']); picker=active(ui)
+    await callback(ui,picker,inline_data(ui,picker,'🗓 Выбрать даты начала и конца'))
+    markup=ui.telegram.messages[(101,picker)].reply_markup
+    prefix=next(b.callback_data.rsplit(':',2)[0] for row in markup.inline_keyboard for b in row if ':d:' in b.callback_data)
+    await callback(ui,picker,prefix+':d:20260928')
+    assert 'Начало: 28.09.2026' in ui.telegram.messages[(101,picker)].text
+    await callback(ui,picker,prefix+':d:20260930')
+    assert '28.09.2026 — 30.09.2026' in ui.telegram.messages[(101,picker)].text
+    ui.ctx.refresh_reports.assert_not_called()
+    run=inline_data(ui,picker,'🔄 Обновить')
+    await callback(ui,picker,run)
+    args=ui.ctx.refresh_reports.await_args.args
+    assert args==(date(2026,9,28),date(2026,9,30))
+    assert active(ui) is None and (101,picker) not in ui.telegram.messages
+
+
+@pytest.mark.asyncio
+async def test_old_period_button_cannot_overwrite_new_choice_or_execute_after_role_revoke(ui):
+    ui.ctx.refresh_reports=AsyncMock(return_value=[])
+    await press(ui,COMMAND_BUTTONS['refresh']); old=active(ui)
+    old_button=inline_data(ui,old,'Вчера')
+    # Keep an old card to exercise a queued tap even if deletion is unavailable.
+    ui.telegram.fail_deletes.add(old)
+    await press(ui,COMMAND_BUTTONS['refresh']); current=active(ui)
+    await callback(ui,old,old_button)
+    assert 'Выберите период' in ui.telegram.messages[(101,current)].text
+    await callback(ui,current,inline_data(ui,current,'Вчера'))
+    run=inline_data(ui,current,'🔄 Обновить')
+    ui.repo.grant_shop_access(101,ui.shop.id,'viewer')
+    await callback(ui,current,run)
+    ui.ctx.refresh_reports.assert_not_called()
+    assert 'Период:' in ui.telegram.messages[(101,current)].text
+
+
+@pytest.mark.asyncio
+async def test_period_cancel_returns_to_working_main_menu(ui):
+    await press(ui,COMMAND_BUTTONS['refresh']); picker=active(ui)
+    await callback(ui,picker,inline_data(ui,picker,'❌ Отмена'))
+    menu=active(ui)
+    assert menu!=picker and (101,picker) not in ui.telegram.messages
+    assert inline_data(ui,menu,MENU_REPORTS).startswith('mh:')
+
+
+@pytest.mark.asyncio
+async def test_viewer_can_read_wb_accruals_but_cannot_launch_forged_refresh(ui):
+    from app.bot.keyboards import MENU_MONEY
+    ui.ctx.refresh_reports=AsyncMock(side_effect=AssertionError('Viewer cannot update'))
+    await press(ui,HOME,user=102); menu=active(ui,102)
+    await callback(ui,menu,inline_data(ui,menu,MENU_MONEY,user=102),user=102)
+    markup=ui.telegram.messages[(102,menu)].reply_markup
+    labels={b.text for row in markup.inline_keyboard for b in row}
+    assert COMMAND_BUTTONS['wb_accruals'] in labels and COMMAND_BUTTONS['refresh'] not in labels
+    await callback(ui,menu,f'mh:{ui.shop.id}:102:money:refresh:run',user=102)
+    ui.ctx.refresh_reports.assert_not_called()
+    await callback(ui,menu,inline_data(ui,menu,COMMAND_BUTTONS['wb_accruals'],user=102),user=102)
+    await callback(ui,menu,inline_data(ui,menu,'▶️ Открыть',user=102),user=102)
+    picker=active(ui,102)
+    await callback(ui,picker,inline_data(ui,picker,'Вчера',user=102),user=102)
+    await callback(ui,picker,inline_data(ui,picker,'📄 Показать',user=102),user=102)
+    assert active(ui,102) is None
+    assert 'Начисления WB' in ui.telegram.messages[(102,ui.telegram.sequence)].text
+
+
+def test_every_menu_function_has_plain_language_help_and_valid_callback(ui):
+    from app.bot.menu_help import HELP, ALIASES, MenuHelp
+    assert set(COMMAND_BUTTONS)<=set(HELP)
+    assert set(ALIASES.values())-{f'{section}_menu' for section in ('reports','products','money','supply','control','shop','service','technical')}<=set(HELP)
+    help_menu=MenuHelp(ui.ctx,None,{}, {},None,None,None,None)
+    for key in HELP:
+        brief,detail=HELP[key]
+        assert brief and detail
+        assert len(help_menu.data(1234567890123,'technical',key,'more').encode())<=64
 
 
 @pytest.mark.asyncio
@@ -298,7 +411,7 @@ async def test_concurrent_menu_replacements_leave_only_latest_card(ui):
     entered=asyncio.Event(); finish=asyncio.Event()
     request=ui.telegram.request
     async def delayed(bot,method,**kwargs):
-        if isinstance(method,SendMessage) and method.text.startswith('📊 <b>Отчёты'):
+        if isinstance(method,SendMessage) and '<b>Отчёты</b>' in method.text:
             entered.set(); await finish.wait()
         return await request(bot,method,**kwargs)
     ui.bot.session.make_request=AsyncMock(side_effect=delayed)

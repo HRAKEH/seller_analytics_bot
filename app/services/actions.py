@@ -90,13 +90,20 @@ def build_action_center(repo: Repository, shop_id: int, as_of: date, *, persist:
     for a in repo.active_alert_states(shop_id):
         rule=str(a.get('rule_key') or 'alert'); subject=str(a.get('subject_key') or '')
         if rule in {'low_stock','high_drr'}: continue
-        labels={'order_drop':'Падение заказов','api_stale':'API'}
+        labels={'order_drop':'Падение заказов','api_stale':'Обновление данных'}
+        market_label={'wildberries':'WB','ozon':'Ozon','shop':'Магазин'}.get(subject,subject)
+        value=a.get('last_value')
+        if rule=='api_stale':
+            detail='Нет успешной загрузки заказов.' if value is None else f'Заказы не обновлялись {float(value):.1f} ч.'
+        elif rule=='order_drop':
+            detail='Заказов меньше обычного.' if value is None else f'Заказов на {float(value):.1f}% меньше среднего за предыдущие полные дни.'
+        else:detail='Откройте активные проблемы, чтобы проверить причину.'
         p=1 if rule=='api_stale' else 2
         _merge_action(actions,ActionItem(
             f'alert:{rule}:{subject}',p,'system' if rule=='api_stale' else 'sales',
-            f'🚨 {labels.get(rule,rule)} · {subject}',
-            f'Активный алерт. Последнее значение: {a.get("last_value") if a.get("last_value") is not None else "—"}',
-            '🚨 Контроль → 🚨 Алерты',('источник: alert engine',)
+            f'🚨 {labels.get(rule,rule)} · {market_label}',
+            detail,
+            '🚨 Проблемы → 🚨 Активные проблемы',('источник: сохранённая проверка предупреждений',)
         ))
 
     dead=[j for j in repo.recent_retry_jobs(limit=50,shop_id=shop_id) if str(j.get('status'))=='dead']
@@ -126,8 +133,9 @@ def build_action_center(repo: Repository, shop_id: int, as_of: date, *, persist:
             merged_promo_keys.add((str(p.get('marketplace')),str(p.get('external_promotion_id'))))
             promo_evidence.append(f'акция {p.get("promotion_name") or p.get("external_promotion_id")} с {str(p.get("start_at") or "")[:10]}')
         if r.available_units is None:
-            _merge_action(actions,ActionItem(f'stock:unknown:{r.product_id}',2,'stock',f'❓ Нет остатка · {r.internal_sku}',
-                'Нет успешного снимка остатков — безопасная рекомендация поставки невозможна.',
+            markets=', '.join('WB' if m=='wildberries' else 'Ozon' for m in r.missing_inventory_marketplaces)
+            _merge_action(actions,ActionItem(f'stock:unknown:{r.product_id}',2,'stock',f'❓ Нет данных об остатке · {r.name}',
+                f'{markets}: нет полного снимка остатков — сначала обновите остатки, затем проверьте план поставок.',
                 '📦 Товары и SKU → 📦 Остатки',tuple(['остаток неизвестен',*promo_evidence])))
             continue
         if r.needs_order:
@@ -135,16 +143,20 @@ def build_action_center(repo: Repository, shop_id: int, as_of: date, *, persist:
             p=1 if critical else (2 if r.abc_class=='A' or product_promos else 3)
             inbound=f' · в пути {r.inbound_units:g}' if r.inbound_units>0 else ''
             cover='нет оценки покрытия' if r.days_cover is None else f'запас {r.days_cover:.1f} дн.'
-            evidence=[f'{r.abc_class}{r.xyz_class}',f'остаток {r.available_units:g}',f'effective lead {r.effective_lead_time_days} дн.']
+            markets=', '.join('WB' if m=='wildberries' else 'Ozon' for m in r.marketplaces)
+            evidence=[f'площадки: {markets}',f'{r.abc_class}{r.xyz_class}',f'остаток {r.available_units:g} шт.',
+                f'прогноз {r.forecast_daily_units:.2f} шт./день',f'история {r.history_days} полных дней',
+                f'срок доставки {r.effective_lead_time_days} дн.',f'порог пополнения {r.reorder_point_units:g} шт.',
+                f'целевой запас {r.target_units:g} шт.',f'снимок API: {r.inventory_as_of or "нет"}']
             if r.inventory_stale: evidence.append(f'остаток устарел на {r.inventory_age_days} дн.')
             evidence += promo_evidence
-            _merge_action(actions,ActionItem(f'supply:{r.product_id}',p,'supply',f'🚚 Заказать {r.internal_sku}: {r.recommended_order_units:g} шт.',
-                f'{cover}{inbound}.','🚚 Поставки → 🚚 План поставок',tuple(evidence)))
+            _merge_action(actions,ActionItem(f'supply:{r.product_id}',p,'supply',f'🚚 Пополнить {r.name}: {r.recommended_order_units:g} шт.',
+                f'{markets} · {cover}{inbound}. Это рекомендация по прогнозу, проверьте перед закупкой.','🚚 Поставки → 🚚 План поставок',tuple(evidence)))
         elif r.inventory_stale:
             _merge_action(actions,ActionItem(f'stock:stale:{r.product_id}',2,'stock',f'🕒 Старый остаток · {r.internal_sku}',
                 f'Снимок остатков старше {r.inventory_age_days} дн.','📦 Товары и SKU → 📦 Остатки',tuple(promo_evidence)))
 
-    no_cost=repo.products_without_cost(shop_id,limit=50)
+    no_cost=repo.products_without_cost(shop_id,limit=100000)
     if no_cost:
         _merge_action(actions,ActionItem('finance:missing-cost',3,'finance',f'💲 Нет себестоимости: {len(no_cost)} SKU',
             'Управленческий результат по этим товарам неполный.','📦 Товары и SKU → 📥 Импорт себестоимости',

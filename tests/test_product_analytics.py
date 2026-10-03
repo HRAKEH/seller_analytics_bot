@@ -146,16 +146,20 @@ async def test_ozon_analytics_all_uses_offset_pagination():
 
 
 @pytest.mark.asyncio
-async def test_ozon_stock_request_uses_current_quantity_filter():
-    seen={}
+async def test_ozon_stock_request_includes_ordinary_products():
+    seen=[]
     async def handler(request):
         import json
-        seen.update(json.loads(request.content.decode()))
-        return httpx.Response(200,json={'cursor':'','items':[],'total':0})
+        body=json.loads(request.content.decode()); seen.append(body)
+        # with_quant refers to economy/quant products, not nonzero stock.
+        items=[] if body['filter'].get('with_quant') else [{'offer_id':'ordinary',
+            'stocks':[{'sku':101,'type':'fbs','present':8,'reserved':0}]}]
+        return httpx.Response(200,json={'cursor':'','items':items,'total':len(items)})
     client=OzonClient('c','k',min_interval=0,transport=httpx.MockTransport(handler))
     result=await client.product_stocks_all()
     assert result.ok
-    assert seen['filter']['with_quant']=={'created':True,'exists':True}
+    assert normalize_ozon_stocks(result.data)[0].available_units==8
+    assert all('with_quant' not in body['filter'] for body in seen)
     await client.close()
 
 @pytest.mark.asyncio

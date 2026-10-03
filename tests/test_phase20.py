@@ -274,8 +274,15 @@ def test_action_center_has_inline_button_flow(monkeypatch):
 
 def test_long_message_guard_and_human_readable_api_alerts_are_present():
     src=(ROOT/'app/bot/handlers.py').read_text(encoding='utf-8')
-    assert 'limit=3900' in src
-    assert "'api_stale':'Данные давно не обновлялись'" in src
+    from app.reports.text import split_report_html, utf16_length
+    chunks=split_report_html('\n'.join(['<b>Полное название товара 😀</b>']*500))
+    assert len(chunks)>1 and all(utf16_length(chunk)<=3900 for chunk in chunks)
+    from types import SimpleNamespace
+    from app.reports.alerts import format_active_alerts
+    repo=SimpleNamespace(active_alert_states=lambda shop: [
+        {'rule_key':'api_stale','subject_key':'wildberries','last_value':27}])
+    alert=format_active_alerts(repo,1,SimpleNamespace(stock_risks=[]))
+    assert 'WB' in alert and 'Данные заказов давно не обновлялись' in alert and '27.0 ч.' in alert
     assert 'Wildberries' in src
     assert "F.data.startswith('action:view:')" in src
 

@@ -202,6 +202,9 @@ async def build_readiness(ctx, *, live: bool = False, persist: bool = True) -> R
             token=await ctx.collector.ozon_performance._token(retry_on_429=False,fail_fast_rate_limit=True)
             items.append(ReadinessItem('ozon_ads','Ozon Performance',token.ok,False,
                                        'авторизация успешна' if token.ok else (token.error or 'ошибка')))
+        elif getattr(ctx,'ozon_connection_id',None) is not None:
+            items.append(ReadinessItem('ozon_ads','Реклама Ozon',False,False,
+                'не подключена: нужны отдельные Client ID и Client Secret из Ozon Performance'))
 
     critical=[x for x in items if x.critical]
     status='ready' if critical and all(x.ok for x in critical) else ('partial' if any(x.ok for x in critical) else 'blocked')
@@ -233,18 +236,20 @@ def format_onboarding_help(profile: str='DEFAULT') -> str:
     def env(name): return name if profile=='DEFAULT' else prefix+name
     return '\n'.join([
         '🧭 <b>Подключение нового магазина</b>','━━━━━━━━━━━━━━━━',
-        '1️⃣ Пройдите «🧩 Мастер настройки».',
-        '2️⃣ В Bothost/VPS задайте нужные секреты окружения:',
-        f'• <code>{env("WB_API_TOKEN")}</code> — для полного WB: Personal, только чтение',
+        f'Выбранная группа ключей: <code>{escape(profile)}</code>. Ключи относятся к одному кабинету.',
+        '1️⃣ В настройках BotHost/VPS добавьте переменные окружения:',
+        f'• <code>{env("WB_API_TOKEN")}</code> — WB, только чтение, тип по правилам площадки',
         '  категории WB: Статистика, Аналитика, Финансы, Продвижение, Поставки, Цены и скидки',
         f'• <code>{env("OZON_CLIENT_ID")}</code>',
         f'• <code>{env("OZON_API_KEY")}</code>',
         f'• <code>{env("OZON_PERF_CLIENT_ID")}</code> — реклама Ozon, необязательно',
         f'• <code>{env("OZON_PERF_CLIENT_SECRET")}</code> — реклама Ozon, необязательно',
-        '3️⃣ Перезапустите приложение после изменения окружения.',
-        '4️⃣ Нажмите «🔌 Проверить подключения».',
-        '5️⃣ Нажмите «📥 Загрузить историю».',
-        '6️⃣ Импортируйте себестоимость для управленческой экономики.',
+        '2️⃣ Сохраните изменения и перезапустите приложение.',
+        '3️⃣ Для второго магазина создайте отдельную группу SHOP2: имена переменных начинаются с SELLERBOT_SHOP2_. Затем «Магазин → Добавить магазин» и строка «Название | SHOP2». Ключи первого магазина остаются на месте.',
+        '4️⃣ «Магазин → Мастер настройки»: название, часовой пояс, время отчёта и пороги.',
+        '5️⃣ «Магазин → Проверить API», затем «Отчёты → Догрузить данные» за 30 дней.',
+        '6️⃣ «Деньги и реклама → Обновить все отчёты»: выберите период кнопками и нажмите «Обновить».',
+        '7️⃣ Импортируйте себестоимость, обновите остатки и поставки в пути. Затем обновите план поставок.',
         '',
         '🔐 Никогда не отправляйте API-токены сообщением в Telegram. Бот их не запрашивает и не хранит в SQLite.'
     ])

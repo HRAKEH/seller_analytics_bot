@@ -3,13 +3,23 @@ from html import escape
 from app.storage import Repository
 from app.services.actions import ActionCenter
 from app.services.supply import ForecastQualityReport
+from .text import escape_clip
 
 
 def format_inbound(repo: Repository, shop_id: int) -> str:
     rows=repo.active_inbound_items(shop_id)
     lines=['📥 <b>Поставки в пути</b>','━━━━━━━━━━━━━━━━']
+    for conn in repo.list_connections(shop_id):
+        if not conn.enabled:continue
+        market='WB' if conn.marketplace=='wildberries' else 'Ozon'
+        endpoint='supplies/fbw/inbound' if conn.marketplace=='wildberries' else 'supply-order/inbound'
+        run=repo.latest_run(conn.id,endpoint)
+        count=sum(1 for r in rows if r['marketplace']==conn.marketplace)
+        if run is None:lines.append(f'⚠️ {market}: поставки ещё не загружены. Нажмите «Обновить поставки в пути».')
+        elif run.status!='success':lines.append(f'⚠️ {market}: последняя загрузка не завершена. Показаны ранее сохранённые поставки, если они есть.')
+        else:lines.append(f'{market}: товарных позиций в пути {count} · проверено {run.finished_at}')
     if not rows:
-        lines.append('✅ Активных поставок с товарным составом сейчас нет.')
+        lines.append('📭 В сохранённых данных нет активных поставок с товарным составом.')
         return '\n'.join(lines)
     total=sum(float(r.get('remaining_units') or 0) for r in rows)
     lines.append(f'Активных товарных позиций: <b>{len(rows)}</b> · осталось в пути: <b>{total:g} шт.</b>')
@@ -18,12 +28,14 @@ def format_inbound(repo: Repository, shop_id: int) -> str:
     for (market,sid),items in list(by_supply.items())[:15]:
         first=items[0]; qty=sum(float(x.get('remaining_units') or 0) for x in items)
         icon='🔵' if market=='wildberries' else '🟣'
+        label='WB' if market=='wildberries' else 'Ozon'
         eta=str(first.get('planned_at') or 'ETA неизвестна')[:16]
         wh=escape(str(first.get('warehouse_name') or 'склад не указан'))
-        lines.append(f'\n{icon} <b>{escape(str(sid))}</b> · {escape(str(first.get("status") or ""))}\n  {qty:g} шт. · {eta} · {wh}')
+        lines.append(f'\n{icon} {label} · <b>{escape(str(sid))}</b> · {escape(str(first.get("status") or ""))}\n  {qty:g} шт. · {eta} · {wh}')
         for x in items[:4]:
             sku=escape(str(x.get('internal_sku') or x.get('marketplace_sku') or 'SKU'))
-            lines.append(f'  • {sku}: {float(x.get("remaining_units") or 0):g} шт.')
+            name=escape(str(x.get('name') or ''))
+            lines.append(f'  • {name} · артикул {escape(str(x.get("marketplace_sku") or sku))}: {float(x.get("remaining_units") or 0):g} шт.')
         if len(items)>4: lines.append(f'  … ещё {len(items)-4} SKU')
     unknown=sum(1 for r in rows if not r.get('planned_at'))
     if unknown:
@@ -47,7 +59,8 @@ def format_forecast_quality(report: ForecastQualityReport, limit: int=12) -> str
 
 
 def format_action_center(center: ActionCenter) -> str:
-    lines=[f'🎯 <b>Что делать сегодня · {center.as_of.isoformat()}</b>','━━━━━━━━━━━━━━━━']
+    lines=['🎯 <b>Что делать сегодня</b>',f'Заказы учтены по {center.as_of.isoformat()}; остатки — из последних снимков API.','━━━━━━━━━━━━━━━━',
+        'Это список подсказок: что пополнить, где проверить рекламу или обновить данные. Бот ничего не закупает и не меняет сам.']
     if not center.items:
         lines.append('✅ По доступным данным срочных действий нет.')
         if center.snoozed_count:
@@ -63,9 +76,9 @@ def format_action_center(center: ActionCenter) -> str:
             if shown>=8: break
             shown+=1
             state=' ✅ принято' if item.status=='acknowledged' else (' ⏰ отложено' if item.status=='snoozed' else '')
-            lines.append(f'{shown}. <b>{escape(item.title)}</b>{state}')
-            lines.append(escape(item.detail))
-            if item.hint: lines.append(f'   → {escape(item.hint)}')
+            lines.append(f'{shown}. <b>{escape_clip(item.title,130)}</b>{state}')
+            lines.append(escape_clip(item.detail,170))
+            if item.hint: lines.append(f'   → {escape_clip(item.hint,80)}')
         if shown>=8: break
     remaining=max(0,len(center.items)-shown)
     if remaining:

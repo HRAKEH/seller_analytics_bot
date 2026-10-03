@@ -62,6 +62,7 @@ COMMAND_BUTTONS: dict[str, str] = {
     'refresh': '🔄 Обновить все отчёты',
     'sources': '📡 Полнота источников',
     'accruals': '🧮 Начисления Ozon',
+    'wb_accruals': '🧮 Начисления WB',
     'ads': '📣 Реклама',
     'management': '📈 Результат магазина',
     'sku_finance': '🧾 Экономика по товарам',
@@ -163,7 +164,7 @@ def money_keyboard(role: str | None = 'owner', *, system_owner: bool = False):
     buttons = [
         COMMAND_BUTTONS['finance'], COMMAND_BUTTONS['ads'],
         COMMAND_BUTTONS['management'], COMMAND_BUTTONS['reconcile'],
-        COMMAND_BUTTONS['sources'], COMMAND_BUTTONS['accruals'],
+        COMMAND_BUTTONS['sources'], COMMAND_BUTTONS['accruals'], COMMAND_BUTTONS['wb_accruals'],
     ]
     if role in {'analyst','owner'}:
         buttons += [COMMAND_BUTTONS['refresh'], '🔄 Обновить финансы', '🔄 Обновить рекламу']
@@ -178,7 +179,7 @@ def supply_keyboard(role: str | None = 'owner', *, system_owner: bool = False):
         COMMAND_BUTTONS['promotions'], COMMAND_BUTTONS['forecast_quality'],
     ]
     if role in {'analyst', 'owner'}:
-        buttons += [COMMAND_BUTTONS['inbound_refresh'], COMMAND_BUTTONS['promotions_refresh']]
+        buttons += [COMMAND_BUTTONS['supply_refresh'], COMMAND_BUTTONS['inbound_refresh'], COMMAND_BUTTONS['promotions_refresh']]
     buttons += [BACK, HOME]
     return _build(buttons)
 
@@ -197,13 +198,16 @@ def shop_keyboard(role: str | None = 'owner', *, system_owner: bool = False):
     buttons = [
         COMMAND_BUTTONS['shops'], COMMAND_BUTTONS['shop'],
         COMMAND_BUTTONS['settings'], COMMAND_BUTTONS['readiness'],
+        COMMAND_BUTTONS['help'], COMMAND_BUTTONS['my_access'],
     ]
     if role in {'analyst','owner'}:
         buttons += [COMMAND_BUTTONS['connect_check']]
     if role == 'owner':
-        buttons += [COMMAND_BUTTONS['setup'], COMMAND_BUTTONS['users']]
+        buttons += [COMMAND_BUTTONS['setup'], COMMAND_BUTTONS['users'],
+                    COMMAND_BUTTONS['user_add'], COMMAND_BUTTONS['user_remove']]
     if system_owner:
         buttons += [
+            COMMAND_BUTTONS['shop_add'], COMMAND_BUTTONS['shop_profile'], COMMAND_BUTTONS['profiles'],
             COMMAND_BUTTONS['shop_archive'], COMMAND_BUTTONS['shop_archived'],
             COMMAND_BUTTONS['shop_restore'], COMMAND_BUTTONS['shop_delete'],
         ]

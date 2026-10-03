@@ -24,17 +24,24 @@ def format_supply_plan(plan: SupplyPlan, *, limit: int=15) -> str:
            f'XYZ: X {xyz["X"]} · Y {xyz["Y"]} · Z {xyz["Z"]} · ? {xyz["?"]}',
            f'К заказу сейчас: <b>{plan.order_now_count}</b> SKU','']
     urgent=[r for r in plan.rows if r.needs_order]
+    for market,label in (('wildberries','WB'),('ozon','Ozon')):
+        market_rows=[r for r in plan.rows if market in r.marketplaces]
+        if market_rows:
+            missing=sum(1 for r in market_rows if market in r.missing_inventory_marketplaces)
+            lines.append(f'{label}: товаров в плане {len(market_rows)} · без снимка остатков {missing}')
     if urgent:
         lines.append('<b>Приоритет поставки</b>')
         for r in urgent[:limit]:
             trend='' if r.trend_pct is None else f' · тренд {r.trend_pct:+.0f}%'
             stock_note=' ⚠️' if r.inventory_stale else ''
+            markets=', '.join('WB' if m=='wildberries' else 'Ozon' for m in r.marketplaces)
+            confidence={'low':'мало данных','medium':'средняя','high':'высокая'}.get(r.confidence,r.confidence)
             lines.append(
-                f'🚨 <b>{escape(r.internal_sku)}</b> · {r.abc_class}{r.xyz_class}\n'
+                f'🚨 <b>{escape(r.name)}</b> · {markets} · {escape(r.internal_sku)} · {r.abc_class}{r.xyz_class}\n'
                 f'  остаток {_num(r.available_units)}{stock_note} · в пути {_num(r.inbound_units)} · запас {_cover(r.days_cover)}\n'
                 f'  прогноз {_num(r.forecast_daily_units)}/день · 7д {_num(r.forecast_next_7_units)}{trend}\n'
                 f'  корректировка bias ×{r.bias_correction:.2f} · promo ×{r.promo_factor:.2f} ({r.promo_days} дн.)\n'
-                f'  рекомендовано <b>{_num(r.recommended_order_units)} шт.</b> · lead {r.lead_time_days}+{r.lead_buffer_days} · safety {r.safety_stock_days}+{r.safety_buffer_days} дн. · confidence {r.confidence}')
+                f'  рекомендовано <b>{_num(r.recommended_order_units)} шт.</b> · доставка {r.effective_lead_time_days} дн. · запас на задержки {r.effective_safety_stock_days} дн. · уверенность: {confidence}')
     else:
         lines.append('✅ По текущей модели товаров для немедленной поставки нет.')
     missing_stock=[r for r in plan.rows if r.available_units is None]
@@ -57,6 +64,7 @@ def format_supply_product(row: SupplyRow) -> str:
     trend='—' if row.trend_pct is None else f'{row.trend_pct:+.1f}%'
     return '\n'.join([
         f'🚚 <b>{escape(row.name)}</b>',f'SKU: <code>{escape(row.internal_sku)}</code>',
+        'Площадки: '+', '.join('WB' if m=='wildberries' else 'Ozon' for m in row.marketplaces),
         f'Класс: <b>{row.abc_class}{row.xyz_class}</b> · confidence {row.confidence}',
         f'История: {row.history_days} полных дней · {row.first_history_date or "—"} → {row.last_history_date or "—"}',
         f'Среднее: {_num(row.avg_daily_units)} шт./день',

@@ -18,7 +18,7 @@ from .finance import (
 from .product_analytics import (
     ProductDayObservation, StockObservation, ProductNormalizationError,
     normalize_wb_product_orders, normalize_ozon_product_analytics,
-    normalize_wb_stocks, normalize_ozon_stocks, normalize_ozon_postings,
+    normalize_wb_stocks, normalize_ozon_stocks, normalize_ozon_fbo_stocks, normalize_ozon_postings,
 )
 from .reconciliation import (
     CommerceObservation, ReconciliationNormalizationError,
@@ -636,13 +636,38 @@ class CollectionService:
                 else:
                     try:
                         observations=normalize_ozon_stocks(result.data)
-                        rid=self.repo.record_success(ozon_connection_id,endpoint,ds,result.data,[],attempts=result.attempts,store_raw=False)
+                        # The repository prefers a successful dedicated FBO
+                        # snapshot. Keep this fallback if that endpoint fails.
+                        rid=self.repo.record_success(ozon_connection_id,endpoint,ds,result.data,[],attempts=result.attempts)
                         self._save_inventory_observations(shop_id=shop_id,connection_id=ozon_connection_id,
                             marketplace='ozon',source_run_id=rid,observations=observations)
-                        outcomes.append(CollectionOutcome('ozon',ds,True,rid,'stocks loaded'))
+                        outcomes.append(CollectionOutcome('ozon',ds,True,rid,f'Остатки Ozon: {len(observations)} товарных строк' + ('; пустой ответ API' if not observations else '')))
                     except (ProductNormalizationError,ValueError) as exc:
                         rid=self.repo.record_failure(ozon_connection_id,endpoint,ds,f'Normalization: {exc}',attempts=result.attempts)
                         outcomes.append(CollectionOutcome('ozon',ds,False,rid,str(exc)))
+                fbo_method=getattr(self.ozon,'fbo_stocks',None)
+                if callable(fbo_method):
+                    with self.repo.db.connect() as c:
+                        skus=[str(r['marketplace_sku']) for r in c.execute(
+                            'SELECT marketplace_sku FROM product_listings WHERE connection_id=?',(ozon_connection_id,))]
+                    # v4 product-info carries SKU identities even for FBO rows
+                    # whose quantity must be obtained from the FBO endpoint.
+                    if result.ok:
+                        try:skus.extend(o.marketplace_sku for o in normalize_ozon_stocks(result.data))
+                        except ProductNormalizationError:pass
+                    endpoint='analytics/stocks/fbo'
+                    fbo=await fbo_method(skus)
+                    if not fbo.ok:outcomes.append(self._failure(ozon_connection_id,endpoint,ds,'ozon',fbo))
+                    else:
+                        try:
+                            observations=normalize_ozon_fbo_stocks(fbo.data)
+                            rid=self.repo.record_success(ozon_connection_id,endpoint,ds,fbo.data,[],attempts=fbo.attempts)
+                            self._save_inventory_observations(shop_id=shop_id,connection_id=ozon_connection_id,
+                                marketplace='ozon',source_run_id=rid,observations=observations)
+                            outcomes.append(CollectionOutcome('ozon',ds,True,rid,f'FBO Ozon: {len(observations)} товарных строк'))
+                        except (ProductNormalizationError,ValueError) as exc:
+                            rid=self.repo.record_failure(ozon_connection_id,endpoint,ds,f'Normalization: {exc}',attempts=fbo.attempts)
+                            outcomes.append(CollectionOutcome('ozon',ds,False,rid,str(exc)))
         return outcomes
 
     async def collect_finance(self, *, start: date, end: date,
@@ -750,6 +775,10 @@ class CollectionService:
                                   wb_connection_id: int | None = None,
                                   ozon_connection_id: int | None = None) -> list[CollectionOutcome]:
         outcomes: list[CollectionOutcome]=[]
+        if ozon_connection_id is not None and self.ozon_performance is None:
+            explanation='Реклама Ozon не подключена: нужны отдельные OZON_PERF_CLIENT_ID и OZON_PERF_CLIENT_SECRET из кабинета Ozon Performance. Seller API-ключ их не заменяет.'
+            rid=self.repo.record_failure(ozon_connection_id,'performance/product-stats',start.isoformat(),explanation)
+            outcomes.append(CollectionOutcome('ozon',start.isoformat(),False,rid,explanation))
         if wb_connection_id is not None and self.wb is not None:
             endpoint='promotion/fullstats'
             result=await self.wb.promotion_fullstats_all(start.isoformat(),end.isoformat())
@@ -878,7 +907,9 @@ class CollectionService:
                                                  status='success' if len(normalized)==len(result.data or []) else 'partial')
                     self.repo.upsert_inbound_shipments(
                         wb_connection_id,rid,'wildberries',normalized,active_external_ids=active_external_ids)
-                    outcomes.append(CollectionOutcome('wildberries',ds,True,rid,f'inbound supplies loaded: {len(normalized)}'))
+                    complete=len(normalized)==len(result.data or [])
+                    outcomes.append(CollectionOutcome('wildberries',ds,complete,rid,f'inbound supplies loaded: {len(normalized)}' +
+                        ('; часть поставок не обновлена, ранее сохранённые данные сохранены' if not complete else '')))
 
         if ozon_connection_id is not None:
             endpoint='supply-order/inbound'
@@ -898,14 +929,21 @@ class CollectionService:
                             partial=True; continue
                         orders=(details.data or {}).get('orders') or []
                         for order in orders:
-                            bundles={}
+                            bundles={}; order_complete=True
                             for supply in order.get('supplies') or []:
                                 bundle_id=str((supply or {}).get('bundle_id') or '')
-                                if not bundle_id: continue
+                                if not bundle_id:
+                                    partial=True; order_complete=False; continue
                                 bundle=await self.ozon.supply_bundle_all(bundle_id); attempts += bundle.attempts
                                 if not bundle.ok:
-                                    partial=True; continue
-                                bundles[bundle_id]=list((bundle.data or {}).get('items') or [])
+                                    partial=True; order_complete=False; continue
+                                items=(bundle.data or {}).get('items')
+                                if not isinstance(items,list):
+                                    partial=True; order_complete=False; continue
+                                bundles[bundle_id]=items
+                            # An inaccessible bundle is unknown, not an empty
+                            # shipment: preserve the previously saved items.
+                            if not order_complete:continue
                             normalized.extend(normalize_ozon_order(order,bundles))
                             raw.append({'order':order,'bundles':bundles})
                     rid=self.repo.record_success(ozon_connection_id,endpoint,ds,raw,[],attempts=attempts,store_raw=False,
@@ -913,7 +951,9 @@ class CollectionService:
                     self.repo.upsert_inbound_shipments(
                         ozon_connection_id,rid,'ozon',normalized,
                         active_external_ids=None if partial else [x['external_supply_id'] for x in normalized])
-                    outcomes.append(CollectionOutcome('ozon',ds,True,rid,f'inbound supplies loaded: {len(normalized)}'))
+                    note=f'inbound supplies loaded: {len(normalized)}'
+                    if partial:note+='; часть поставок не обновлена, ранее сохранённые данные сохранены'
+                    outcomes.append(CollectionOutcome('ozon',ds,not partial,rid,note))
         return outcomes
 
 

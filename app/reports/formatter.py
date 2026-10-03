@@ -124,9 +124,9 @@ def format_period(report) -> str:
     return '\n'.join(lines)
 
 
-def _product_name(name: str, limit: int = 36) -> str:
+def _product_name(name: str) -> str:
     clean=' '.join(str(name).split())
-    return escape(clean if len(clean)<=limit else clean[:limit-1]+'…')
+    return escape(clean)
 
 
 def format_product_report(report) -> str:
@@ -140,7 +140,7 @@ def format_product_report(report) -> str:
         basis = ' (по предельной цене)' if market == 'ozon' else ''
         lines.append(f'\n{labels.get(market,market)} · <b>Top-{len(rows)} по сумме заказов{basis}*</b>')
         for i,row in enumerate(rows,1):
-            lines.append(f'{i}. {_product_name(row.name)} · {row.units:g} шт. · {money(row.order_amount)}')
+            lines.append(f'{i}. <b>{_product_name(row.name)}</b>\n   Артикул {escape(row.sku)} · {row.units:g} шт. · {money(row.order_amount)}')
 
     if not getattr(report,'comparison_complete',True):
         lines.append('\n⚠️ Сравнение роста/просадки скрыто: текущий или предыдущий период загружен не полностью.')
@@ -149,12 +149,12 @@ def format_product_report(report) -> str:
         lines.append('\n📉 <b>Просадка по заказанным единицам</b>')
         for row in report.decline[:5]:
             pct=f'{row.change_pct:.0f}%' if row.change_pct is not None else '—'
-            lines.append(f'• {_product_name(row.name)}: {row.previous_units:g} → {row.current_units:g} ({pct})')
+            lines.append(f'• {labels.get(row.marketplace,row.marketplace)} · {_product_name(row.name)} · {escape(row.sku)}: {row.previous_units:g} → {row.current_units:g} ({pct})')
     if report.growth:
         lines.append('\n📈 <b>Рост</b>')
         for row in report.growth[:5]:
             pct=f'+{row.change_pct:.0f}%' if row.change_pct is not None else 'новый спрос'
-            lines.append(f'• {_product_name(row.name)}: {row.previous_units:g} → {row.current_units:g} ({pct})')
+            lines.append(f'• {labels.get(row.marketplace,row.marketplace)} · {_product_name(row.name)} · {escape(row.sku)}: {row.previous_units:g} → {row.current_units:g} ({pct})')
 
     if report.fulfillment_orders:
         lines.append('\n🚚 <b>Схемы по операционным заказам</b>')
@@ -170,14 +170,15 @@ def format_product_report(report) -> str:
     risks=[r for r in report.stock_risks if r.available_units<=0 or (r.days_left is not None and r.days_left<=report.risk_days)]
     if risks:
         lines.append('\n🚨 <b>Риск дефицита</b>')
-        for row in risks[:7]:
+        shown=[r for market in ('ozon','wildberries') for r in [x for x in risks if x.marketplace==market][:5]]
+        for row in shown:
             if row.available_units<=0:
                 state='НЕТ ОСТАТКА'
             elif row.days_left is not None:
                 state=f'≈ {row.days_left:.1f} дн.'
             else:
                 state='нет оценки спроса'
-            lines.append(f'• {_product_name(row.name)} · {row.available_units:g} шт. · {state}')
+            lines.append(f'• {labels.get(row.marketplace,row.marketplace)} · {_product_name(row.name)} · {escape(row.sku)}\n   {row.available_units:g} шт. · {state}')
     elif report.stock_risks:
         lines.append(f'\n✅ По текущей оценке нет товаров с запасом менее {report.risk_days} дней.')
 
@@ -195,16 +196,26 @@ def format_stock_report(report) -> str:
             lines.append(f"{market} · {escape(str(row['fulfillment_scheme']))}: <b>{float(row['available_units']):g} шт.</b>")
     else:
         lines.append('📭 Остатки ещё не загружены.')
-    if report.stock_risks:
-        lines.append('\n<b>Минимальный запас</b>')
-        for row in report.stock_risks[:10]:
-            demand=f'{row.avg_daily_units:.1f}/день' if row.avg_daily_units is not None else 'спрос —'
+    markets=getattr(report,'marketplaces',()) or tuple(dict.fromkeys(r.marketplace for r in report.stock_risks))
+    for market in markets:
+        rows=[r for r in report.stock_risks if r.marketplace==market]
+        lines.append('\n'+labels.get(market,market)+' · <b>Товары с наименьшим запасом</b>')
+        if not rows:
+            lines.append('📭 Нет загруженных остатков. Нажмите «Обновить остатки».')
+        for row in rows[:10]:
+            demand=f'{row.avg_daily_units:.2f} шт./день' if row.avg_daily_units is not None else 'спрос неизвестен'
             if row.available_units<=0: days='0 дн.'
             elif row.avg_daily_units is None: days='нет данных для оценки'
             elif row.avg_daily_units==0: days='нет спроса за загруженные дни'
             else: days=f'{row.days_left:.1f} дн.'
-            lines.append(f'• {_product_name(row.name)} · {row.available_units:g} шт. · {demand} · {days}')
-    lines.append('\n<i>Ozon: показывается present; reserved хранится отдельно и не вычитается без подтверждённой методики. WB: quantity.</i>')
+            schemes=' · '.join(f'{escape(s)} {v:g} шт.' for s,v in row.scheme_units)
+            lines.append(f'• <b>{_product_name(row.name)}</b> · артикул {escape(row.sku)}\n   Остаток: {row.available_units:g} шт. · хватит на {days}\n   {demand} · история {row.coverage_days} дней')
+            if schemes:lines.append('   '+schemes)
+            if row.reserved_units:lines.append(f'   Резерв: {row.reserved_units:g} шт.')
+            if row.captured_at:lines.append('   Снимок API: '+escape(row.captured_at))
+        if len(rows)>10:lines.append(f'Ещё товаров: {len(rows)-10}. Все остатки доступны в экспорте.')
+    for warning in getattr(report,'inventory_warnings',()):lines.append('\n⚠️ '+escape(warning))
+    lines.append('\n<i>Дни запаса = остаток в штуках ÷ среднее число заказанных единиц за загруженные дни. Резервы показаны отдельно. FBO/FBW — склад площадки, FBS — склад продавца.</i>')
     return '\n'.join(lines)
 
 def format_finance(report) -> str:

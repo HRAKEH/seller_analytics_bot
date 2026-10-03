@@ -37,6 +37,7 @@ class StockRisk:
     days_left: float | None
     coverage_days: int
     captured_at: str | None
+    scheme_units: tuple[tuple[str,float], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -52,6 +53,8 @@ class ProductReport:
     stock_risks: list[StockRisk] = field(default_factory=list)
     risk_days: int = 14
     comparison_complete: bool = False
+    marketplaces: tuple[str, ...] = ()
+    inventory_warnings: tuple[str, ...] = ()
 
 
 def _index(rows: list[dict[str,Any]]) -> dict[int,dict[str,Any]]:
@@ -131,8 +134,9 @@ def build_product_report(repo: Repository, shop_id: int, end: date, *, days: int
                                                     'available_units':0.0,'reserved_units':0.0})
         entry['available_units']+=available; entry['reserved_units']+=reserved
         lid=int(row['listing_id'])
-        agg=listing_inventory.setdefault(lid,dict(row,total_available=0.0,total_reserved=0.0))
+        agg=listing_inventory.setdefault(lid,dict(row,total_available=0.0,total_reserved=0.0,schemes=[]))
         agg['total_available']+=available; agg['total_reserved']+=reserved
+        agg['schemes'].append((scheme,available))
         if str(row.get('captured_at') or '') < str(agg.get('captured_at') or ''):
             agg['captured_at']=row.get('captured_at')
 
@@ -148,12 +152,25 @@ def build_product_report(repo: Repository, shop_id: int, end: date, *, days: int
         available=float(row['total_available']); reserved=float(row['total_reserved'])
         days_left=(available/avg) if avg and avg>0 else None
         stock_risks.append(StockRisk(str(row['marketplace']),str(row['name']),str(row['marketplace_sku']),
-                                     available,reserved,avg,days_left,coverage,row.get('captured_at')))
+                                     available,reserved,avg,days_left,coverage,row.get('captured_at'),tuple(row['schemes'])))
     # Out of stock first, then the shortest calculated runway. Items with unknown demand go last.
     stock_risks.sort(key=lambda x:(0 if x.available_units<=0 else 1, x.days_left if x.days_left is not None else 10**12, x.available_units))
 
+    warnings=[]
+    for conn in conns:
+        market='WB' if conn.marketplace=='wildberries' else 'Ozon'
+        if not any(r.marketplace==conn.marketplace for r in stock_risks):
+            warnings.append(f'{market}: нет товарного снимка остатков. Это не означает нулевой остаток.')
+        endpoints=(('analytics/stocks/wb-warehouses','analytics/stocks/seller-warehouses')
+                   if conn.marketplace=='wildberries' else ('product/info/stocks','analytics/stocks/fbo'))
+        for endpoint in endpoints:
+            run=repo.latest_run(conn.id,endpoint)
+            if run and run.status!='success':
+                scheme=('FBW' if endpoint.endswith('wb-warehouses') else 'FBO' if endpoint.endswith('/fbo') else 'FBS')
+                warnings.append(f'{market} {scheme}: последний запрос не завершён. Показаны ранее сохранённые данные, если они есть.')
     return ProductReport(
         start=start,end=end,days=days,top=top,growth=growth,decline=decline,
         fulfillment_orders=fulfillment_orders,inventory_schemes=inventory_schemes,
         stock_risks=stock_risks,risk_days=stock_risk_days,
-        comparison_complete=comparison_complete)
+        comparison_complete=comparison_complete,marketplaces=tuple(c.marketplace for c in conns),
+        inventory_warnings=tuple(warnings))

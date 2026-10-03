@@ -6,6 +6,15 @@ from datetime import date, datetime, timedelta, timezone
 from app.storage import Repository
 from app.reports.products import build_product_report
 
+def marketplace_label(value: str) -> str:
+    return {'wildberries':'WB','wb':'WB','ozon':'Ozon'}.get(value,value)
+
+
+def stock_alert_text(row) -> str:
+    state='нет остатка' if row.available_units<=0 else (
+        f'хватит примерно на {row.days_left:.1f} дн.' if row.days_left is not None else 'спрос неизвестен')
+    return f'📦 {marketplace_label(row.marketplace)} · артикул {row.sku}: остаток {row.available_units:g} шт.; {state}\nТовар: {row.name}'
+
 @dataclass(frozen=True)
 class AlertNotification:
     rule_key: str
@@ -56,7 +65,16 @@ class AlertEngine:
             if subjects is not None and key[0] in subjects and key[1] not in subjects[key[0]]:
                 continue
             if key[0] in rules and key not in active_keys:
-                msg=f'✅ Восстановлено: {labels.get(key[0], key[0])} · {key[1]}'
+                market,_,sku=key[1].partition(':')
+                subject=marketplace_label(market)+(f' · артикул {sku}' if sku else '')
+                if sku:
+                    conn=next((x for x in self.repo.list_connections(shop_id) if x.marketplace==market),None)
+                    listing=self.repo.listing_by_marketplace_sku(conn.id,sku) if conn else None
+                    if listing:
+                        with self.repo.db.connect() as c:
+                            product=c.execute('SELECT name FROM products WHERE id=?',(listing.product_id,)).fetchone()
+                        if product:subject+=f' · {product["name"]}'
+                msg=f'✅ Восстановлено: {labels.get(key[0], key[0])} · {subject}'
                 fp=self._fingerprint(key[0],key[1],msg)
                 self.repo.save_alert_state(shop_id,key[0],key[1],active=False,value=None,fingerprint=None,resolved_at=now)
                 self.repo.record_alert_event(shop_id,key[0],key[1],'resolved',msg,None,fp)
@@ -75,14 +93,17 @@ class AlertEngine:
                                     stock_lookback_days=stock_velocity_days,stock_risk_days=stock_risk_days)
         evaluated.add('low_stock')
         for r in report.stock_risks:
+            if r.captured_at:
+                try:
+                    if (today-datetime.fromisoformat(r.captured_at.replace('Z','+00:00')).date()).days>2:continue
+                except ValueError:continue
             if r.available_units<=0 or r.avg_daily_units is not None:
                 subjects['low_stock'].add(f'{r.marketplace}:{r.sku}')
             risky=r.available_units<=0 or (r.days_left is not None and r.days_left<=stock_risk_days)
             if not risky: continue
             subject=f'{r.marketplace}:{r.sku}'; active.add(('low_stock',subject))
-            state='остаток 0' if r.available_units<=0 else f'запас ≈ {r.days_left:.1f} дн.'
             candidates.append(AlertNotification('low_stock',subject,'critical' if r.available_units<=0 else 'warning',
-                f'📦 {r.name}: {state}, доступно {r.available_units:g} шт.',r.days_left))
+                stock_alert_text(r),0.0 if r.available_units<=0 else r.days_left))
 
         # 2) Order drop only when yesterday is complete for all enabled marketplaces.
         start=today-timedelta(days=order_lookback_days+1)
@@ -134,7 +155,7 @@ class AlertEngine:
                 if drr>=drr_pct:
                     active.add(('high_drr',market))
                     candidates.append(AlertNotification('high_drr',market,'warning',
-                        f'📣 {market}: ДРР {drr:.1f}% за последние 7 дней, порог {drr_pct:.1f}%.',drr))
+                        f'📣 {marketplace_label(market)}: ДРР {drr:.1f}% за последние 7 дней, порог {drr_pct:.1f}%.',drr))
 
         resolved=self._resolve_missing(shop_id,active,evaluated,subjects=subjects)
         result=list(resolved)
