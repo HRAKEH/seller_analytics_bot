@@ -254,6 +254,34 @@ class Repository:
             c.execute('DELETE FROM telegram_navigation WHERE bot_id=? AND chat_id=? AND user_id=? AND message_id=?',
                       (bot_id,chat_id,user_id,message_id))
 
+    def report_card(self, bot_id: int, chat_id: int, message_id: int) -> dict[str,Any] | None:
+        with self.db.connect() as c:
+            row=c.execute('''SELECT * FROM telegram_report_cards
+                WHERE bot_id=? AND chat_id=? AND message_id=?''',
+                (bot_id,chat_id,message_id)).fetchone()
+        return dict(row) if row else None
+
+    def save_report_card(self, bot_id: int, chat_id: int, message_id: int, *, shop_id: int,
+                         report_day: str, summary_html: str, details_html: str,
+                         accruals_html: str, section: str = 'summary', status_note: str = '') -> None:
+        if section not in {'summary','details','accruals'}:
+            raise ValueError('invalid report section')
+        date.fromisoformat(report_day)
+        now=utcnow()
+        with self.db.connect() as c:
+            c.execute('''INSERT INTO telegram_report_cards
+                (bot_id,chat_id,message_id,shop_id,report_day,summary_html,details_html,
+                 accruals_html,section,status_note,created_at,updated_at)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(bot_id,chat_id,message_id) DO UPDATE SET
+                    summary_html=excluded.summary_html,details_html=excluded.details_html,
+                    accruals_html=excluded.accruals_html,section=excluded.section,
+                    status_note=excluded.status_note,updated_at=excluded.updated_at
+                WHERE telegram_report_cards.shop_id=excluded.shop_id
+                  AND telegram_report_cards.report_day=excluded.report_day''',
+                (bot_id,chat_id,message_id,shop_id,report_day,summary_html,details_html,
+                 accruals_html,section,status_note,now,now))
+
     def get_job_state(self, shop_id: int, job_key: str) -> str | None:
         with self.db.connect() as c:
             r=c.execute("SELECT last_run_key FROM shop_job_state WHERE shop_id=? AND job_key=?",(shop_id,job_key)).fetchone()

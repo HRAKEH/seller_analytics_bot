@@ -134,7 +134,7 @@ def format_management(report: ManagementReport) -> str:
         if row.financial_sales is not None: facts.append('фин. продажи '+_money(row.financial_sales))
         if row.marketplace_net is not None: facts.append('нетто '+_money(row.marketplace_net))
         if row.goods_payable is not None: facts.append('к перечислению '+_money(row.goods_payable))
-        if row.bank_payment is not None: facts.append('банк '+_money(row.bank_payment))
+        if row.bank_payment is not None: facts.append('итог фин. отчёта '+_money(row.bank_payment))
         if facts: lines.append('Финансовый источник: '+ ' · '.join(facts))
         for warning in row.warnings: lines.append('⚠️ '+warning)
     lines += ['','━━━━━━━━━━━━━━━━']

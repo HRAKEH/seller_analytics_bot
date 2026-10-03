@@ -162,13 +162,16 @@ async def test_daily_publishes_after_delayed_data_attempts_even_if_orders_raise(
     async def finance(*args):events.append('finance');return [SimpleNamespace(ok=True)]
     async def rec(*args,**kwargs):events.append('reconcile');return [SimpleNamespace(ok=True)]
     async def ads(*args):events.append('ads');return [SimpleNamespace(ok=True)]
-    async def send(*args,**kwargs):events.append('send')
+    async def send(*args,**kwargs):
+        events.append('send')
+        return SimpleNamespace(message_id=42)
     ctx=SimpleNamespace(preferences=lambda:SimpleNamespace(timezone='Europe/Moscow',finance_lookback_days=7),
         collect_day=order,collect_finance=finance,collect_reconciliation=rec,collect_advertising=ads,repository=repo,shop_id=shop.id,
         settings=Settings.from_env(),collect_promotions=AsyncMock(return_value=[]),collect_inbound=AsyncMock(return_value=[]))
     for name in ('evaluate_forecast_quality','build_supply_plan','build_action_center'):monkeypatch.setattr(scheduler,name,lambda *a,**k:None)
-    await collect_and_send_daily(SimpleNamespace(send_message=send),ctx)
+    await collect_and_send_daily(SimpleNamespace(id=123,send_message=send),ctx)
     assert events==['orders','finance','reconcile','ads','send']
+    assert repo.report_card(123,1,42) is not None
 
 
 @pytest.mark.asyncio

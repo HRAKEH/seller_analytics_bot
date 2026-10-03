@@ -215,7 +215,7 @@ def format_finance(report) -> str:
         if 'financial_sales' in m: lines.append(f'  продажи по фин. отчёту: <b>{fm(m["financial_sales"])}</b>')
         if 'goods_payable' in m: lines.append(f'  к перечислению за товар: {fm(m["goods_payable"])}')
         if 'marketplace_net' in m: lines.append(f'  начисления после удержаний: <b>{fm(m["marketplace_net"])}</b>')
-        if 'bank_payment' in m: lines.append(f'  банковский платёж: <b>{fm(m["bank_payment"])}</b>')
+        if 'bank_payment' in m: lines.append(f'  итог к оплате по фин. отчёту: <b>{fm(m["bank_payment"])}</b>')
         costs=[]
         for key,label in [('commission','комиссия'),('logistics','логистика'),('storage','хранение'),('acceptance','приёмка'),('acquiring','эквайринг'),('services','прочие услуги'),('penalties','штрафы')]:
             if m.get(key): costs.append(f'{label} {fm(m[key])}')

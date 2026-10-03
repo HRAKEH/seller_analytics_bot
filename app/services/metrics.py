@@ -21,7 +21,7 @@ METRICS: dict[str, MetricDefinition] = {
     "cancellations_units": MetricDefinition("cancellations_units", "Отмены", "units", False),
     "financial_sales": MetricDefinition("financial_sales", "Продажи по финансовому отчёту", "RUB", False, "Финансовая база источника, не оперативная сумма заказов"),
     "goods_payable": MetricDefinition("goods_payable", "К перечислению за товар", "RUB", False, "Сумма после комиссии/приёма платежей, но не всегда финальный банковский платёж"),
-    "bank_payment": MetricDefinition("bank_payment", "Фактический платёж", "RUB", False, "Фактически проведённый платёж, если источник его предоставляет"),
+    "bank_payment": MetricDefinition("bank_payment", "Итог к оплате по фин. отчёту", "RUB", False, "bankPaymentSum финансового отчёта WB с удержаниями и корректировками; не подтверждение банковского перевода"),
     "marketplace_net": MetricDefinition("marketplace_net", "Нетто маркетплейса", "RUB", False, "Расчёт из официальных финансовых компонент источника"),
     "ad_spend": MetricDefinition("ad_spend", "Рекламные расходы", "RUB", True),
     "finance_ad_spend": MetricDefinition("finance_ad_spend", "Реклама по начислениям Ozon", "RUB", False,

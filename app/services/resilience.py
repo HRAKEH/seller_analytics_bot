@@ -8,8 +8,7 @@ from datetime import date, datetime, timezone, timedelta
 from html import escape
 from zoneinfo import ZoneInfo
 
-from app.reports import build_daily_report, format_daily
-from app.reports.daily import build_daily_report_with_currency
+from app.bot.report_cards import send_daily_cards
 from app.services.observability import set_log_context, reset_log_context
 
 log=logging.getLogger(__name__)
@@ -65,8 +64,7 @@ async def execute_retry_job(bot, registry, job: dict) -> None:
             except Exception:
                 log.exception('Buyer prices refresh failed; publishing saved prices')
             if payload.get('notify',True):
-                await _notify_shop(bot,ctx,'🔄 <b>Данные восстановлены. Обновлённый отчёт:</b>\n\n'+
-                    format_daily(await build_daily_report_with_currency(ctx.repository,ctx.shop_id,day)))
+                await send_daily_cards(bot,ctx,day,status_note='🔄 Повторная загрузка завершена. Данные восстановлены.')
         elif job_type=='reconciliation':
             start=date.fromisoformat(str(payload['start'])); end=date.fromisoformat(str(payload['end']))
             outcomes=await ctx.collect_reconciliation(start,end)

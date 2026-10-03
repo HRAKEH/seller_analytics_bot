@@ -13,7 +13,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 
 from app.reports import (
-    build_daily_report, build_period_report, format_daily, format_period,
+    build_period_report, format_period,
     build_product_report, format_product_report, format_stock_report,
     build_finance_report, format_finance, build_sku_economics, format_sku_economics,
     build_reconciliation_report, format_reconciliation,
@@ -37,6 +37,8 @@ from app.services.report_refresh import format_refresh
 from app.reports.coverage import build_source_coverage, format_source_coverage
 from .context import AppContext
 from .navigation import NavigationMessages, MenuCleanupMiddleware
+from .report_cards import DailyCardController, send_daily_card
+from app.reports.cards import format_daily_card
 from .keyboards import (
     main_keyboard, reports_keyboard, products_keyboard, money_keyboard, supply_keyboard,
     control_keyboard, shop_keyboard, service_keyboard, technical_keyboard, input_keyboard, shop_picker_keyboard,
@@ -80,6 +82,7 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
         return bool(message.from_user and ctx.repository.can_user(message.from_user.id,ctx.shop_id,permission))
 
     navigation=NavigationMessages(lambda: ctx.repository)
+    daily_cards=DailyCardController(ctx,registry)
     cleanup=MenuCleanupMiddleware(navigation,menu_button_texts(),allowed)
     dp.message.middleware(cleanup)
     dp.callback_query.middleware(cleanup)
@@ -248,23 +251,22 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
             f'Ошибок API/доп. источников: {total_failed}',
         ]
         await message.answer('\n'.join(lines),parse_mode='HTML')
-        role=ctx.repository.role_for_user(uid,ctx.shop_id) or 'viewer'
-        await message.answer(
-            format_daily(await build_daily_report_with_currency(ctx.repository,ctx.shop_id,end)),
-            parse_mode='HTML',reply_markup=main_keyboard(role))
+        await collect_and_report(message,end,force=False,actor_user_id=uid)
 
-    async def collect_and_report(message: types.Message, day: date, force: bool = True):
+    async def collect_and_report(message: types.Message, day: date, force: bool = True,
+                                 actor_user_id: int | None = None):
+        uid=actor_user_id if actor_user_id is not None else (message.from_user.id if message.from_user else 0)
+        text=format_daily_card(ctx.repository,ctx.shop_id,
+            await build_daily_report_with_currency(ctx.repository,ctx.shop_id,day))
+        report_message=await send_daily_card(message.bot,ctx,message.chat.id,day,
+            user_id=uid,text=text)
+        await navigation.dismiss(message)
         if force:
-            await message.answer(f'⏳ Обновляю данные за {day.isoformat()}…')
-            try:
-                await ctx.collect_day(day)
-            except Exception as exc:
-                await message.answer(f'⚠️ Неожиданная ошибка загрузки: {escape(str(exc)[:250])}')
-            try:
-                await ctx.collect_buyer_prices(day)
-            except Exception as exc:
-                await message.answer(f'⚠️ Цены покупателей пока не обновлены: {escape(str(exc)[:250])}')
-        await send(message, format_daily(await build_daily_report_with_currency(ctx.repository, ctx.shop_id, day)))
+            await daily_cards.refresh(report_message,uid)
+
+    @dp.callback_query(F.data.startswith('daily_card:'))
+    async def cb_daily_card(callback: types.CallbackQuery):
+        await daily_cards.handle(callback)
 
     def settings_text() -> str:
         p=pref(); shop=ctx.repository.get_shop(ctx.shop_id)
@@ -1794,7 +1796,7 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
             except ValueError: return await message.answer('⚠️ Неверная дата. Используйте YYYY-MM-DD.')
             if target > local_now().date():
                 return await message.answer('⚠️ Нельзя показать будущую дату.')
-            await send(message,format_daily(await build_daily_report_with_currency(ctx.repository,ctx.shop_id,target)))
+            await collect_and_report(message,target,force=False)
             await state.clear()
             return
         pair=input_actions.get(action)
@@ -1948,8 +1950,8 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
         target=local_now().date()-timedelta(days=offset)
         await callback.answer()
         if callback.message:
-            await send(command_copy(callback.message,'day',target.isoformat(),actor_user=callback.from_user),
-                       format_daily(await build_daily_report_with_currency(ctx.repository,ctx.shop_id,target)))
+            await collect_and_report(command_copy(callback.message,'day',target.isoformat(),actor_user=callback.from_user),
+                                     target,force=False)
 
     @dp.message(F.text == '📥 Догрузить данные')
     async def btn_backfill_simple(message: types.Message):

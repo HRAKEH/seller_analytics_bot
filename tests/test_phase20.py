@@ -255,7 +255,7 @@ def test_report_date_button_reads_database_without_forcing_api_refresh():
     start=src.index("if action=='day_view':")
     end=src.index('pair=input_actions.get(action)',start)
     block=src[start:end]
-    assert 'build_daily_report' in block
+    assert 'collect_and_report(message,target,force=False)' in block
     assert 'collect_day' not in block
 
 

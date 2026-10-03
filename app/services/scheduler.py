@@ -2,13 +2,11 @@
 from __future__ import annotations
 import asyncio
 import logging
-from html import escape
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from aiogram import Bot
 from app.bot.context import AppContext
-from app.reports import build_daily_report, format_daily
-from app.reports.daily import build_daily_report_with_currency
+from app.bot.report_cards import send_daily_cards
 from app.reports.alerts import format_alert_digest
 from app.services.alerts import AlertEngine
 from app.services.resilience import queue_retry
@@ -51,8 +49,6 @@ async def collect_and_send_daily(bot: Bot, ctx: AppContext):
     except Exception:
         log.exception('Daily orders failed; continuing independent sources')
         outcomes=[]
-    shop=ctx.repository.get_shop(ctx.shop_id)
-    prefix=f'🏪 <b>{escape(shop.name)}</b>\n' if shop else ''
     if not (outcomes and all(x.ok for x in outcomes)):
         queue_retry(ctx.repository,ctx.settings,ctx.shop_id,'daily',day.isoformat(),
             {'day':day.isoformat(),'notify':True},error='daily report remained partial',
@@ -86,7 +82,7 @@ async def collect_and_send_daily(bot: Bot, ctx: AppContext):
         log.exception('Delayed advertising refresh failed; retry queued')
     # Publish only after delayed finance/reconciliation and ads have been
     # attempted. Failed sources retain their last successful snapshots.
-    await send_to_owners(bot,ctx,prefix+format_daily(await build_daily_report_with_currency(ctx.repository,ctx.shop_id,day)))
+    await send_daily_cards(bot,ctx,day)
     try:
         promos=await ctx.collect_promotions(day)
         if promos and not all(getattr(x,'ok',False) for x in promos):

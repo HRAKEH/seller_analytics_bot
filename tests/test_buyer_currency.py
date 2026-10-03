@@ -232,11 +232,12 @@ async def test_daily_scheduler_fetches_report_date_rate_before_sending(tmp_path,
         @classmethod
         def now(cls, tz=None):
             return datetime(2026, 10, 2, 10, tzinfo=tz)
-    async def send(bot, ctx, text):
+    async def send(chat_id, text, **kwargs):
         events.append(('send', text))
+        return SimpleNamespace(message_id=42)
+    repo.grant_shop_access(101,shop.id,'owner')
     monkeypatch.setattr(daily, 'ensure_cbr_rates', ensure)
     monkeypatch.setattr(scheduler, 'datetime', FixedDatetime)
-    monkeypatch.setattr(scheduler, 'send_to_owners', send)
     for name in ('evaluate_forecast_quality', 'build_supply_plan', 'build_action_center'):
         monkeypatch.setattr(scheduler, name, lambda *a, **k: None)
     ctx = SimpleNamespace(repository=repo, shop_id=shop.id, settings=Settings.from_env(),
@@ -245,6 +246,7 @@ async def test_daily_scheduler_fetches_report_date_rate_before_sending(tmp_path,
         collect_finance=AsyncMock(return_value=[]), collect_reconciliation=AsyncMock(return_value=[]),
         collect_advertising=AsyncMock(return_value=[]), collect_promotions=AsyncMock(return_value=[]),
         collect_inbound=AsyncMock(return_value=[]))
-    await scheduler.collect_and_send_daily(None, ctx)
+    await scheduler.collect_and_send_daily(SimpleNamespace(id=123,send_message=send), ctx)
     assert events[0] == ('rate', DAY.isoformat())
-    assert events[1][0] == 'send' and '≈ 1 046.33 ₽' in events[1][1]
+    assert events[1][0] == 'send' and '≈ 1 046,33 ₽' in events[1][1]
+    assert repo.report_card(123,101,42)['report_day']==DAY.isoformat()

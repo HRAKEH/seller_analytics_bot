@@ -8,6 +8,20 @@ HOME = '🏠 Главное меню'
 BACK = '⬅️ Назад'
 CANCEL = '❌ Отмена'
 
+
+def daily_card_keyboard(section: str = 'summary', *, can_refresh: bool = True):
+    builder=InlineKeyboardBuilder()
+    if section!='summary':
+        builder.button(text='Свернуть',callback_data='daily_card:collapse')
+        builder.adjust(1)
+    else:
+        builder.button(text='Подробнее',callback_data='daily_card:details')
+        builder.button(text='Начисления',callback_data='daily_card:accruals')
+        if can_refresh:builder.button(text='Обновить',callback_data='daily_card:refresh')
+        builder.adjust(3)
+    return builder.as_markup()
+
+
 # One canonical Telegram button for every public slash command.  The mapping is
 # intentionally explicit: tests fail when a new command is added without a UI
 # entry, keeping the bot menu-first instead of slowly drifting back to CLI UX.
