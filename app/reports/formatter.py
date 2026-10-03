@@ -75,6 +75,9 @@ def format_daily(report: DailyReport) -> str:
             lines.append(f'  источник: {label}')
         if s.marketplace=='ozon':
             lines.extend(_buyer_price_lines(s.buyer_prices))
+            if s.buyout_check:
+                from app.services.ozon_buyouts import format_buyout_check
+                lines.extend(format_buyout_check(s.buyout_check))
             if s.marketplace_net is not None:
                 lines.append(f'  начисления после удержаний по дате начисления: <b>{money(s.marketplace_net,precision=2)}</b>')
             else:

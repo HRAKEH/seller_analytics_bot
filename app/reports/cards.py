@@ -9,6 +9,7 @@ import json
 
 from .daily import DailyReport
 from .formatter import num, source_name
+from app.services.ozon_buyouts import format_buyout_check
 
 
 @dataclass(frozen=True)
@@ -112,6 +113,7 @@ def format_daily_card(repo, shop_id: int, report: DailyReport) -> DailyCardText:
                     details.append('⚠️ '+_safe(warning,200))
                 if prices.freshness:details.append('Цены обновлены: '+_safe(prices.freshness,50))
             else:details.append('⏳ Цены покупателей ещё не загружены.')
+            details.extend(format_buyout_check(s.buyout_check))
             finance=repo.latest_metric(s.connection_id,report.day,'marketplace_net')
             if finance:
                 accruals.append('После удержаний Ozon: <b>'+rubles(finance['value'])+'</b>')

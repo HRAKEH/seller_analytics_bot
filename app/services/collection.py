@@ -1,7 +1,7 @@
 """Orchestrates API -> normalization -> durable storage per marketplace."""
 from __future__ import annotations
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from typing import Iterable
 import json
 import logging
@@ -31,7 +31,7 @@ from .advertising import (
 )
 from .inbound import normalize_wb_supply, normalize_ozon_order
 from .promotions import normalize_wb_promotions, normalize_ozon_promotions, PromotionNormalizationError
-from .ozon_dates import posting_day, posting_range
+from .ozon_dates import MOSCOW, posting_day, posting_range
 from .wb_funnel import normalize_wb_funnel
 
 log=logging.getLogger(__name__)
@@ -355,6 +355,68 @@ class CollectionService:
             outcomes.extend(await self.collect_ozon_fulfillment_range(
                 shop_id=shop_id,connection_id=ozon_connection_id,start=start,end=end))
         return outcomes
+
+    async def collect_ozon_buyout_prices_range(self, *, connection_id: int,
+                                              start: date, end: date,
+                                              as_of: date | None = None) -> list[CollectionOutcome]:
+        """Keep raw buyout reports for a bounded order range, with delayed dates.
+
+        Look up to 60 subsequent calendar days (never beyond today), split
+        financial periods into disjoint pages of at most 31 days. The window
+        is a lookup policy, not a guarantee of when Ozon finalizes a buyout.
+        Store once per refresh, rather than duplicating a large report per day.
+        """
+        today = as_of or datetime.now(MOSCOW).date()
+        if not 0 <= (end-start).days < 90 or end > today:
+            raise ValueError('Buyout order range: 1–90 days, ending no later than today')
+        endpoint = 'finance/products/buyout'
+        report_end = min(today,end+timedelta(days=60))
+        reports=[]; errors=[]; attempts=0
+        first=start
+        while first <= report_end:
+            last=min(first+timedelta(days=30),report_end)
+            try:
+                result = (await self.ozon.finance_products_buyout(first.isoformat(),last.isoformat())
+                          if self.ozon else FetchResult.failure('ozon','Ozon client is not configured',None,1))
+            except Exception:
+                log.warning('Ozon buyout request failed before a response')
+                result = FetchResult.failure('ozon','Buyout request failed before a response',None,1)
+            attempts += result.attempts
+            entry={'date_from':first.isoformat(),'date_to':last.isoformat(),
+                   'http_status':result.status_code,'ok':result.ok}
+            if result.ok:
+                entry['response']=result.data
+                valid = (isinstance(result.data,dict) and isinstance(result.data.get('products'),list)
+                         and all(isinstance(row,dict) for row in result.data['products']))
+                if not valid:
+                    entry['ok']=False
+                    entry['error']='Buyout response has no valid products list'
+                    errors.append((entry['error'],result.status_code))
+            else:
+                entry['error']=result.error or 'Ozon buyout report failed'
+                errors.append((entry['error'],result.status_code))
+            reports.append(entry)
+            if not result.ok and (self.ozon is None or result.status_code in {401,403}):
+                break
+            first=last+timedelta(days=1)
+        run_id=0
+        # Preserve unexpected successful HTTP bodies too, for contract review.
+        if any('response' in entry for entry in reports):
+            raw={'order_date_from':start.isoformat(),'order_date_to':end.isoformat(),
+                 'report_date_from':start.isoformat(),'report_date_to':report_end.isoformat(),
+                 'as_of':today.isoformat(),'reports':reports}
+            run_id=self.repo.record_success(connection_id,endpoint,end.isoformat(),raw,[],
+                attempts=attempts,status='partial' if errors else 'success')
+        if errors:
+            error='; '.join(dict.fromkeys(message for message,_ in errors))
+            day=start
+            while day <= end:
+                failure_id=self.repo.record_failure(connection_id,endpoint,day.isoformat(),error,
+                    http_status=errors[0][1],attempts=attempts)
+                if not run_id:run_id=failure_id
+                day+=timedelta(days=1)
+        return [CollectionOutcome('ozon',end.isoformat(),not errors,run_id,
+                                  'buyout reports captured' if not errors else 'buyout report incomplete')]
 
     async def collect_ozon_fulfillment_range(self, *, shop_id: int, connection_id: int,
                                              start: date, end: date) -> list[CollectionOutcome]:

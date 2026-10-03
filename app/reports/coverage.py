@@ -48,7 +48,7 @@ def build_source_coverage(repo, shop_id: int, start: str, end: str) -> tuple[Sou
                 for r in attempts:
                     ep=r['endpoint']
                     family=('Заказы' if ep.startswith(('statistics/orders','analytics/orders'))
-                            else 'Финансы' if ep.startswith('finance/')
+                            else 'Финансы' if ep.startswith('finance/') and ep!='finance/products/buyout'
                             else 'Рекламная статистика' if ep.startswith(('promotion/','ads/','performance/')) else None)
                     if family==label:
                         primary_funnel=label=='Заказы' and conn.marketplace=='wildberries' and any(

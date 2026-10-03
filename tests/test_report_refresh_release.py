@@ -147,10 +147,11 @@ async def test_refresh_continues_independent_sources_and_progress_failure():
     collector=SimpleNamespace(
         collect_wb_orders_day=lambda *a,**k:call('wb'),collect_ozon_orders_day=lambda *a,**k:call('ozon'),
         collect_finance=lambda **k:call('finance'),collect_advertising=lambda **k:call('ads'),
-        collect_ozon_fulfillment_range=lambda **k:call('fulfillment'),collect_wb_sales_range=lambda **k:call('sales'))
+        collect_ozon_fulfillment_range=lambda **k:call('fulfillment'),collect_wb_sales_range=lambda **k:call('sales'),
+        collect_ozon_buyout_prices_range=lambda **k:call('buyouts'))
     ctx=SimpleNamespace(demo_mode=lambda:False,operation_lock=lock,shop_id=1,collector=collector,wb_connection_id=2,ozon_connection_id=3)
     stages=await refresh_reports(ctx,date(2026,9,28),date(2026,9,28),progress=AsyncMock(side_effect=RuntimeError('Telegram unavailable')))
-    assert calls==['wb','ozon','finance','finance','ads','ads','fulfillment','sales']
+    assert calls==['wb','ozon','finance','finance','ads','ads','fulfillment','buyouts','sales']
     assert stages[0].ok is False and all(s.ok for s in stages[1:])
 
 

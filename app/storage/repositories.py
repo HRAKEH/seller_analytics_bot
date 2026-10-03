@@ -475,6 +475,34 @@ class Repository:
                             (source_run_id,)).fetchone()
         return row['payload_json'] if row else None
 
+    def latest_buyout_capture(self, connection_id: int, data_date: str) -> dict | None:
+        """One latest snapshot covering this order day, including an empty one.
+
+        data_date on the source run anchors the requested order range's end;
+        the financial report periods remain in the original capture. Never
+        combine older revisions to fill prices absent in the latest capture.
+        """
+        day = date.fromisoformat(data_date)
+        with self.db.connect() as c:
+            rows = c.execute('''SELECT sr.*,rp.payload_json FROM source_runs sr
+                JOIN raw_payloads rp ON rp.source_run_id=sr.id
+                WHERE sr.connection_id=? AND sr.endpoint='finance/products/buyout'
+                  AND sr.status IN ('success','partial') AND sr.data_date BETWEEN ? AND ?
+                ORDER BY sr.finished_at DESC,sr.id DESC''',
+                (connection_id,data_date,(day+timedelta(days=89)).isoformat()))
+            # Stream candidates instead of requiring SQLite's optional JSON1
+            # extension or loading every report into memory at once.
+            for row in rows:
+                try:
+                    body=json.loads(row['payload_json'])
+                    first=date.fromisoformat(body['order_date_from'])
+                    last=date.fromisoformat(body['order_date_to'])
+                except (ValueError,TypeError,KeyError):
+                    continue
+                if first<=day<=last and (last-first).days<90 and last.isoformat()==row['data_date']:
+                    return dict(row)
+        return None
+
     def record_failure(self, connection_id: int, endpoint: str, data_date: str, error: str,
                        *, http_status: int | None = None, attempts: int = 1,
                        started_at: str | None = None) -> int:

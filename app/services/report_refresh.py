@@ -57,6 +57,8 @@ async def refresh_reports(ctx, start: date, end: date, progress=None) -> tuple[R
         if ctx.ozon_connection_id is not None:
             await run('fulfillment','Отправления Ozon · FBO/FBS',lambda:ctx.collector.collect_ozon_fulfillment_range(
                 shop_id=ctx.shop_id,connection_id=ctx.ozon_connection_id,start=start,end=end))
+            await run('buyouts','Цены выкупа Ozon · отдельный отчёт',lambda:ctx.collector.collect_ozon_buyout_prices_range(
+                connection_id=ctx.ozon_connection_id,start=start,end=end))
         if ctx.wb_connection_id is not None:
             await run('sales','Продажи и возвраты WB',lambda:ctx.collector.collect_wb_sales_range(
                 shop_id=ctx.shop_id,connection_id=ctx.wb_connection_id,start=start,end=end))

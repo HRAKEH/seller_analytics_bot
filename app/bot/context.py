@@ -110,8 +110,11 @@ class AppContext:
         if self.demo_mode() or self.ozon_connection_id is None:
             return []
         async with self.operation_lock('buyer_prices'):
-            return await self.collector.collect_ozon_fulfillment_range(
+            outcomes = await self.collector.collect_ozon_fulfillment_range(
                 shop_id=self.shop_id, connection_id=self.ozon_connection_id, start=day, end=day)
+            outcomes += await self.collector.collect_ozon_buyout_prices_range(
+                connection_id=self.ozon_connection_id, start=day, end=day)
+            return outcomes
 
     async def backfill_orders(self, start: date, end: date, marketplace: str = 'all'):
         """Incrementally load order history, reusing already-complete DB days.
@@ -213,6 +216,11 @@ class AppContext:
             if include_finance:
                 outcomes += await self.collector.collect_finance(start=start,end=end,shop_id=self.shop_id,
                     wb_connection_id=self.wb_connection_id,ozon_connection_id=self.ozon_connection_id)
+            if self.ozon_connection_id is not None:
+                # Optional price diagnostics keep their own source status.
+                # A denied buyout report must not retry all lifecycle/finance APIs.
+                await self.collector.collect_ozon_buyout_prices_range(
+                    connection_id=self.ozon_connection_id,start=start,end=end)
             return outcomes
 
     async def collect_advertising(self, start: date, end: date):

@@ -5,6 +5,7 @@ This module only transports raw source data. Business meanings are normalized in
 """
 from __future__ import annotations
 import hashlib
+from datetime import date
 from .base import MarketplaceClient, FetchResult
 
 
@@ -183,6 +184,19 @@ class OzonClient(MarketplaceClient):
     async def finance_accrual_types(self) -> FetchResult:
         """Current Ozon Seller Finance dictionary of accrual types."""
         return await self.request('POST', '/v1/finance/accrual/types', json={},
+                                  headers=self._headers(), rate_key='finance', min_interval=1.0)
+
+    async def finance_products_buyout(self, date_from: str, date_to: str) -> FetchResult:
+        """Capture the buyout report without redefining order/realization money.
+
+        This report has its own financial period. A returned buyout price is
+        not, on its own, proof of the cabinet's daily realization metric.
+        """
+        first, last = date.fromisoformat(date_from), date.fromisoformat(date_to)
+        if not 0 <= (last-first).days < 31:
+            raise ValueError('Ozon buyout report: from 1 to 31 days')
+        return await self.request('POST', '/v1/finance/products/buyout',
+                                  json={'date_from':first.isoformat(), 'date_to':last.isoformat()},
                                   headers=self._headers(), rate_key='finance', min_interval=1.0)
 
     async def finance_accrual_by_day(self, day: str, last_id: str = '') -> FetchResult:
