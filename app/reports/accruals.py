@@ -7,6 +7,7 @@ from pathlib import Path
 
 from app.services.finance import normalize_ozon_accruals
 from app.services.money import money_sum
+from .dates import readable_dates
 
 
 @dataclass(frozen=True)
@@ -67,6 +68,7 @@ def build_accrual_ledger(repo, shop_id: int, start: str, end: str) -> AccrualLed
     return AccrualLedger(start,end,tuple(sorted({p['data_date'] for p in payloads})),tuple(rows))
 
 
+@readable_dates
 def format_accrual_ledger(ledger: AccrualLedger) -> str:
     expected=(date.fromisoformat(ledger.end)-date.fromisoformat(ledger.start)).days+1
     lines=[f'🧮 <b>Начисления Ozon · {ledger.start} — {ledger.end}</b>',

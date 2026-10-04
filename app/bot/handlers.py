@@ -38,6 +38,8 @@ from app.reports.coverage import build_source_coverage, format_source_coverage
 from .context import AppContext
 from .navigation import NavigationMessages, MenuCleanupMiddleware
 from .report_cards import DailyCardController, send_daily_card
+from .operational_cards import OperationalCards
+from .presentation import PresentationMiddleware
 from app.reports.cards import format_daily_card
 from .keyboards import (
     main_keyboard, reports_keyboard, products_keyboard, money_keyboard, supply_keyboard,
@@ -86,6 +88,10 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
     cleanup=MenuCleanupMiddleware(navigation,menu_button_texts(),allowed)
     dp.message.middleware(cleanup)
     dp.callback_query.middleware(cleanup)
+    presentation = PresentationMiddleware(ctx)
+    dp.message.middleware(presentation)
+    dp.callback_query.middleware(presentation)
+    operational_cards = OperationalCards(ctx, registry)
 
     async def denied(message: types.Message, permission: str = 'view'):
         need={'view':'просмотр','operate':'аналитика/обновление данных','manage':'управление магазином'}.get(permission,permission)
@@ -919,7 +925,7 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
             product=ctx.repository.link_marketplace_listings(ctx.shop_id,internal,refs)
         except Exception as exc:
             return await message.answer(f'⚠️ Не удалось связать товары: {escape(str(exc)[:300])}')
-        await message.answer(f'✅ Листинги связаны с товаром <b>{escape(product.internal_sku)}</b>.',parse_mode='HTML')
+        await message.answer(f'✅ Листинги связаны с товаром. Внутренний SKU <code>{escape(product.internal_sku)}</code>.',parse_mode='HTML')
 
     # --- main commands ---------------------------------------------------
     @dp.message(Command('start'))
@@ -1239,7 +1245,8 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
         conn=next((c for c in ctx.repository.list_connections(ctx.shop_id) if c.marketplace==market and c.enabled),None)
         if not conn: return await message.answer('Этот маркетплейс не подключён.')
         if ctx.repository.set_product_cost_by_listing(conn.id,parts[2],cost,effective_date=day):
-            await message.answer(f'✅ Себестоимость SKU {escape(parts[2])} с {day}: {cost:.2f} ₽')
+            label='WB' if market=='wildberries' else 'Ozon'
+            await message.answer(f'✅ {label} · себестоимость SKU <code>{escape(parts[2])}</code> с {day}: {cost:.2f} ₽',parse_mode='HTML')
         else: await message.answer('SKU пока не найден. Сначала выполните /backfill.')
 
     @dp.message(Command('wb_accruals'))
@@ -1264,10 +1271,8 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
             notes=engine.evaluate(ctx.shop_id,today=local_now().date(),order_drop_pct=p.alert_order_drop_pct,
                 order_lookback_days=p.alert_order_lookback_days,api_stale_hours=p.alert_api_stale_hours,
                 drr_pct=p.alert_drr_pct,stock_risk_days=p.stock_risk_days,stock_velocity_days=p.stock_velocity_days)
-        from app.reports.alerts import format_active_alerts
-        report=build_product_report(ctx.repository,ctx.shop_id,local_now().date()-timedelta(days=1),
-            stock_lookback_days=p.stock_velocity_days,stock_risk_days=p.stock_risk_days)
-        await send(message,format_active_alerts(ctx.repository,ctx.shop_id,report))
+        await operational_cards.show(message, 'alerts')
+        await navigation.dismiss(message)
 
     def current_action_center():
         end=local_now().date()-timedelta(days=1)
@@ -1281,12 +1286,12 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
     @dp.message(Command('actions'))
     async def cmd_actions(message: types.Message):
         if not allowed(message): return await denied(message)
-        end=local_now().date()-timedelta(days=1)
-        center=build_action_center(ctx.repository,ctx.shop_id,end,persist=allowed(message,'operate'))
-        await message.answer(
-            format_action_center(center),
-            parse_mode='HTML',
-            reply_markup=action_center_keyboard(center.items) if center.items else keyboard_for(message))
+        await operational_cards.show(message, 'actions')
+        await navigation.dismiss(message)
+
+    @dp.callback_query(F.data.startswith('ops:'))
+    async def cb_operational_card(callback: types.CallbackQuery):
+        await operational_cards.handle(callback)
 
     @dp.callback_query(F.data == 'action:list')
     async def cb_action_list(callback: types.CallbackQuery):

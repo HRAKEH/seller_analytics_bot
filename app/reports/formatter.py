@@ -3,6 +3,7 @@ from __future__ import annotations
 from html import escape
 from decimal import Decimal, ROUND_HALF_UP
 from .daily import DailyReport, MarketplaceDaily
+from .dates import readable_dates
 
 def money(value: float | None, *, precision: int = 0) -> str:
     if value is None: return '—'
@@ -53,6 +54,7 @@ def _buyer_price_lines(prices) -> list[str]:
         lines.append('  <i>цены от ' + escape(prices.freshness) + '</i>')
     return lines
 
+@readable_dates
 def format_daily(report: DailyReport) -> str:
     lines=[f'📊 <b>Заказы за {report.day}</b>', '━━━━━━━━━━━━━━━━']
     total=report.total_units
@@ -111,6 +113,7 @@ def format_daily(report: DailyReport) -> str:
     return '\n'.join(lines)
 
 
+@readable_dates
 def format_period(report) -> str:
     lines=[f'📅 <b>{escape(report.label)}</b> · {report.start} — {report.end}',
            f'✅ Полных дней: {report.complete_days}/{report.requested_days}', '━━━━━━━━━━━━━━━━']
@@ -129,6 +132,7 @@ def _product_name(name: str) -> str:
     return escape(clean)
 
 
+@readable_dates
 def format_product_report(report) -> str:
     lines=[f'🏆 <b>Товары · {report.start} — {report.end}</b>','━━━━━━━━━━━━━━━━']
     labels={'ozon':'🟣 Ozon','wildberries':'🔵 Wildberries'}
@@ -140,7 +144,7 @@ def format_product_report(report) -> str:
         basis = ' (по предельной цене)' if market == 'ozon' else ''
         lines.append(f'\n{labels.get(market,market)} · <b>Top-{len(rows)} по сумме заказов{basis}*</b>')
         for i,row in enumerate(rows,1):
-            lines.append(f'{i}. <b>{_product_name(row.name)}</b>\n   Артикул {escape(row.sku)} · {row.units:g} шт. · {money(row.order_amount)}')
+            lines.append(f'{i}. <b>{_product_name(row.name)}</b>\n   Артикул <code>{escape(row.sku)}</code> · {row.units:g} шт. · {money(row.order_amount)}')
 
     if not getattr(report,'comparison_complete',True):
         lines.append('\n⚠️ Сравнение роста/просадки скрыто: текущий или предыдущий период загружен не полностью.')
@@ -149,12 +153,12 @@ def format_product_report(report) -> str:
         lines.append('\n📉 <b>Просадка по заказанным единицам</b>')
         for row in report.decline[:5]:
             pct=f'{row.change_pct:.0f}%' if row.change_pct is not None else '—'
-            lines.append(f'• {labels.get(row.marketplace,row.marketplace)} · {_product_name(row.name)} · {escape(row.sku)}: {row.previous_units:g} → {row.current_units:g} ({pct})')
+            lines.append(f'• {labels.get(row.marketplace,row.marketplace)} · {_product_name(row.name)} · артикул <code>{escape(row.sku)}</code>: {row.previous_units:g} → {row.current_units:g} ({pct})')
     if report.growth:
         lines.append('\n📈 <b>Рост</b>')
         for row in report.growth[:5]:
             pct=f'+{row.change_pct:.0f}%' if row.change_pct is not None else 'новый спрос'
-            lines.append(f'• {labels.get(row.marketplace,row.marketplace)} · {_product_name(row.name)} · {escape(row.sku)}: {row.previous_units:g} → {row.current_units:g} ({pct})')
+            lines.append(f'• {labels.get(row.marketplace,row.marketplace)} · {_product_name(row.name)} · артикул <code>{escape(row.sku)}</code>: {row.previous_units:g} → {row.current_units:g} ({pct})')
 
     if report.fulfillment_orders:
         lines.append('\n🚚 <b>Схемы по операционным заказам</b>')
@@ -178,7 +182,7 @@ def format_product_report(report) -> str:
                 state=f'≈ {row.days_left:.1f} дн.'
             else:
                 state='нет оценки спроса'
-            lines.append(f'• {labels.get(row.marketplace,row.marketplace)} · {_product_name(row.name)} · {escape(row.sku)}\n   {row.available_units:g} шт. · {state}')
+            lines.append(f'• {labels.get(row.marketplace,row.marketplace)} · {_product_name(row.name)} · артикул <code>{escape(row.sku)}</code>\n   {row.available_units:g} шт. · {state}')
     elif report.stock_risks:
         lines.append(f'\n✅ По текущей оценке нет товаров с запасом менее {report.risk_days} дней.')
 
@@ -187,6 +191,7 @@ def format_product_report(report) -> str:
     return '\n'.join(lines)
 
 
+@readable_dates
 def format_stock_report(report) -> str:
     labels={'ozon':'🟣 Ozon','wildberries':'🔵 Wildberries'}
     lines=['📦 <b>Остатки и запас</b>','━━━━━━━━━━━━━━━━']
@@ -209,7 +214,7 @@ def format_stock_report(report) -> str:
             elif row.avg_daily_units==0: days='нет спроса за загруженные дни'
             else: days=f'{row.days_left:.1f} дн.'
             schemes=' · '.join(f'{escape(s)} {v:g} шт.' for s,v in row.scheme_units)
-            lines.append(f'• <b>{_product_name(row.name)}</b> · артикул {escape(row.sku)}\n   Остаток: {row.available_units:g} шт. · хватит на {days}\n   {demand} · история {row.coverage_days} дней')
+            lines.append(f'• <b>{_product_name(row.name)}</b> · артикул <code>{escape(row.sku)}</code>\n   Остаток: {row.available_units:g} шт. · хватит на {days}\n   {demand} · история {row.coverage_days} дней')
             if schemes:lines.append('   '+schemes)
             if row.reserved_units:lines.append(f'   Резерв: {row.reserved_units:g} шт.')
             if row.captured_at:lines.append('   Снимок API: '+escape(row.captured_at))
@@ -218,6 +223,7 @@ def format_stock_report(report) -> str:
     lines.append('\n<i>Дни запаса = остаток в штуках ÷ среднее число заказанных единиц за загруженные дни. Резервы показаны отдельно. FBO/FBW — склад площадки, FBS — склад продавца.</i>')
     return '\n'.join(lines)
 
+@readable_dates
 def format_finance(report) -> str:
     def fm(value):return money(value,precision=2)
     lines=[f'💰 <b>Финансы · {report.start} — {report.end}</b>','━━━━━━━━━━━━━━━━']

@@ -11,7 +11,7 @@ import pytest
 
 from app.integrations.base import FetchResult
 from app.integrations.ozon import OzonClient
-from app.reports.alerts import format_active_alerts, format_alert_digest
+from app.reports.alerts import format_active_alerts, format_alert_digest, format_alert_detail
 from app.reports.formatter import format_product_report, format_stock_report
 from app.reports.operations import format_action_center, format_inbound
 from app.reports.products import build_product_report, StockRisk
@@ -78,8 +78,10 @@ def test_alert_displays_three_units_and_fourteen_days(data):
     row = next(r for r in report.stock_risks if r.sku == '1001')
     assert row.available_units == 3 and row.days_left == pytest.approx(14)
     text = format_active_alerts(repo, shop.id, report)
-    assert 'WB · артикул 1001' in text and '3 шт.' in text and '14.0 дн.' in text
-    assert 'Снимок API:' in text and 'Длинное название товара' in text
+    assert 'WB · артикул <code>1001</code>' in text and '3 шт.' in text and '14.0 дн.' in text
+    assert 'Снимок API:' not in text and 'Длинное название товара' in text
+    detail=format_alert_detail(repo.active_alert_states(shop.id)[0],report)
+    assert 'Снимок API:' in detail and 'Среднее:' in detail and '14.0 дн.' in detail
 
 
 def test_full_names_and_missing_ozon_stock_are_explicit(data):
@@ -308,7 +310,8 @@ def test_action_center_long_products_still_fit_one_message():
     items = tuple(ActionItem(str(i), 1, 'supply', '😀<&' * 500, '🟠<&' * 500, 'Подсказка ' * 50) for i in range(20))
     text = format_action_center(ActionCenter(1, DAY, items))
     assert utf16_length(text) <= 3900
-    assert 'Ещё действий: 12' in text
+    assert 'Всего: 20 · страница 1/4' in text
+    assert text.count('Срочно ·') == 5
 
 
 def test_report_splitting_preserves_long_names_emoji_and_entities():

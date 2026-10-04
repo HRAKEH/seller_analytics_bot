@@ -7,6 +7,13 @@ def utf16_length(text: str) -> int:
     return len(text.encode('utf-16-le')) // 2
 
 
+def page_slice(items, page: int = 0, size: int = 5):
+    rows = list(items)
+    pages = max(1, (len(rows) + size - 1) // size)
+    page = max(0, min(int(page), pages - 1))
+    return rows[page * size:(page + 1) * size], page, pages
+
+
 def escape_clip(text: str, limit: int) -> str:
     """Clip plain text before escaping, without cutting an HTML entity."""
     escaped = escape(str(text))

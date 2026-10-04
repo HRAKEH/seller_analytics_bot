@@ -30,7 +30,7 @@ from .advertising import (
     AdvertisingNormalizationError,
 )
 from .inbound import normalize_wb_supply, normalize_ozon_order
-from .promotions import normalize_wb_promotions, normalize_ozon_promotions, PromotionNormalizationError
+from .promotions import normalize_wb_promotions, normalize_ozon_promotions, PromotionNormalizationError, wb_promotion_finished
 from .ozon_dates import MOSCOW, posting_day, posting_range
 from .wb_funnel import normalize_wb_funnel
 
@@ -981,26 +981,32 @@ class CollectionService:
                     outcomes.append(self._failure(wb_connection_id,endpoint,ds,'wildberries',result))
                 else:
                     promos=((result.data or {}).get('data') or {}).get('promotions') or []
-                    product_payloads={}; attempts=result.attempts; partial=False
+                    product_payloads={}; attempts=result.attempts; partial=False; errors=[]
                     for promo in promos:
                         if not isinstance(promo,dict) or promo.get('id') is None: continue
                         # WB documents nomenclatures as not applicable to auto promotions.
                         # Keep the calendar event, but never turn this expected limitation into a retry storm.
-                        if 'auto' in str(promo.get('type') or '').casefold():
+                        if 'auto' in str(promo.get('type') or '').casefold() or wb_promotion_finished(promo, as_of):
                             continue
                         detail=await self.wb.calendar_promotion_products_all(int(promo['id']),in_action=True)
                         attempts += detail.attempts
                         if detail.ok: product_payloads[str(promo['id'])]=detail.data
-                        else: partial=True
+                        else:
+                            partial=True
+                            message=f'WB · акция {promo["id"]}: {detail.error or "не удалось загрузить товары акции"}'
+                            errors.append({'promotion_id':str(promo['id']), 'http_status':detail.status_code, 'error':detail.error or 'API error'})
+                            self.repo.record_failure(wb_connection_id, f'calendar/promotions/{promo["id"]}/products', ds,
+                                message, http_status=detail.status_code, attempts=detail.attempts)
                     try:
                         normalized=normalize_wb_promotions(result.data,product_payloads)
-                        raw={'calendar':result.data,'participating_products':product_payloads}
+                        raw={'calendar':result.data,'participating_products':product_payloads, 'errors':errors}
+                        error_message='; '.join(f'WB · акция {x["promotion_id"]}: {x["error"]}' for x in errors) or None
                         rid=self.repo.record_success(wb_connection_id,endpoint,ds,raw,[],attempts=attempts,
-                                                     store_raw=False,status='partial' if partial else 'success')
+                                                     store_raw=True,status='partial' if partial else 'success', error=error_message)
                         self.repo.upsert_promotions(wb_connection_id,rid,'wildberries',normalized,
                             complete_external_ids=[str(x.get('id')) for x in promos if isinstance(x,dict) and x.get('id') is not None])
                         outcomes.append(CollectionOutcome('wildberries',ds,not partial,rid,
-                            'promotion calendar loaded' if not partial else 'promotion calendar loaded partially'))
+                            'Календарь акций WB загружен' if not partial else 'Товары акций WB загружены не полностью. '+str(error_message)))
                     except (PromotionNormalizationError,ValueError) as exc:
                         rid=self.repo.record_failure(wb_connection_id,endpoint,ds,f'Normalization: {exc}',attempts=attempts)
                         outcomes.append(CollectionOutcome('wildberries',ds,False,rid,str(exc)))

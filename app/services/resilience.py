@@ -23,6 +23,18 @@ def _all_ok(outcomes) -> bool:
     return bool(outcomes) and all(getattr(x,'ok',False) for x in outcomes)
 
 
+def partial_error(job_type: str, outcomes) -> str:
+    if job_type != 'promotions':
+        return f'{job_type} retry remains partial'
+    failures = []
+    for outcome in outcomes:
+        if outcome.ok:
+            continue
+        market = {'wildberries': 'WB', 'ozon': 'Ozon'}.get(outcome.marketplace, outcome.marketplace)
+        failures.append(f'{market}: {outcome.message}')
+    return 'Акции обновлены не полностью. ' + ('; '.join(failures) or 'Нет результата загрузки.')
+
+
 def queue_retry(repo, settings, shop_id: int, job_type: str, unique_key: str, payload: dict, *, error: str | None=None, delay_seconds: int=60) -> int:
     return repo.enqueue_retry_job(shop_id,job_type,unique_key,payload,
         max_attempts=settings.retry_max_attempts,delay_seconds=delay_seconds,last_error=error)
@@ -86,7 +98,7 @@ async def execute_retry_job(bot, registry, job: dict) -> None:
         else:
             raise ValueError(f'unknown retry job type: {job_type}')
         if job_type!='daily' and outcomes and not _all_ok(outcomes):
-            raise RuntimeError(f'{job_type} retry remains partial')
+            raise RuntimeError(partial_error(job_type, outcomes))
     finally:
         reset_log_context(tokens)
 
@@ -140,8 +152,8 @@ async def retry_worker_loop(bot, registry):
                         ctx=registry.get(int(job['shop_id']))
                         await _notify_shop(bot,ctx,
                             f'❌ <b>Фоновая задача остановлена после повторных попыток</b>\n'
-                            f'Тип: <code>{escape(str(job["job_type"]))}</code>\n'
-                            f'Ошибка: {escape(str(exc)[:500])}')
+                            f'Раздел: {escape({"promotions":"Акции", "advertising":"Реклама"}.get(str(job["job_type"]), str(job["job_type"])))}\n'
+                            f'Причина: {escape(str(exc)[:1500])}')
                     except Exception: log.exception('Cannot notify about dead retry job')
             else:
                 if not repo.complete_retry_job(job_id,owner_id=owner):

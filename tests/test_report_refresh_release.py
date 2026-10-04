@@ -252,7 +252,7 @@ async def test_actual_telegram_refresh_menu_routes_date_and_rejects_viewer(tmp_p
         await send(101,COMMAND_BUTTONS['refresh'],2)
         await send(101,'1 2026-09-28',3)
         assert ctx.refresh_reports.await_args.args==(date(2026,9,28),date(2026,9,28))
-        assert any('2026-09-28 — 2026-09-28' in getattr(call,'text','') for call in calls)
+        assert any('28.09.2026 — 28.09.2026' in getattr(call,'text','') for call in calls)
     finally:await bot.session.close()
 
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 from html import escape
 from app.services.supply import SupplyPlan, SupplyRow, SupplyCalibrationReport
+from .dates import readable_dates
 
 
 def _num(v: float | None) -> str:
@@ -15,6 +16,7 @@ def _cover(v: float | None) -> str:
     return f'{v:.1f} дн.'
 
 
+@readable_dates
 def format_supply_plan(plan: SupplyPlan, *, limit: int=15) -> str:
     counts={x:sum(1 for r in plan.rows if r.abc_class==x) for x in 'ABC'}
     xyz={x:sum(1 for r in plan.rows if r.xyz_class==x) for x in ('X','Y','Z','?')}
@@ -37,7 +39,7 @@ def format_supply_plan(plan: SupplyPlan, *, limit: int=15) -> str:
             markets=', '.join('WB' if m=='wildberries' else 'Ozon' for m in r.marketplaces)
             confidence={'low':'мало данных','medium':'средняя','high':'высокая'}.get(r.confidence,r.confidence)
             lines.append(
-                f'🚨 <b>{escape(r.name)}</b> · {markets} · {escape(r.internal_sku)} · {r.abc_class}{r.xyz_class}\n'
+                f'🚨 <b>{escape(r.name)}</b> · {markets} · Внутренний SKU <code>{escape(r.internal_sku)}</code> · {r.abc_class}{r.xyz_class}\n'
                 f'  остаток {_num(r.available_units)}{stock_note} · в пути {_num(r.inbound_units)} · запас {_cover(r.days_cover)}\n'
                 f'  прогноз {_num(r.forecast_daily_units)}/день · 7д {_num(r.forecast_next_7_units)}{trend}\n'
                 f'  корректировка bias ×{r.bias_correction:.2f} · promo ×{r.promo_factor:.2f} ({r.promo_days} дн.)\n'
@@ -60,10 +62,11 @@ def format_supply_plan(plan: SupplyPlan, *, limit: int=15) -> str:
     return '\n'.join(lines)
 
 
+@readable_dates
 def format_supply_product(row: SupplyRow) -> str:
     trend='—' if row.trend_pct is None else f'{row.trend_pct:+.1f}%'
     return '\n'.join([
-        f'🚚 <b>{escape(row.name)}</b>',f'SKU: <code>{escape(row.internal_sku)}</code>',
+        f'🚚 <b>{escape(row.name)}</b>',f'Внутренний SKU: <code>{escape(row.internal_sku)}</code>',
         'Площадки: '+', '.join('WB' if m=='wildberries' else 'Ozon' for m in row.marketplaces),
         f'Класс: <b>{row.abc_class}{row.xyz_class}</b> · confidence {row.confidence}',
         f'История: {row.history_days} полных дней · {row.first_history_date or "—"} → {row.last_history_date or "—"}',
@@ -82,6 +85,7 @@ def format_supply_product(row: SupplyRow) -> str:
     ])
 
 
+@readable_dates
 def format_supply_calibration(report: SupplyCalibrationReport, *, limit: int=20) -> str:
     lines=[f'🧠 <b>Самокалибровка поставок · {report.as_of.isoformat()}</b>','━━━━━━━━━━━━━━━━',
            f'Автоприменение буферов: <b>{"включено" if report.auto_apply else "выключено"}</b>',
@@ -96,7 +100,7 @@ def format_supply_calibration(report: SupplyCalibrationReport, *, limit: int=20)
             zero='—' if r.zero_stock_rate_pct is None else f'{r.zero_stock_rate_pct:.0f}%'
             delay='—' if r.p75_inbound_delay_days is None else f'{r.p75_inbound_delay_days:.1f} дн.'
             lines.append(
-                f'🧠 <b>{escape(r.internal_sku)}</b> · {r.confidence}\n'
+                f'🧠 Внутренний SKU <code>{escape(r.internal_sku)}</code> · {r.confidence}\n'
                 f'  safety +{r.safety_buffer_days} дн. · lead +{r.lead_buffer_days} дн.\n'
                 f'  WAPE {wape} ({r.forecast_samples} выборок) · нулевой остаток {zero} ({r.inventory_samples} снимков)\n'
                 f'  P75 задержки {delay} ({r.inbound_delay_samples} поставок)\n'

@@ -2,6 +2,7 @@
 from dataclasses import dataclass
 from datetime import date, timedelta
 from html import escape
+from .dates import readable_dates
 
 
 @dataclass(frozen=True)
@@ -62,6 +63,7 @@ def build_source_coverage(repo, shop_id: int, start: str, end: str) -> tuple[Sou
     return tuple(result)
 
 
+@readable_dates
 def format_source_coverage(rows) -> str:
     lines=['📡 <b>Источники и полнота периода</b>']
     for row in rows:

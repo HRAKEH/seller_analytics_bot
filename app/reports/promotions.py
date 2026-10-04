@@ -2,8 +2,10 @@ from __future__ import annotations
 from datetime import date, timedelta
 from html import escape
 from app.storage import Repository
+from .dates import readable_dates
 
 
+@readable_dates
 def format_promotions(repo: Repository, shop_id: int, as_of: date, *, future_days: int=60) -> str:
     end=as_of+timedelta(days=max(1,int(future_days)))
     promos=repo.promotions_for_shop(shop_id,as_of.isoformat(),end.isoformat())
@@ -13,13 +15,20 @@ def format_promotions(repo: Repository, shop_id: int, as_of: date, *, future_day
         key=(row['marketplace'],str(row['external_promotion_id']))
         by_promo.setdefault(key,[]).append(row)
     lines=[f'📅 <b>Календарь акций · {as_of.isoformat()} → {end.isoformat()}</b>','━━━━━━━━━━━━━━━━']
+    for conn in repo.list_connections(shop_id):
+        if not conn.enabled:continue
+        endpoint='calendar/promotions' if conn.marketplace=='wildberries' else 'actions/promotions'
+        run=repo.latest_run(conn.id, endpoint)
+        if run and run.status != 'success':
+            label='WB' if conn.marketplace=='wildberries' else 'Ozon'
+            lines.append(f'⚠️ {label}: '+escape(str(run.error or 'Последняя загрузка акций не завершена.')[:650]))
     if not promos:
         lines += ['Акции пока не загружены или в выбранном горизонте их нет.',
                   'Используйте кнопку «🔄 Обновить акции».']
         return '\n'.join(lines)
     for promo in promos[:20]:
         market='🔵 WB' if promo['marketplace']=='wildberries' else '🟣 Ozon'
-        start=str(promo.get('start_at') or '')[:10] or '—'; finish=str(promo.get('end_at') or '')[:10] or '—'
+        start=str(promo.get('start_at') or '') or '—'; finish=str(promo.get('end_at') or '') or '—'
         key=(promo['marketplace'],str(promo['external_promotion_id']))
         linked=[x for x in by_promo.get(key,[]) if x.get('product_id') is not None]
         unresolved=max(0,int(promo.get('participating_products') or 0)-len(linked))
@@ -29,8 +38,10 @@ def format_promotions(repo: Repository, shop_id: int, as_of: date, *, future_day
         else:
             lines.append(f'  {start} → {finish} · участвует SKU: {int(promo.get("participating_products") or 0)} · связано: {len(linked)}')
         if linked:
-            preview=', '.join(escape(str(x.get('internal_sku') or x.get('marketplace_sku'))) for x in linked[:5])
-            lines.append(f'  📦 {preview}' + (' …' if len(linked)>5 else ''))
+            for row in linked[:5]:
+                article=str(row.get('marketplace_sku') or row.get('internal_sku'))
+                lines.append(f'  📦 артикул <code>{escape(article)}</code>')
+            if len(linked)>5:lines.append(f'  Ещё товаров: {len(linked)-5}')
         if unresolved:
             lines.append(f'  ⚠️ Не удалось связать с внутренним товаром: {unresolved}')
     if len(promos)>20: lines.append(f'\n… ещё акций: {len(promos)-20}')

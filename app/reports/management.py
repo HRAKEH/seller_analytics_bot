@@ -5,6 +5,7 @@ from datetime import date,timedelta
 from html import escape
 from app.storage import Repository
 from app.services.money import money_sum
+from .dates import readable_dates
 
 EXPENSE_KEYS=('commission','logistics','storage','acceptance','acquiring','services','penalties')
 
@@ -108,6 +109,7 @@ def _money(v: float | None) -> str:
     return '—' if v is None else f'{v:,.2f}'.replace(',',' ')+' ₽'
 
 
+@readable_dates
 def format_management(report: ManagementReport) -> str:
     lines=[f'📈 <b>Управленческий результат · {report.start} — {report.end}</b>','━━━━━━━━━━━━━━━━',
            '⚠️ Это <b>операционная оценка</b>, не бухгалтерская чистая прибыль: заказы, финансовые удержания и реклама могут иметь разные лаги.']

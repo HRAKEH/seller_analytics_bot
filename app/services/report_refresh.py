@@ -4,6 +4,7 @@ import asyncio
 import logging
 from dataclasses import dataclass
 from datetime import date, timedelta
+from app.reports.dates import readable_dates, display_day
 
 log = logging.getLogger(__name__)
 
@@ -42,10 +43,10 @@ async def refresh_reports(ctx, start: date, end: date, progress=None) -> tuple[R
         for day_offset in range((end-start).days+1):
             day=start+timedelta(days=day_offset)
             if ctx.wb_connection_id is not None:
-                await run('orders:wb:'+day.isoformat(),'Заказы WB · '+day.isoformat(),
+                await run('orders:wb:'+day.isoformat(),'Заказы WB · '+display_day(day),
                     lambda day=day: _one(ctx.collector.collect_wb_orders_day(ctx.wb_connection_id,day,shop_id=ctx.shop_id)))
             if ctx.ozon_connection_id is not None:
-                await run('orders:ozon:'+day.isoformat(),'Заказы Ozon · '+day.isoformat(),
+                await run('orders:ozon:'+day.isoformat(),'Заказы Ozon · '+display_day(day),
                     lambda day=day: _one(ctx.collector.collect_ozon_orders_day(ctx.ozon_connection_id,day,shop_id=ctx.shop_id)))
         for key,method,title in (('finance',ctx.collector.collect_finance,'Начисления и удержания'),
                                  ('advertising',ctx.collector.collect_advertising,'Рекламная статистика')):
@@ -69,6 +70,7 @@ async def _one(awaitable):
     return [await awaitable]
 
 
+@readable_dates
 def format_refresh(stages, start: date, end: date) -> str:
     lines=[f'🔄 <b>Обновление · {start} — {end}</b>']
     for stage in stages:

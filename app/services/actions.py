@@ -18,6 +18,7 @@ class ActionItem:
     evidence: tuple[str,...] = ()
     status: str = 'open'
     snoozed_until: str | None = None
+    articles: tuple[tuple[str, str], ...] = ()
 
 @dataclass(frozen=True)
 class ActionCenter:
@@ -136,7 +137,7 @@ def build_action_center(repo: Repository, shop_id: int, as_of: date, *, persist:
             markets=', '.join('WB' if m=='wildberries' else 'Ozon' for m in r.missing_inventory_marketplaces)
             _merge_action(actions,ActionItem(f'stock:unknown:{r.product_id}',2,'stock',f'❓ Нет данных об остатке · {r.name}',
                 f'{markets}: нет полного снимка остатков — сначала обновите остатки, затем проверьте план поставок.',
-                '📦 Товары и SKU → 📦 Остатки',tuple(['остаток неизвестен',*promo_evidence])))
+                '📦 Товары и SKU → 📦 Остатки',tuple(['остаток неизвестен',*promo_evidence]), articles=(('Внутренний', r.internal_sku),)))
             continue
         if r.needs_order:
             critical=(r.available_units<=0 or (r.days_cover is not None and r.days_cover<=max(1,r.effective_lead_time_days)))
@@ -151,10 +152,10 @@ def build_action_center(repo: Repository, shop_id: int, as_of: date, *, persist:
             if r.inventory_stale: evidence.append(f'остаток устарел на {r.inventory_age_days} дн.')
             evidence += promo_evidence
             _merge_action(actions,ActionItem(f'supply:{r.product_id}',p,'supply',f'🚚 Пополнить {r.name}: {r.recommended_order_units:g} шт.',
-                f'{markets} · {cover}{inbound}. Это рекомендация по прогнозу, проверьте перед закупкой.','🚚 Поставки → 🚚 План поставок',tuple(evidence)))
+                f'{markets} · {cover}{inbound}.','🚚 Поставки → 🚚 План поставок',tuple(evidence), articles=(('Внутренний', r.internal_sku),)))
         elif r.inventory_stale:
             _merge_action(actions,ActionItem(f'stock:stale:{r.product_id}',2,'stock',f'🕒 Старый остаток · {r.internal_sku}',
-                f'Снимок остатков старше {r.inventory_age_days} дн.','📦 Товары и SKU → 📦 Остатки',tuple(promo_evidence)))
+                f'Снимок остатков старше {r.inventory_age_days} дн.','📦 Товары и SKU → 📦 Остатки',tuple(promo_evidence), articles=(('Внутренний', r.internal_sku),)))
 
     no_cost=repo.products_without_cost(shop_id,limit=100000)
     if no_cost:

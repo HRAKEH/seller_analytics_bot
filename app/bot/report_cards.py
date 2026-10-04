@@ -13,13 +13,16 @@ from aiogram.exceptions import TelegramAPIError, TelegramBadRequest
 from app.reports.cards import DailyCardText, format_daily_card, render_daily_card
 from app.reports.daily import build_daily_report_with_currency
 from .keyboards import daily_card_keyboard
+from app.reports.dates import readable_text
 
 log=logging.getLogger(__name__)
 
 
 async def prepare_daily_card(ctx, day: date) -> DailyCardText:
     report=await build_daily_report_with_currency(ctx.repository,ctx.shop_id,day)
-    return format_daily_card(ctx.repository,ctx.shop_id,report)
+    card=format_daily_card(ctx.repository,ctx.shop_id,report)
+    tz=ctx.preferences().timezone
+    return DailyCardText(**{key:readable_text(value,tz=tz) for key,value in asdict(card).items()})
 
 
 async def send_daily_card(bot, ctx, chat_id: int, day: date, *, user_id: int,
@@ -68,7 +71,8 @@ class DailyCardController:
     async def _edit(self, bot, key, card, user_id: int) -> bool:
         repo=self.context.repository
         try:
-            await bot.edit_message_text(render_daily_card(card),chat_id=key[1],message_id=key[2],
+            pref=repo.get_shop_preferences(card['shop_id'])
+            await bot.edit_message_text(readable_text(render_daily_card(card),tz=pref.timezone if pref else 'Europe/Moscow'),chat_id=key[1],message_id=key[2],
                 parse_mode='HTML',reply_markup=daily_card_keyboard(card['section'],
                     can_refresh=repo.can_user(user_id,card['shop_id'],'operate')))
         except TelegramBadRequest as exc:

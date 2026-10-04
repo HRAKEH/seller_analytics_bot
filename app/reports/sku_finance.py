@@ -11,6 +11,7 @@ from html import escape
 from app.storage import Repository
 from .management import EXPENSE_KEYS
 from app.services.money import money_sum
+from .dates import readable_dates
 
 @dataclass(frozen=True)
 class SkuEconomicsRow:
@@ -78,6 +79,7 @@ def _money(v: float) -> str:
     return f'{v:,.2f}'.replace(',',' ')+' ₽'
 
 
+@readable_dates
 def format_sku_economics(report: SkuEconomicsReport, limit: int = 5) -> str:
     lines=[f'🧾 <b>SKU-экономика · {report.start} — {report.end}</b>',
            '━━━━━━━━━━━━━━━━',
@@ -95,7 +97,7 @@ def format_sku_economics(report: SkuEconomicsReport, limit: int = 5) -> str:
         cov='—' if row.coverage_pct is None else f'{row.coverage_pct:.0f}%'
         market='Ozon' if row.marketplace=='ozon' else 'WB'
         lines += ['',f'{i}. {icon} {market} · <b>{escape(row.name)}</b>',
-                  f'   SKU {escape(row.marketplace_sku)} · {row.units:g} ед. · {_money(row.order_revenue)}',
+                  f'   SKU <code>{escape(row.marketplace_sku)}</code> · {row.units:g} ед. · {_money(row.order_revenue)}',
                   f'   себестоимость заполненных товаров: {_money(row.estimated_cost) if row.coverage_pct else "не задана"} · покрытие {cov}']
         if row.contribution_before_marketplace is not None:
             lines.append(f'   до расходов маркетплейса: <b>{_money(row.contribution_before_marketplace)}</b>')

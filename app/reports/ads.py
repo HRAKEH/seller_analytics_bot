@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 from html import escape
 from app.storage import Repository
+from .dates import readable_dates
 
 @dataclass(frozen=True)
 class AdRow:
@@ -68,6 +69,7 @@ def _pct(v: float | None) -> str:
     return '—' if v is None else f'{v:.1f}%'
 
 
+@readable_dates
 def format_advertising(report: AdvertisingReport, limit: int = 7) -> str:
     lines=[f'📣 <b>Реклама · {report.start} — {report.end}</b>','━━━━━━━━━━━━━━━━',
            'ДРР здесь считается только из рекламно-атрибутированной выручки конкретного источника.',
@@ -88,6 +90,7 @@ def format_advertising(report: AdvertisingReport, limit: int = 7) -> str:
         lines += ['','<b>SKU по рекламному расходу</b>']
         for i,r in enumerate(report.products[:limit],1):
             icon='🟣' if r.marketplace=='ozon' else '🔵'
-            lines.append(f'{i}. {icon} <b>{escape(r.name)}</b> · SKU <code>{escape(r.key)}</code>')
+            market='Ozon' if r.marketplace=='ozon' else 'WB'
+            lines.append(f'{i}. {icon} {market} · <b>{escape(r.name)}</b> · SKU <code>{escape(r.key)}</code>')
             lines.append(f'   расход {_money(r.spend)} · продажи {_money(r.attributed_sales)} · ДРР {_pct(r.drr)} · заказы {r.orders:g}')
     return '\n'.join(lines)

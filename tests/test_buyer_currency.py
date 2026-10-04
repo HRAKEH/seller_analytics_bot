@@ -109,7 +109,7 @@ async def test_full_buyer_prices_include_quantity_cancelled_zero_and_auto_fx(tmp
     assert report.sources[0].ordered_revenue == 7000 and report.sources[0].marketplace_net == 1000.25
     text = format_daily(report)
     assert '292.58 ₽ + 30.00 BYN' in text
-    assert '≈ 1 046.33 ₽' in text and 'для 2026-10-01' in text
+    assert '≈ 1 046.33 ₽' in text and 'для 01.10.2026' in text
     assert 'курс ЦБ: 1 BYN = 25.125 ₽' in text
     assert 'предельной цене' in text and '1 000.25 ₽' in text
     assert seen == ['01/10/2026']

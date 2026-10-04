@@ -517,7 +517,7 @@ class Repository:
     def record_success(self, connection_id: int, endpoint: str, data_date: str,
                        raw_payload: Any, metrics: Iterable[MetricPoint], *,
                        attempts: int = 1, started_at: str | None = None,
-                       store_raw: bool = True, status: str = "success") -> int:
+                       store_raw: bool = True, status: str = "success", error: str | None = None) -> int:
         if status not in {"success", "partial"}:
             raise ValueError("status must be success or partial")
         now = source_utcnow()
@@ -571,9 +571,9 @@ class Repository:
                     c.commit()
                     return int(previous["id"])
             cur = c.execute("""INSERT INTO source_runs
-                (connection_id,endpoint,data_date,status,started_at,finished_at,http_status,attempts,payload_hash,created_at)
-                VALUES(?,?,?,?,?,?,200,?,?,?)""",
-                (connection_id, endpoint, data_date, status, started_at or now, now, attempts, digest, now))
+                (connection_id,endpoint,data_date,status,started_at,finished_at,http_status,attempts,payload_hash,created_at,error)
+                VALUES(?,?,?,?,?,?,200,?,?,?,?)""",
+                (connection_id, endpoint, data_date, status, started_at or now, now, attempts, digest, now, error[:2000] if error else None))
             run_id = int(cur.lastrowid)
             if store_raw:
                 c.execute("INSERT INTO raw_payloads(source_run_id,payload_json,created_at) VALUES(?,?,?)", (run_id, body, now))

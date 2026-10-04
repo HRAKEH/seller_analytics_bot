@@ -8,6 +8,7 @@ from pathlib import Path
 from app.services.finance import normalize_wb_finance_report
 from app.services.money import money_sum
 from .accruals import export_accrual_ledger
+from .dates import readable_dates
 
 
 @dataclass(frozen=True)
@@ -53,6 +54,7 @@ def build_wb_accrual_ledger(repo, shop_id: int, start: str, end: str) -> WbAccru
     return WbAccrualLedger(start,end,tuple(sorted({r['date'] for r in rows})),tuple(rows))
 
 
+@readable_dates
 def format_wb_accrual_ledger(ledger: WbAccrualLedger) -> str:
     count=(date.fromisoformat(ledger.end)-date.fromisoformat(ledger.start)).days+1
     lines=[f'🧮 <b>Начисления WB · {ledger.start} — {ledger.end}</b>',

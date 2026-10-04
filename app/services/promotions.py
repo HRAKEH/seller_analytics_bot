@@ -5,12 +5,31 @@ being eligible for a promotion never changes a forecast.
 """
 from __future__ import annotations
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 
 class PromotionNormalizationError(ValueError):
     pass
+
+
+def wb_promotion_finished(promotion: dict, as_of: date) -> bool:
+    """Skip only provably finished events; missing/invalid dates remain visible.
+
+    Compare complete instants against the start of the collection day in UTC.
+    An action ending during that day can still have current participation.
+    """
+    raw = promotion.get('endDateTime')
+    if not raw:
+        return False
+    try:
+        end = datetime.fromisoformat(str(raw).replace('Z', '+00:00'))
+        if end.tzinfo is None:
+            end = end.replace(tzinfo=timezone.utc)
+        start = datetime.combine(as_of, datetime.min.time(), timezone.utc)
+        return end < start
+    except (ValueError, TypeError):
+        return False
 
 
 def _f(value: Any) -> float | None:

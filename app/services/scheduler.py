@@ -9,9 +9,11 @@ from app.bot.context import AppContext
 from app.bot.report_cards import send_daily_cards
 from app.reports.alerts import format_alert_digest
 from app.services.alerts import AlertEngine
-from app.services.resilience import queue_retry
+from app.services.resilience import queue_retry, partial_error
 from app.services.supply import evaluate_forecast_quality, build_supply_plan
 from app.services.actions import build_action_center
+from app.reports.dates import readable_text
+from app.bot.presentation import with_sku_copy
 
 log=logging.getLogger(__name__)
 
@@ -29,9 +31,10 @@ def _scheduled_report_day(now: datetime) -> str:
 async def send_to_owners(bot: Bot, ctx: AppContext, text: str):
     # Kept under the old name for compatibility; recipients are now shop-scoped users.
     recipients=ctx.repository.users_for_shop(ctx.shop_id)
+    text=readable_text(text, tz=ctx.preferences().timezone)
     for row in recipients:
         uid=int(row['telegram_user_id'])
-        try: await bot.send_message(uid,text,parse_mode='HTML')
+        try: await bot.send_message(uid,text,parse_mode='HTML',reply_markup=with_sku_copy(text))
         except Exception: log.exception('Cannot send shop report to %s',uid)
 
 
@@ -86,7 +89,7 @@ async def collect_and_send_daily(bot: Bot, ctx: AppContext):
     try:
         promos=await ctx.collect_promotions(day)
         if promos and not all(getattr(x,'ok',False) for x in promos):
-            raise RuntimeError('promotion calendar refresh remained partial')
+            raise RuntimeError(partial_error('promotions', promos))
     except Exception as exc:
         queue_retry(ctx.repository,ctx.settings,ctx.shop_id,'promotions',day.isoformat(),
             {'day':day.isoformat()},error=str(exc),delay_seconds=900)
