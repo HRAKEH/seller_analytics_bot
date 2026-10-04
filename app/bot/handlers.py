@@ -40,6 +40,7 @@ from .navigation import NavigationMessages, MenuCleanupMiddleware
 from .report_cards import DailyCardController, send_daily_card
 from .operational_cards import OperationalCards
 from .presentation import PresentationMiddleware
+from .paged_reports import PagedReportController
 from app.reports.cards import format_daily_card
 from .keyboards import (
     main_keyboard, reports_keyboard, products_keyboard, money_keyboard, supply_keyboard,
@@ -92,6 +93,7 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
     dp.message.middleware(presentation)
     dp.callback_query.middleware(presentation)
     operational_cards = OperationalCards(ctx, registry)
+    paged_reports = PagedReportController(ctx)
 
     async def denied(message: types.Message, permission: str = 'view'):
         need={'view':'просмотр','operate':'аналитика/обновление данных','manage':'управление магазином'}.get(permission,permission)
@@ -107,15 +109,17 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
         uid=message.from_user.id if message.from_user else 0
         return main_keyboard(ctx.repository.role_for_user(uid,ctx.shop_id))
 
-    async def send(message: types.Message, text: str):
-        from app.reports.text import split_report_html
-        chunks=split_report_html(text)
-        for idx,chunk in enumerate(chunks):
-            await message.answer(
-                chunk or '—',
-                parse_mode='HTML',
-                reply_markup=keyboard_for(message) if idx==len(chunks)-1 else None)
+    async def send(message: types.Message, text: str, *, permission='view', system_owner_only=False, reply_markup=None):
+        await paged_reports.show(message,text,permission=permission,system_owner_only=system_owner_only,
+                                 reply_markup=reply_markup or keyboard_for(message))
         await navigation.dismiss(message)
+
+    @dp.callback_query(F.data.startswith('report_page:'))
+    async def cb_report_page(callback: types.CallbackQuery):
+        async def home(cb):
+            message=command_copy(cb.message,'start','',actor_user=cb.from_user)
+            await show_main_menu(message)
+        await paged_reports.handle(callback,on_home=home)
 
     def role_for(message: types.Message) -> str:
         uid=message.from_user.id if message.from_user else 0
@@ -240,7 +244,7 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
             f'Взято из БД без API: {reused}',
             f'Ошибок API/доп. источников: {total_failed}',
         ]
-        await message.answer('\n'.join(lines),parse_mode='HTML')
+        await send(message,'\n'.join(lines),permission='operate')
         await collect_and_report(message,end,force=False,actor_user_id=uid)
 
     async def collect_and_report(message: types.Message, day: date, force: bool = True,
@@ -309,8 +313,13 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
                       'Для смены профиля ключей: «🔐 Профиль ключей».']
         picker=[registry.repository.get_shop(int(row['id'])) for row in shops]
         picker=[shop for shop in picker if shop is not None]
-        await navigation.show(message,'\n'.join(lines),parse_mode='HTML',
-                             reply_markup=shop_picker_keyboard(picker,'select',current_shop_id=ctx.shop_id))
+        text='\n'.join(lines)
+        markup=shop_picker_keyboard(picker,'select',current_shop_id=ctx.shop_id)
+        from app.reports.text import paginate_report_html
+        if len(paginate_report_html(text))>1:
+            await send(message,text,reply_markup=markup)
+        else:
+            await navigation.show(message,text,parse_mode='HTML',reply_markup=markup)
 
     async def show_shop_picker(message: types.Message, action: str):
         if registry is None: return await message.answer('Multi-shop runtime не подключён.')
@@ -428,7 +437,7 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
                 lines.append(f'• <b>#{shop.id} {escape(shop.name)}</b> · <code>{escape(shop.credential_profile)}</code>')
             lines += ['', 'Вернуть: «♻️ Вернуть магазин».',
                       'Удалить навсегда: «🗑 Удалить магазин».']
-        await send(message,'\n'.join(lines))
+        await send(message,'\n'.join(lines),permission='manage',system_owner_only=True)
 
     @dp.message(Command('shop_restore'))
     async def cmd_shop_restore(message: types.Message):
@@ -609,7 +618,8 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
         if not allowed(message,'manage'): return await denied(message,'manage')
         if not is_system_owner(message): return await system_denied(message)
         profiles=ctx.settings.available_credential_profiles()
-        await message.answer('🔐 Профили ключей в окружении:\n'+'\n'.join('• <code>'+escape(p)+'</code>' for p in profiles),parse_mode='HTML')
+        await send(message,'🔐 Профили ключей в окружении:\n'+'\n'.join('• <code>'+escape(p)+'</code>' for p in profiles),
+                   permission='manage',system_owner_only=True)
 
     @dp.message(Command('users'))
     async def cmd_users(message: types.Message):
@@ -621,7 +631,7 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
             name=f" · {escape(str(row['display_name']))}" if row.get('display_name') else ''
             lines.append(f"• <code>{int(row['telegram_user_id'])}</code>{name} · <b>{escape(str(row['role']))}</b>")
         lines += ['', 'Выберите действие кнопкой ниже. Telegram ID понадобится только для самого пользователя.']
-        await message.answer('\n'.join(lines),parse_mode='HTML',reply_markup=users_admin_keyboard())
+        await send(message,'\n'.join(lines),permission='manage',reply_markup=users_admin_keyboard())
 
     @dp.message(Command('user_add'))
     async def cmd_user_add(message: types.Message):
@@ -706,7 +716,7 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
         for r in rows:
             icon='✅' if r['status']=='success' else '❌'
             lines.append(f"{icon} {escape(r['kind'])} · {escape(r['filename'])} · schema v{r['schema_version']} · {escape(r['created_at'])}")
-        await message.answer('\n'.join(lines),parse_mode='HTML')
+        await send(message,'\n'.join(lines),permission='manage',system_owner_only=True)
 
     @dp.message(Command('restore'))
     async def cmd_restore(message: types.Message, state: FSMContext):
@@ -823,7 +833,7 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
             return await message.answer(f'⚠️ {escape(str(exc))}')
         await state.clear()
         report=await build_readiness(ctx,live=False,persist=True)
-        await send(message,'✅ <b>Первичная настройка завершена.</b>\n\n'+settings_text()+'\n\n'+format_readiness(report))
+        await send(message,'✅ <b>Первичная настройка завершена.</b>\n\n'+settings_text()+'\n\n'+format_readiness(report),permission='manage')
 
     @dp.message(Command('readiness'))
     async def cmd_readiness(message: types.Message):
@@ -834,7 +844,7 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
     async def cmd_connect_check(message: types.Message):
         if not allowed(message,'operate'): return await denied(message,'operate')
         await message.answer('🔌 Проверяю реальные подключения и доступные категории API…')
-        await send(message,format_readiness(await build_readiness(ctx,live=True,persist=True)))
+        await send(message,format_readiness(await build_readiness(ctx,live=True,persist=True)),permission='operate')
 
     @dp.message(Command('help'))
     async def cmd_help(message: types.Message):
@@ -848,14 +858,14 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
         try:
             result=enable_demo(ctx.repository,ctx.shop_id)
         except ValueError as exc:
-            return await send(message,'⚠️ '+escape(str(exc)))
-        await send(message,f'🧪 <b>Демо-режим включён.</b>\nСоздано товаров: {result["products"]}. Внешние API для этого магазина не вызываются.\n\nОткройте «📊 Отчёты», «📦 Товары и SKU» и «🚚 Поставки».')
+            return await send(message,'⚠️ '+escape(str(exc)),permission='manage')
+        await send(message,f'🧪 <b>Демо-режим включён.</b>\nСоздано товаров: {result["products"]}. Внешние API для этого магазина не вызываются.\n\nОткройте «📊 Отчёты», «📦 Товары и SKU» и «🚚 Поставки».',permission='manage')
 
     @dp.message(Command('demo_off'))
     async def cmd_demo_off(message: types.Message):
         if not allowed(message,'manage'): return await denied(message,'manage')
         disable_demo(ctx.repository,ctx.shop_id)
-        await send(message,'🟢 <b>Демо-режим выключен.</b> Теперь обновления снова используют реальные API, если ключи настроены.')
+        await send(message,'🟢 <b>Демо-режим выключен.</b> Теперь обновления снова используют реальные API, если ключи настроены.',permission='manage')
 
     @dp.message(Command('settings'))
     async def cmd_settings(message: types.Message):
@@ -903,7 +913,7 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
             lines += ['', '<b>Первые ошибки</b>']
             for e in summary.errors[:8]:
                 lines.append(f"• строка {e.get('row','?')}: {escape(str(e.get('error','')))}")
-        await send(message,'\n'.join(lines))
+        await send(message,'\n'.join(lines),permission='operate')
 
     @dp.message(StateFilter(CostImportStates.waiting_file))
     async def import_cost_file_expected(message: types.Message):
@@ -1209,8 +1219,8 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
             await progress.edit_text(f'🔄 {start} — {end}\n{label}…')
         try: stages=await ctx.refresh_reports(start,end,progress=update_progress)
         except RuntimeError as exc:return await message.answer(f'⚠️ {escape(str(exc)[:220])}')
-        await send(message,format_refresh(stages,start,end))
-        await send(message,format_finance(build_finance_report(ctx.repository,ctx.shop_id,end,days)))
+        await send(message,format_refresh(stages,start,end),permission='operate')
+        await send(message,format_finance(build_finance_report(ctx.repository,ctx.shop_id,end,days)),permission='operate')
 
     @dp.message(Command('sources'))
     async def cmd_sources(message: types.Message):
@@ -1403,7 +1413,7 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
             await ctx.collect_inbound(local_now().date())
         except Exception as exc:
             await message.answer(f'⚠️ Не удалось полностью обновить поставки: {escape(str(exc)[:250])}. Показываю последний успешный снимок.')
-        await send(message,format_inbound(ctx.repository,ctx.shop_id))
+        await send(message,format_inbound(ctx.repository,ctx.shop_id),permission='operate')
 
     @dp.message(Command('forecast_quality'))
     async def cmd_forecast_quality(message: types.Message):
@@ -1426,7 +1436,7 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
         # Refresh the rolling backtest first; calibration must learn only from completed history.
         evaluate_forecast_quality(ctx.repository,ctx.shop_id,end,persist=True)
         report=build_supply_calibration(ctx.repository,ctx.shop_id,end,persist=True)
-        await send(message,format_supply_calibration(report))
+        await send(message,format_supply_calibration(report),permission='operate')
 
     @dp.message(Command('promotions'))
     async def cmd_promotions(message: types.Message):
@@ -1446,7 +1456,7 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
                 await message.answer('⚠️ Один из источников акций обновился частично. Показываю подтверждённые данные.')
         except Exception as exc:
             await message.answer(f'⚠️ Календарь обновлён не полностью: {escape(str(exc)[:250])}. Показываю последний успешный снимок.')
-        await send(message,format_promotions(ctx.repository,ctx.shop_id,local_now().date(),future_days=60))
+        await send(message,format_promotions(ctx.repository,ctx.shop_id,local_now().date(),future_days=60),permission='operate')
 
     @dp.message(Command('supply'))
     async def cmd_supply(message: types.Message):
@@ -1473,7 +1483,7 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
         except Exception as exc: await message.answer(f'⚠️ Акции не обновлены: {escape(str(exc)[:250])}. Использую последний успешный календарь.')
         end=local_now().date()-timedelta(days=1)
         plan=build_supply_plan(ctx.repository,ctx.shop_id,end,lookback_days=days,persist=True)
-        await send(message,format_supply_plan(plan))
+        await send(message,format_supply_plan(plan),permission='operate')
 
     @dp.message(Command('supply_sku'))
     async def cmd_supply_sku(message: types.Message):
@@ -1555,7 +1565,7 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
         if not allowed(message): return await denied(message)
         if registry is None: return await message.answer('Health runtime не подключён.')
         report=build_health(registry,deep=False,shop_id=ctx.shop_id,include_runtime_details=is_system_owner(message))
-        await send(message,format_health(report))
+        await send(message,format_health(report),system_owner_only=is_system_owner(message))
 
     @dp.message(Command('jobs'))
     async def cmd_jobs(message: types.Message):
@@ -1571,7 +1581,7 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
             lines.append(f'{icon} #{r["id"]} · {escape(job_labels.get(job_type,job_type))} · попыток {r["attempts"]}/{r["max_attempts"]}')
             if r.get('last_error'): lines.append(f'  {escape(str(r["last_error"])[:140])}')
         markup=retry_jobs_keyboard(rows) if allowed(message,'manage') else None
-        await message.answer('\n'.join(lines),parse_mode='HTML',reply_markup=markup or keyboard_for(message))
+        await send(message,'\n'.join(lines),permission='operate',reply_markup=markup or keyboard_for(message))
 
     @dp.message(Command('job_retry'))
     async def cmd_job_retry(message: types.Message):
@@ -1604,7 +1614,7 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
         ])
         if is_system_owner(message):
             text += f'\nSystem DB: <code>{escape(str(repo.db.path))}</code>'
-        await send(message,text)
+        await send(message,text,permission='view',system_owner_only=True)
 
     # --- structured menu navigation --------------------------------------
     async def show_submenu(message: types.Message, title: str, keyboard):

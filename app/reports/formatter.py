@@ -144,7 +144,7 @@ def format_product_report(report) -> str:
         basis = ' (по предельной цене)' if market == 'ozon' else ''
         lines.append(f'\n{labels.get(market,market)} · <b>Top-{len(rows)} по сумме заказов{basis}*</b>')
         for i,row in enumerate(rows,1):
-            lines.append(f'{i}. <b>{_product_name(row.name)}</b>\n   Артикул <code>{escape(row.sku)}</code> · {row.units:g} шт. · {money(row.order_amount)}')
+            lines.append(f'{i}. {labels.get(market,market)} · <b>{_product_name(row.name)}</b>\n   Артикул <code>{escape(row.sku)}</code> · {row.units:g} шт. · {money(row.order_amount)}')
 
     if not getattr(report,'comparison_complete',True):
         lines.append('\n⚠️ Сравнение роста/просадки скрыто: текущий или предыдущий период загружен не полностью.')
@@ -207,18 +207,17 @@ def format_stock_report(report) -> str:
         lines.append('\n'+labels.get(market,market)+' · <b>Товары с наименьшим запасом</b>')
         if not rows:
             lines.append('📭 Нет загруженных остатков. Нажмите «Обновить остатки».')
-        for row in rows[:10]:
+        for row in rows:
             demand=f'{row.avg_daily_units:.2f} шт./день' if row.avg_daily_units is not None else 'спрос неизвестен'
             if row.available_units<=0: days='0 дн.'
             elif row.avg_daily_units is None: days='нет данных для оценки'
             elif row.avg_daily_units==0: days='нет спроса за загруженные дни'
             else: days=f'{row.days_left:.1f} дн.'
             schemes=' · '.join(f'{escape(s)} {v:g} шт.' for s,v in row.scheme_units)
-            lines.append(f'• <b>{_product_name(row.name)}</b> · артикул <code>{escape(row.sku)}</code>\n   Остаток: {row.available_units:g} шт. · хватит на {days}\n   {demand} · история {row.coverage_days} дней')
+            lines.append(f'• {labels.get(market,market)} · <b>{_product_name(row.name)}</b> · артикул <code>{escape(row.sku)}</code>\n   Остаток: {row.available_units:g} шт. · хватит на {days}\n   {demand} · история {row.coverage_days} дней')
             if schemes:lines.append('   '+schemes)
             if row.reserved_units:lines.append(f'   Резерв: {row.reserved_units:g} шт.')
             if row.captured_at:lines.append('   Снимок API: '+escape(row.captured_at))
-        if len(rows)>10:lines.append(f'Ещё товаров: {len(rows)-10}. Все остатки доступны в экспорте.')
     for warning in getattr(report,'inventory_warnings',()):lines.append('\n⚠️ '+escape(warning))
     lines.append('\n<i>Дни запаса = остаток в штуках ÷ среднее число заказанных единиц за загруженные дни. Резервы показаны отдельно. FBO/FBW — склад площадки, FBS — склад продавца.</i>')
     return '\n'.join(lines)

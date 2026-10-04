@@ -730,7 +730,25 @@ def _migration_18(conn: sqlite3.Connection) -> None:
     )''')
 
 
-MIGRATIONS: dict[int, Migration] = {1: _migration_1, 2: _migration_2, 3: _migration_3, 4: _migration_4, 5: _migration_5, 6: _migration_6, 7: _migration_7, 8: _migration_8, 9: _migration_9, 10: _migration_10, 11: _migration_11, 12: _migration_12, 13: _migration_13, 14: _migration_14, 15: _migration_15, 16: _migration_16, 17: _migration_17, 18: _migration_18}
+def _migration_19(conn: sqlite3.Connection) -> None:
+    conn.execute('ALTER TABLE telegram_report_cards ADD COLUMN page INTEGER NOT NULL DEFAULT 0')
+    conn.execute('''CREATE TABLE telegram_paged_reports (
+        bot_id INTEGER NOT NULL,
+        chat_id INTEGER NOT NULL,
+        message_id INTEGER NOT NULL,
+        shop_id INTEGER NOT NULL REFERENCES shops(id) ON DELETE CASCADE,
+        user_id INTEGER NOT NULL,
+        permission TEXT NOT NULL CHECK(permission IN ('view','operate','manage')),
+        system_owner_only INTEGER NOT NULL DEFAULT 0,
+        pages_json TEXT NOT NULL,
+        markup_json TEXT,
+        current_page INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY(bot_id,chat_id,message_id)
+    )''')
+
+
+MIGRATIONS: dict[int, Migration] = {1: _migration_1, 2: _migration_2, 3: _migration_3, 4: _migration_4, 5: _migration_5, 6: _migration_6, 7: _migration_7, 8: _migration_8, 9: _migration_9, 10: _migration_10, 11: _migration_11, 12: _migration_12, 13: _migration_13, 14: _migration_14, 15: _migration_15, 16: _migration_16, 17: _migration_17, 18: _migration_18, 19: _migration_19}
 LATEST_SCHEMA_VERSION = max(MIGRATIONS)
 
 

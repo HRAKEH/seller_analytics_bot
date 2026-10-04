@@ -10,7 +10,7 @@ from weakref import WeakValueDictionary
 from aiogram import types
 from aiogram.exceptions import TelegramAPIError, TelegramBadRequest
 
-from app.reports.cards import DailyCardText, format_daily_card, render_daily_card
+from app.reports.cards import DailyCardText, format_daily_card, render_daily_card, daily_card_pages
 from app.reports.daily import build_daily_report_with_currency
 from .keyboards import daily_card_keyboard
 from app.reports.dates import readable_text
@@ -29,7 +29,7 @@ async def send_daily_card(bot, ctx, chat_id: int, day: date, *, user_id: int,
                           text: DailyCardText | None = None, status_note: str = ''):
     text=text or await prepare_daily_card(ctx,day)
     card={'shop_id':ctx.shop_id,'report_day':day.isoformat(),**asdict(text),
-          'section':'summary','status_note':status_note}
+          'section':'summary','status_note':status_note,'page':0}
     can_refresh=ctx.repository.can_user(user_id,ctx.shop_id,'operate')
     message=await bot.send_message(chat_id,render_daily_card(card),parse_mode='HTML',
                                   reply_markup=daily_card_keyboard(can_refresh=can_refresh))
@@ -70,11 +70,13 @@ class DailyCardController:
 
     async def _edit(self, bot, key, card, user_id: int) -> bool:
         repo=self.context.repository
+        pages=daily_card_pages(card)
+        card['page']=max(0,min(int(card.get('page',0)),len(pages)-1))
         try:
             pref=repo.get_shop_preferences(card['shop_id'])
             await bot.edit_message_text(readable_text(render_daily_card(card),tz=pref.timezone if pref else 'Europe/Moscow'),chat_id=key[1],message_id=key[2],
                 parse_mode='HTML',reply_markup=daily_card_keyboard(card['section'],
-                    can_refresh=repo.can_user(user_id,card['shop_id'],'operate')))
+                    can_refresh=repo.can_user(user_id,card['shop_id'],'operate'),page=card['page'],pages=len(pages)))
         except TelegramBadRequest as exc:
             if 'message is not modified' not in str(exc).lower():
                 log.warning('Cannot edit daily card %s',key,exc_info=True)
@@ -85,14 +87,18 @@ class DailyCardController:
         # Persist only the state Telegram actually accepted, so failed edits can
         # be retried without a new message or an inconsistent collapse button.
         repo.save_report_card(*key,**{field:card[field] for field in (
-            'shop_id','report_day','summary_html','details_html','accruals_html','section','status_note')})
+            'shop_id','report_day','summary_html','details_html','accruals_html','section','status_note','page')})
         return True
 
     async def handle(self, callback: types.CallbackQuery):
         if not isinstance(callback.message,types.Message):
             return await self._answer(callback,'Сообщение недоступно.',alert=True)
         action=(callback.data or '').removeprefix('daily_card:')
-        if action not in {'details','accruals','collapse','refresh'}:
+        is_page=action.startswith('page:')
+        if is_page:
+            try: page=int(action.removeprefix('page:'))
+            except ValueError:return await self._answer(callback,'Некорректная страница.',alert=True)
+        if action not in {'details','accruals','collapse','refresh'} and not is_page:
             return await self._answer(callback,'Неизвестная кнопка отчёта.',alert=True)
         message=callback.message
         key=(message.bot.id,message.chat.id,message.message_id)
@@ -104,9 +110,15 @@ class DailyCardController:
                 return await self._answer(callback,'Откройте новый отчёт через «Вчера» или выбор даты.',alert=True)
             if not self.context.repository.can_user(callback.from_user.id,card['shop_id'],'view'):
                 return await self._answer(callback,'Нет доступа к магазину этого отчёта.',alert=True)
-            if action!='collapse' and card['section']!='summary':
+            if is_page and card['section']=='summary':
+                return await self._answer(callback,'Сначала откройте «Подробнее» или «Начисления».')
+            if action!='collapse' and not is_page and card['section']!='summary':
                 return await self._answer(callback,'Сначала сверните открытый блок.')
-            card['section']='summary' if action=='collapse' else action
+            if is_page:
+                card['page']=page
+            else:
+                card['section']='summary' if action=='collapse' else action
+                card['page']=0
             if await self._edit(message.bot,key,card,callback.from_user.id):
                 await self._answer(callback)
             else:

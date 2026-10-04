@@ -9,11 +9,15 @@ BACK = '⬅️ Назад'
 CANCEL = '❌ Отмена'
 
 
-def daily_card_keyboard(section: str = 'summary', *, can_refresh: bool = True):
+def daily_card_keyboard(section: str = 'summary', *, can_refresh: bool = True, page: int = 0, pages: int = 1):
     builder=InlineKeyboardBuilder()
     if section!='summary':
+        if pages>1:
+            builder.button(text='◀️',callback_data=f'daily_card:page:{max(0,page-1)}')
+            builder.button(text=f'{page+1}/{pages}',callback_data=f'daily_card:page:{page}')
+            builder.button(text='▶️',callback_data=f'daily_card:page:{min(pages-1,page+1)}')
         builder.button(text='Свернуть',callback_data='daily_card:collapse')
-        builder.adjust(1)
+        builder.adjust(3,1) if pages>1 else builder.adjust(1)
     else:
         builder.button(text='Подробнее',callback_data='daily_card:details')
         builder.button(text='Начисления',callback_data='daily_card:accruals')

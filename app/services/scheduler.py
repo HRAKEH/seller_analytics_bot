@@ -13,7 +13,6 @@ from app.services.resilience import queue_retry, partial_error
 from app.services.supply import evaluate_forecast_quality, build_supply_plan
 from app.services.actions import build_action_center
 from app.reports.dates import readable_text
-from app.bot.presentation import with_sku_copy
 
 log=logging.getLogger(__name__)
 
@@ -34,7 +33,7 @@ async def send_to_owners(bot: Bot, ctx: AppContext, text: str):
     text=readable_text(text, tz=ctx.preferences().timezone)
     for row in recipients:
         uid=int(row['telegram_user_id'])
-        try: await bot.send_message(uid,text,parse_mode='HTML',reply_markup=with_sku_copy(text))
+        try: await bot.send_message(uid,text,parse_mode='HTML')
         except Exception: log.exception('Cannot send shop report to %s',uid)
 
 

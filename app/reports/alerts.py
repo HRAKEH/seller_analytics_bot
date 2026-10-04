@@ -47,7 +47,7 @@ def format_active_alerts(repo, shop_id: int, report, *, page: int = 0) -> str:
         value=state.get('last_value'); market,_,sku=subject.partition(':')
         if rule=='low_stock':
             row=risks.get(subject)
-            label=f'{marketplace_label(market)} · артикул <code>{escape_clip(sku, 180)}</code>'
+            label=f'{marketplace_label(market)} · артикул <code>{escape(sku)}</code>'
             if row:
                 icon = '🔴' if row.available_units <= 0 else '🟠'
                 lines += [f'\n{index}. {icon} <b>{escape_clip(row.name, 150)}</b>', label,
@@ -148,7 +148,12 @@ def format_alert_digest(notifications, *, shop_name: str | None = None) -> str |
     shown = 0
     for note in sorted(notes, key=lambda item: priority[severity(item)]):
         message = ' '.join(str(note.message).split())
-        line = f'{icons[severity(note)]} {escape(_clip(message, 450))}'
+        display = escape(_clip(message, 450))
+        _, _, sku = str(note.subject_key).partition(':')
+        if sku:
+            article = escape(sku)
+            display = display.replace('артикул ' + article, 'артикул <code>' + article + '</code>', 1)
+        line = f'{icons[severity(note)]} {display}'
         omitted = len(notes) - shown - 1
         suffix = f'\n\nЕщё событий: {omitted}. Подробности сокращены.' if omitted else ''
         if _utf16_length('\n'.join([*lines, line]) + suffix + footer) > 3900:

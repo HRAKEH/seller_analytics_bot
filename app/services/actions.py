@@ -154,7 +154,7 @@ def build_action_center(repo: Repository, shop_id: int, as_of: date, *, persist:
             _merge_action(actions,ActionItem(f'supply:{r.product_id}',p,'supply',f'🚚 Пополнить {r.name}: {r.recommended_order_units:g} шт.',
                 f'{markets} · {cover}{inbound}.','🚚 Поставки → 🚚 План поставок',tuple(evidence), articles=(('Внутренний', r.internal_sku),)))
         elif r.inventory_stale:
-            _merge_action(actions,ActionItem(f'stock:stale:{r.product_id}',2,'stock',f'🕒 Старый остаток · {r.internal_sku}',
+            _merge_action(actions,ActionItem(f'stock:stale:{r.product_id}',2,'stock',f'🕒 Устаревшие данные об остатке · {r.name}',
                 f'Снимок остатков старше {r.inventory_age_days} дн.','📦 Товары и SKU → 📦 Остатки',tuple(promo_evidence), articles=(('Внутренний', r.internal_sku),)))
 
     no_cost=repo.products_without_cost(shop_id,limit=100000)

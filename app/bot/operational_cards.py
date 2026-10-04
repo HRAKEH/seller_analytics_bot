@@ -15,7 +15,6 @@ from app.reports.products import build_product_report
 from app.reports.text import page_slice
 from app.services.actions import build_action_center
 from .keyboards import action_ref
-from .presentation import with_sku_copy
 
 
 def _button(text, data):
@@ -78,7 +77,7 @@ class OperationalCards:
         tz = ctx.preferences().timezone
         text = (format_active_alerts(ctx.repository, ctx.shop_id, report, page=page, timezone=tz)
                 if kind == 'alerts' else format_action_center(report, page=page, timezone=tz))
-        return text, with_sku_copy(text, page_keyboard(kind, ctx.shop_id, page, pages, visible))
+        return text, page_keyboard(kind, ctx.shop_id, page, pages, visible)
 
     async def show(self, message, kind):
         ctx = self.context
@@ -146,4 +145,4 @@ class OperationalCards:
             text = format_alert_detail(item, report, timezone=tz) if kind == 'alerts' else format_action_detail(item, timezone=tz)
             markup = detail_keyboard(kind, ctx.shop_id, page, ref,
                 can_operate=ctx.repository.can_user(callback.from_user.id, ctx.shop_id, 'operate'))
-            await self._edit(callback, text, with_sku_copy(text, markup))
+            await self._edit(callback, text, markup)

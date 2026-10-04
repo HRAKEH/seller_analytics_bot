@@ -12,7 +12,6 @@ import pytest
 
 from app.bot import AppContext, register_handlers
 from app.bot.keyboards import action_ref
-from app.bot.presentation import sku_copy_buttons
 from app.config import Settings
 from app.integrations.base import FetchResult
 from app.reports.alerts import format_active_alerts, format_alert_detail, sorted_alerts
@@ -52,20 +51,13 @@ def test_dates_convert_instants_to_shop_zone_but_keep_api_examples():
     assert readable_text('2026-10-03 23:09:00',tz='Europe/Kirov')=='04.10.2026 02:09'
 
 
-def test_copy_buttons_preserve_exact_skus_and_do_not_copy_counts():
-    text='🔵 WB\nАртикул <code>1040723037</code>\n🟣 Ozon · SKU <code>ozon &amp; 01.</code>\nВнутренний SKU <code>FBO:&lt;06&gt;</code>\nSKU с наибольшей ошибкой\nК заказу сейчас: 12 SKU\n<code>2026-10-03</code>'
-    buttons=[row[0] for row in sku_copy_buttons(text)]
-    assert [button.copy_text.text for button in buttons]==['1040723037','ozon & 01.','FBO:<06>']
-    assert 'WB' in buttons[0].text and 'Ozon' in buttons[1].text and 'Внутренний' in buttons[2].text
-
-
-def test_ad_report_copy_labels_follow_marketplace_not_product_name():
+def test_ad_report_articles_use_inline_code_and_keep_marketplace_labels():
     report=AdvertisingReport('2026-10-03','2026-10-03',1,(),(
         AdRow('wildberries','1001','Подходит для Ozon',10,20,1,2,3),
-        AdRow('ozon','WB-1002','Название для WB',10,20,1,2,3)))
-    buttons=[row[0] for row in sku_copy_buttons(format_advertising(report))]
-    assert [button.copy_text.text for button in buttons]==['1001','WB-1002']
-    assert 'WB: 1001' in buttons[0].text and 'Ozon: WB-1002' in buttons[1].text
+        AdRow('ozon','WB-1002 & 01.','Название для WB',10,20,1,2,3)))
+    text=format_advertising(report)
+    assert '🔵 WB · <b>Подходит для Ozon</b> · SKU <code>1001</code>' in text
+    assert '🟣 Ozon · <b>Название для WB</b> · SKU <code>WB-1002 &amp; 01.</code>' in text
 
 
 def test_alert_pages_prioritize_empty_stock_and_keep_details_separate(data):
@@ -153,7 +145,8 @@ async def test_real_callbacks_edit_same_message_and_return_to_previous_page(ui):
     assert len(sent)==1 and len(edits)==3 and {method.message_id for method in edits}=={900}
     assert 'Почему и как посчитано:' in edits[1].text
     assert 'страница 2/3' in edits[2].text
-    assert any(button.copy_text and button.copy_text.text=='sku-3' for row in edits[1].reply_markup.inline_keyboard for button in row)
+    assert '<code>sku-3</code>' in edits[1].text
+    assert not any(button.copy_text for row in edits[1].reply_markup.inline_keyboard for button in row)
     await ui[1].session.close()
 
 

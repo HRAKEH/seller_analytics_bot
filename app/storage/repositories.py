@@ -263,7 +263,7 @@ class Repository:
 
     def save_report_card(self, bot_id: int, chat_id: int, message_id: int, *, shop_id: int,
                          report_day: str, summary_html: str, details_html: str,
-                         accruals_html: str, section: str = 'summary', status_note: str = '') -> None:
+                         accruals_html: str, section: str = 'summary', status_note: str = '', page: int = 0) -> None:
         if section not in {'summary','details','accruals'}:
             raise ValueError('invalid report section')
         date.fromisoformat(report_day)
@@ -271,16 +271,39 @@ class Repository:
         with self.db.connect() as c:
             c.execute('''INSERT INTO telegram_report_cards
                 (bot_id,chat_id,message_id,shop_id,report_day,summary_html,details_html,
-                 accruals_html,section,status_note,created_at,updated_at)
-                VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+                 accruals_html,section,status_note,created_at,updated_at,page)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(bot_id,chat_id,message_id) DO UPDATE SET
                     summary_html=excluded.summary_html,details_html=excluded.details_html,
                     accruals_html=excluded.accruals_html,section=excluded.section,
-                    status_note=excluded.status_note,updated_at=excluded.updated_at
+                    status_note=excluded.status_note,updated_at=excluded.updated_at,page=excluded.page
                 WHERE telegram_report_cards.shop_id=excluded.shop_id
                   AND telegram_report_cards.report_day=excluded.report_day''',
                 (bot_id,chat_id,message_id,shop_id,report_day,summary_html,details_html,
-                 accruals_html,section,status_note,now,now))
+                 accruals_html,section,status_note,now,now,max(0,int(page))))
+
+    def save_paged_report(self, bot_id: int, chat_id: int, message_id: int, *, shop_id: int,
+                          user_id: int, permission: str, system_owner_only: bool,
+                          pages: list[str], markup: dict | None = None) -> None:
+        if permission not in {'view','operate','manage'} or not pages:
+            raise ValueError('invalid paged report')
+        with self.db.connect() as c:
+            c.execute('''INSERT INTO telegram_paged_reports
+                (bot_id,chat_id,message_id,shop_id,user_id,permission,system_owner_only,
+                 pages_json,markup_json,current_page,created_at) VALUES(?,?,?,?,?,?,?,?,?,0,?)''',
+                (bot_id,chat_id,message_id,shop_id,user_id,permission,int(system_owner_only),
+                 json.dumps(pages,ensure_ascii=False),json.dumps(markup) if markup else None,utcnow()))
+
+    def paged_report(self, bot_id: int, chat_id: int, message_id: int) -> dict[str,Any] | None:
+        with self.db.connect() as c:
+            row=c.execute('SELECT * FROM telegram_paged_reports WHERE bot_id=? AND chat_id=? AND message_id=?',
+                          (bot_id,chat_id,message_id)).fetchone()
+        return dict(row) if row else None
+
+    def set_report_page(self, bot_id: int, chat_id: int, message_id: int, page: int) -> None:
+        with self.db.connect() as c:
+            c.execute('UPDATE telegram_paged_reports SET current_page=? WHERE bot_id=? AND chat_id=? AND message_id=?',
+                      (max(0,int(page)),bot_id,chat_id,message_id))
 
     def get_job_state(self, shop_id: int, job_key: str) -> str | None:
         with self.db.connect() as c:

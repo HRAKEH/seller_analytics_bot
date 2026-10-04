@@ -17,7 +17,7 @@ def _cover(v: float | None) -> str:
 
 
 @readable_dates
-def format_supply_plan(plan: SupplyPlan, *, limit: int=15) -> str:
+def format_supply_plan(plan: SupplyPlan, *, limit: int | None=None) -> str:
     counts={x:sum(1 for r in plan.rows if r.abc_class==x) for x in 'ABC'}
     xyz={x:sum(1 for r in plan.rows if r.xyz_class==x) for x in ('X','Y','Z','?')}
     lines=[f'🚚 <b>План поставок · {plan.as_of.isoformat()}</b>','━━━━━━━━━━━━━━━━',
@@ -86,7 +86,7 @@ def format_supply_product(row: SupplyRow) -> str:
 
 
 @readable_dates
-def format_supply_calibration(report: SupplyCalibrationReport, *, limit: int=20) -> str:
+def format_supply_calibration(report: SupplyCalibrationReport, *, limit: int | None=None) -> str:
     lines=[f'🧠 <b>Самокалибровка поставок · {report.as_of.isoformat()}</b>','━━━━━━━━━━━━━━━━',
            f'Автоприменение буферов: <b>{"включено" if report.auto_apply else "выключено"}</b>',
            'Базовые lead/safety настройки не переписываются. Модель может только добавить ограниченный риск-буфер.','']

@@ -164,12 +164,11 @@ def format_buyout_check(check: BuyoutCheck | None) -> list[str]:
         lines.append(f'По номеру отправления, SKU и количеству: {check.matched_units}/{check.expected_units} шт. с признаком выкупа.')
     else:
         lines.append('Товары с признаком выкупа в этих отправлениях не найдены.')
-    for row in check.matches[:6]:
+    for row in check.matches:
         price=f'{row.price:,.2f}'.replace(',', ' ').replace('.', ',')
         unit=' ₽' if row.currency=='RUB' else (' '+row.currency if row.currency else ' (валюта в ответе не указана)')
-        lines.append('Отправление '+escape(row.posting_number[:70])+', SKU '+escape(row.sku[:30])+
+        lines.append('Отправление '+escape(row.posting_number[:70])+', Ozon · SKU <code>'+escape(row.sku)+'</code>'+
                      f': {row.quantity} шт. · цена выкупа {price}{unit} за шт.')
-    if len(check.matches)>6:lines.append('Остальные сопоставленные строки сохранены для сверки в бэкапе.')
     if check.report_from and check.report_to:
         lines.append('Период отчёта о выкупах: '+escape(str(check.report_from)[:10])+' — '+escape(str(check.report_to)[:10])+'.')
     if check.freshness:lines.append('Выкупы обновлены: '+escape(check.freshness))

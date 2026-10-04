@@ -27,19 +27,17 @@ def format_inbound(repo: Repository, shop_id: int) -> str:
     lines.append(f'Активных товарных позиций: <b>{len(rows)}</b> · осталось в пути: <b>{total:g} шт.</b>')
     by_supply={}
     for r in rows: by_supply.setdefault((r['marketplace'],r['external_supply_id']),[]).append(r)
-    for (market,sid),items in list(by_supply.items())[:15]:
+    for (market,sid),items in by_supply.items():
         first=items[0]; qty=sum(float(x.get('remaining_units') or 0) for x in items)
         icon='🔵' if market=='wildberries' else '🟣'
         label='WB' if market=='wildberries' else 'Ozon'
         eta=str(first.get('planned_at') or 'ETA неизвестна')
         wh=escape(str(first.get('warehouse_name') or 'склад не указан'))
         lines.append(f'\n{icon} {label} · <b>{escape(str(sid))}</b> · {escape(str(first.get("status") or ""))}\n  {qty:g} шт. · {eta} · {wh}')
-        for x in items[:4]:
-            sku=escape(str(x.get('internal_sku') or x.get('marketplace_sku') or 'SKU'))
+        for x in items:
             name=escape(str(x.get('name') or ''))
             article=str(x.get('marketplace_sku') or x.get('internal_sku') or 'SKU')
-            lines.append(f'  • {name} · артикул <code>{escape(article)}</code>: {float(x.get("remaining_units") or 0):g} шт.')
-        if len(items)>4: lines.append(f'  … ещё {len(items)-4} SKU')
+            lines.append(f'  • {label} · поставка {escape(str(sid))} · {name} · артикул <code>{escape(article)}</code>: {float(x.get("remaining_units") or 0):g} шт.')
     unknown=sum(1 for r in rows if not r.get('planned_at'))
     if unknown:
         lines += ['',f'⚠️ У {unknown} товарных строк нет ETA. Они показаны здесь, но не уменьшают рекомендацию по закупке.']
@@ -47,7 +45,7 @@ def format_inbound(repo: Repository, shop_id: int) -> str:
 
 
 @readable_dates
-def format_forecast_quality(report: ForecastQualityReport, limit: int=12) -> str:
+def format_forecast_quality(report: ForecastQualityReport, limit: int | None=None) -> str:
     def pct(v): return '—' if v is None else f'{v:.1f}%'
     lines=[f'🎯 <b>Точность прогноза · {report.as_of.isoformat()}</b>','━━━━━━━━━━━━━━━━',
            f'Горизонт проверки: {report.horizon_days} дн. · модель {escape(report.method_version)}',
@@ -107,10 +105,16 @@ def format_action_history(rows: list[dict], *, days: int) -> str:
     lines=[f'📋 <b>История Action Center · {days} дн.</b>','━━━━━━━━━━━━━━━━']
     if not rows:
         return '\n'.join(lines+['📭 История действий пока пуста.'])
-    for r in rows[:40]:
+    for r in rows:
         p=int(r.get('priority') or 4); icon={1:'🔴',2:'🟠',3:'🟡',4:'⚪️'}.get(p,'⚪️')
         status=str(r.get('current_status') or 'resolved')
         mark={'open':'','acknowledged':' · ✅ принято','snoozed':' · ⏰ отложено','resolved':' · 🟢 решено'}.get(status,'')
-        lines.append(f'{icon} {escape(str(r.get("as_of_date") or ""))} · <b>{escape(str(r.get("title") or ""))}</b>{mark}')
+        title=str(r.get('title') or '')
+        old_prefix='🕒 Старый остаток · '
+        if str(r.get('action_key') or '').startswith('stock:stale:') and title.startswith(old_prefix):
+            title_html='<b>'+escape(old_prefix)+'</b><code>'+escape(title.removeprefix(old_prefix))+'</code>'
+        else:
+            title_html='<b>'+escape(title)+'</b>'
+        lines.append(f'{icon} {escape(str(r.get("as_of_date") or ""))} · {title_html}{mark}')
         lines.append(f'  <code>{escape(str(r.get("action_key") or ""))}</code>')
     return '\n'.join(lines)

@@ -10,6 +10,7 @@ import json
 from .daily import DailyReport
 from .formatter import num, source_name
 from app.services.ozon_buyouts import format_buyout_check
+from .text import paginate_report_html, utf16_length
 
 
 @dataclass(frozen=True)
@@ -158,20 +159,25 @@ def format_daily_card(repo, shop_id: int, report: DailyReport) -> DailyCardText:
     return DailyCardText('\n'.join(summary),'\n'.join(details),'\n'.join(accruals))
 
 
-def render_daily_card(card: dict) -> str:
-    """Keep the entire summary; shorten a lower block at complete HTML lines."""
-    limit=3900  # Conservative UTF-16 bound, including the HTML source itself.
-    def size(text):return len(text.encode('utf-16-le'))//2
+def daily_card_pages(card: dict) -> list[str]:
+    """The upper summary stays fixed; long lower blocks are fully pageable."""
+    limit=3900
     text=card['summary_html']
     note=card.get('status_note','')
     if note:text+='\n\n'+_safe(note,250)
-    if size(text)>limit:raise ValueError('Daily summary exceeds Telegram limit')
-    if card.get('section','summary')=='summary':return text
+    if utf16_length(text)>limit:raise ValueError('Daily summary exceeds Telegram limit')
+    if card.get('section','summary')=='summary':return [text]
     lower=card[card['section']+'_html']
-    suffix='\n<i>Подробности сокращены.</i>'
-    if size(text+'\n\n'+lower)<=limit:return text+'\n\n'+lower
-    text+='\n\n'
-    for line in lower.splitlines():
-        if size(text+line+'\n'+suffix)>limit:break
-        text+=line+'\n'
-    return text.rstrip()+suffix
+    budget=limit-utf16_length(text)-80
+    if budget<100:raise ValueError('Daily summary leaves no room for details')
+    pages=paginate_report_html(lower,limit=min(1500,budget),hard_limit=budget)
+    result=[]
+    for page,part in enumerate(pages):
+        suffix=f'\n\n<i>Страница {page+1}/{len(pages)}</i>' if len(pages)>1 else ''
+        result.append(text+'\n\n'+part+suffix)
+    return result
+
+
+def render_daily_card(card: dict) -> str:
+    pages=daily_card_pages(card)
+    return pages[max(0,min(int(card.get('page',0)),len(pages)-1))]

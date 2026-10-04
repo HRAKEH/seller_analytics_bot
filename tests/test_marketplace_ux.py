@@ -302,7 +302,7 @@ def test_wb_accruals_deduplicate_report_and_keep_latest_correction(data):
 def test_alert_digest_keeps_marketplace_sku_quantity_before_long_name():
     row = StockRisk('ozon', '😀<&' * 500, '501', 3, 0, .2, 15, 14, None)
     text = format_alert_digest([AlertNotification('low_stock', 'ozon:501', 'warning', stock_alert_text(row), 15)])
-    assert 'Ozon · артикул 501' in text and '3 шт.' in text and '15.0 дн.' in text
+    assert 'Ozon · артикул <code>501</code>' in text and '3 шт.' in text and '15.0 дн.' in text
     assert utf16_length(text) <= 3900
 
 

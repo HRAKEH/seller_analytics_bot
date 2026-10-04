@@ -70,7 +70,7 @@ def _pct(v: float | None) -> str:
 
 
 @readable_dates
-def format_advertising(report: AdvertisingReport, limit: int = 7) -> str:
+def format_advertising(report: AdvertisingReport, limit: int | None = None) -> str:
     lines=[f'📣 <b>Реклама · {report.start} — {report.end}</b>','━━━━━━━━━━━━━━━━',
            'ДРР здесь считается только из рекламно-атрибутированной выручки конкретного источника.',
            'ℹ️ Рекламная атрибуция не равна финансовому признанию продажи или выплате маркетплейса.']

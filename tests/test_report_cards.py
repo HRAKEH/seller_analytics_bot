@@ -16,7 +16,7 @@ from app.bot import AppContext, register_handlers
 from app.bot.keyboards import HOME, MENU_REPORTS
 from app.bot.report_cards import DailyCardController, send_daily_card, send_daily_cards
 from app.bot.runtime import ContextProxy, ShopContextMiddleware
-from app.reports.cards import format_daily_card, render_daily_card
+from app.reports.cards import format_daily_card, render_daily_card, daily_card_pages
 from app.reports.daily import DailyReport, MarketplaceDaily, build_daily_report
 from app.services.buyer_prices import BuyerPriceTotals, CurrencyTotal
 from app.services.collection import CollectionService
@@ -421,7 +421,11 @@ def test_long_lower_block_is_one_valid_html_message_and_main_is_unchanged(ui):
     data['details_html']='🔎 <b>Подробнее</b>\n'+('\n'.join('<b>Товар 😀 &amp; склад</b>' for _ in range(2000)))
     output=render_daily_card(data)
     assert len(output.encode('utf-16-le'))//2<=3900
-    assert output.startswith(text.summary_html+'\n\n') and 'Подробности сокращены' in output
+    assert output.startswith(text.summary_html+'\n\n') and 'Страница 1/' in output
+    pages=daily_card_pages(data)
+    assert len(pages)>1 and all(len(page.encode('utf-16-le'))//2<=3900 for page in pages)
+    assert sum(page.count('<b>Товар 😀 &amp; склад</b>') for page in pages)==2000
+    assert all(page.startswith(text.summary_html+'\n\n') for page in pages)
     class Tags(HTMLParser):
         def __init__(self):super().__init__();self.stack=[]
         def handle_starttag(self,tag,attrs):self.stack.append(tag)

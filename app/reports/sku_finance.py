@@ -80,7 +80,7 @@ def _money(v: float) -> str:
 
 
 @readable_dates
-def format_sku_economics(report: SkuEconomicsReport, limit: int = 5) -> str:
+def format_sku_economics(report: SkuEconomicsReport, limit: int | None = None) -> str:
     lines=[f'🧾 <b>SKU-экономика · {report.start} — {report.end}</b>',
            '━━━━━━━━━━━━━━━━',
            'Это оценка по заказам, <b>не чистая прибыль</b>. Комиссии, логистика и реклама не распределяются по SKU без подтверждённой детализации источника.']
@@ -90,7 +90,8 @@ def format_sku_economics(report: SkuEconomicsReport, limit: int = 5) -> str:
     for market in ('wildberries','ozon'):
         rows=[r for r in report.rows if r.marketplace==market and (r.units or r.order_revenue or r.financial_metrics or r.advertising_metrics)]
         label='WB' if market=='wildberries' else 'Ozon'
-        lines.append(f'\n{label}: товаров с данными — {len(rows)}. Показаны первые {min(limit,len(rows))} по сумме заказов.')
+        shown=len(rows) if limit is None else min(limit,len(rows))
+        lines.append(f'\n{label}: товаров с данными — {len(rows)}. Показано: {shown} · по сумме заказов.')
         selected.extend(rows[:limit])
     for i,row in enumerate(selected,start=1):
         icon='🟣' if row.marketplace=='ozon' else '🔵'

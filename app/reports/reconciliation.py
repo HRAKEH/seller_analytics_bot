@@ -59,7 +59,7 @@ def _money(v: float) -> str:
 
 
 @readable_dates
-def format_reconciliation(report: ReconciliationReport, limit: int=12) -> str:
+def format_reconciliation(report: ReconciliationReport, limit: int | None=None) -> str:
     lines=[f'🔎 <b>Сверка · {report.start} — {report.end}</b>','━━━━━━━━━━━━━━━━',
            'Разница между этапами может быть нормальной задержкой: заказы, продажи/возвраты и финансы обновляются в разные даты.']
     for market,label in (('wildberries','🔵 Wildberries'),('ozon','🟣 Ozon')):
@@ -83,7 +83,7 @@ def format_reconciliation(report: ReconciliationReport, limit: int=12) -> str:
             else:
                 gap=row.ordered_units-row.posting_units
                 detail=f'заказано {row.ordered_units:g} · posting {row.posting_units:g} · gap {gap:+g}'
-            lines += [f'• <b>{escape(row.name)}</b> · SKU <code>{escape(row.marketplace_sku)}</code>',
+            lines += [f'• {label} · <b>{escape(row.name)}</b> · SKU <code>{escape(row.marketplace_sku)}</code>',
                       f'  {detail}',f'  фин. продажи источника: {_money(row.finance_gross)}']
     lines += ['', 'ℹ️ Gap — сигнал для проверки, а не автоматически ошибка. Для свежих дат финансовое покрытие обычно ниже из-за задержки расчётов.']
     return '\n'.join(lines)
