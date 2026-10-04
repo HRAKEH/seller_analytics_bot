@@ -11,7 +11,7 @@ import pytest
 
 from app.integrations.base import FetchResult
 from app.integrations.ozon import OzonClient
-from app.reports.alerts import format_active_alerts, format_alert_digest, format_alert_detail
+from app.reports.alerts import format_active_alerts, format_alert_digest_pages, format_alert_detail
 from app.reports.formatter import format_product_report, format_stock_report
 from app.reports.operations import format_action_center, format_inbound
 from app.reports.products import build_product_report, StockRisk
@@ -301,9 +301,10 @@ def test_wb_accruals_deduplicate_report_and_keep_latest_correction(data):
 
 def test_alert_digest_keeps_marketplace_sku_quantity_before_long_name():
     row = StockRisk('ozon', '😀<&' * 500, '501', 3, 0, .2, 15, 14, None)
-    text = format_alert_digest([AlertNotification('low_stock', 'ozon:501', 'warning', stock_alert_text(row), 15)])
+    pages = format_alert_digest_pages([AlertNotification('low_stock', 'ozon:501', 'warning', stock_alert_text(row), 15)])
+    text = pages[0]
     assert 'Ozon · артикул <code>501</code>' in text and '3 шт.' in text and '15.0 дн.' in text
-    assert utf16_length(text) <= 3900
+    assert len(pages) > 1 and all(utf16_length(page) <= 3900 for page in pages)
 
 
 def test_action_center_long_products_still_fit_one_message():

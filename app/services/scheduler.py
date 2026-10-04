@@ -6,8 +6,9 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from aiogram import Bot
 from app.bot.context import AppContext
+from app.bot.paged_reports import send_report_pages
 from app.bot.report_cards import send_daily_cards
-from app.reports.alerts import format_alert_digest
+from app.reports.alerts import format_alert_digest_pages
 from app.services.alerts import AlertEngine
 from app.services.resilience import queue_retry, partial_error
 from app.services.supply import evaluate_forecast_quality, build_supply_plan
@@ -39,9 +40,16 @@ async def send_to_owners(bot: Bot, ctx: AppContext, text: str):
 
 async def send_alert_digest(bot: Bot, ctx: AppContext, notes):
     shop = ctx.repository.get_shop(ctx.shop_id)
-    text = format_alert_digest(notes, shop_name=shop.name if shop else None)
-    if text:
-        await send_to_owners(bot, ctx, text)
+    pages = format_alert_digest_pages(notes, shop_name=shop.name if shop else None,
+                                     timezone=ctx.preferences().timezone)
+    if not pages:
+        return
+    for row in ctx.repository.users_for_shop(ctx.shop_id):
+        uid = int(row['telegram_user_id'])
+        try:
+            await send_report_pages(bot, ctx, uid, pages, user_id=uid)
+        except Exception:
+            log.exception('Cannot send shop alert digest to %s', uid)
 
 async def collect_and_send_daily(bot: Bot, ctx: AppContext):
     pref=ctx.preferences()

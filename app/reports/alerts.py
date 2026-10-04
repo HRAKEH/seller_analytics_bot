@@ -1,8 +1,8 @@
-"""One bounded Telegram digest for a shop's alert evaluation cycle."""
+"""Shop alert lists and complete, compact pages of automatic notifications."""
 from collections import Counter
 from html import escape
-from .dates import readable_dates
-from .text import escape_clip, page_slice
+from .dates import readable_dates, readable_text
+from .text import escape_clip, page_slice, paginate_report_html, utf16_length
 
 
 def sorted_alerts(repo, shop_id: int, report):
@@ -104,31 +104,10 @@ def format_alert_detail(state, report) -> str:
     return '\n'.join(lines)
 
 
-def _utf16_length(text: str) -> int:
-    return len(text.encode('utf-16-le')) // 2
+_DIGEST_FOOTER = '\n\nТекущие проблемы: «🚨 Проблемы» → «🚨 Активные проблемы».'
 
 
-def _clip(text: str, limit: int) -> str:
-    if _utf16_length(text) <= limit:
-        return text
-    result = []
-    used = 0
-    for char in text:
-        size = _utf16_length(char)
-        if used + size > limit - 1:
-            break
-        result.append(char)
-        used += size
-    return ''.join(result) + '…'
-
-
-def format_alert_digest(notifications, *, shop_name: str | None = None) -> str | None:
-    """Prioritize critical events and announce omitted detail without splitting.
-
-    Count escaped HTML conservatively, including markup and UTF-16 units. The
-    result fits one Telegram sendMessage even with emoji or HTML in a product
-    name. Full active problems remain available through the existing menu.
-    """
+def _digest_parts(notifications, shop_name):
     notes = list(notifications)
     if not notes:
         return None
@@ -139,27 +118,44 @@ def format_alert_digest(notifications, *, shop_name: str | None = None) -> str |
     counts = Counter(severity(note) for note in notes)
     lines = []
     if shop_name:
-        lines.append(f'🏪 <b>{escape(_clip(str(shop_name), 120))}</b>')
+        lines.append(f'🏪 <b>{escape_clip(str(shop_name), 180)}</b>')
     lines += ['🚨 <b>Сводка оповещений</b>',
               f'Критичных: {counts["critical"]} · предупреждений: {counts["warning"]} · восстановлено: {counts["resolved"]}']
     priority = {'critical': 0, 'warning': 1, 'resolved': 2}
     icons = {'critical': '🔴', 'warning': '🟠', 'resolved': '✅'}
-    footer = '\n\nТекущие проблемы: «🚨 Проблемы» → «🚨 Активные проблемы».'
-    shown = 0
+    events = []
     for note in sorted(notes, key=lambda item: priority[severity(item)]):
         message = ' '.join(str(note.message).split())
-        display = escape(_clip(message, 450))
+        display = escape(message)
         _, _, sku = str(note.subject_key).partition(':')
         if sku:
             article = escape(sku)
             display = display.replace('артикул ' + article, 'артикул <code>' + article + '</code>', 1)
-        line = f'{icons[severity(note)]} {display}'
-        omitted = len(notes) - shown - 1
-        suffix = f'\n\nЕщё событий: {omitted}. Подробности сокращены.' if omitted else ''
-        if _utf16_length('\n'.join([*lines, line]) + suffix + footer) > 3900:
-            break
-        lines.append(line)
-        shown += 1
-    if shown < len(notes):
-        lines.append(f'\nЕщё событий: {len(notes) - shown}. Подробности сокращены.')
-    return '\n'.join(lines) + footer
+        events.append(f'{icons[severity(note)]} {display}')
+    return '\n'.join(lines), '\n'.join(events)
+
+
+def format_alert_digest(notifications, *, shop_name: str | None = None) -> str | None:
+    """Full digest text; delivery must use pages for long notification lists."""
+    parts = _digest_parts(notifications, shop_name)
+    if parts is None:
+        return None
+    header, body = parts
+    return header + '\n\n' + body + _DIGEST_FOOTER
+
+
+def format_alert_digest_pages(notifications, *, shop_name: str | None = None,
+                              timezone: str | None = None) -> list[str]:
+    """Keep every event, repeat shop/counts, and reserve room for navigation.
+
+    Dates are rendered in the originating shop's timezone before the snapshot
+    is split and saved. HTML, emoji and long names retain all their content.
+    """
+    parts = _digest_parts(notifications, shop_name)
+    if parts is None:
+        return []
+    header, body = (readable_text(part, tz=timezone) for part in parts)
+    reserved = utf16_length(header + '\n\n' + _DIGEST_FOOTER)
+    bodies = paginate_report_html(body, limit=1500-reserved, hard_limit=3500-reserved)
+    return [header + '\n\n' + content + (_DIGEST_FOOTER if index == len(bodies)-1 else '')
+            for index, content in enumerate(bodies)]

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from functools import partial
 from weakref import WeakValueDictionary
 
 from aiogram import types
@@ -17,7 +18,7 @@ def report_page_text(pages, page):
     text = pages[page]
     # Repeat a compact report title so later pages remain identifiable.
     title = pages[0].split('\n', 1)[0]
-    if page and utf16_length(title) <= 180:
+    if page and utf16_length(title) <= 180 and not text.startswith(title):
         text = title + '\n\n' + text
     return text + f'\n\n<i>Страница {page + 1}/{len(pages)}</i>'
 
@@ -32,6 +33,28 @@ def report_page_keyboard(pages, page, markup=None):
     return types.InlineKeyboardMarkup(inline_keyboard=rows)
 
 
+async def _send_report_pages(send, context, *, bot_id, chat_id, user_id, pages,
+                             reply_markup=None, permission='view', system_owner_only=False):
+    if len(pages) == 1:
+        return await send(pages[0] or '—', parse_mode='HTML', reply_markup=reply_markup)
+    base = reply_markup if isinstance(reply_markup, types.InlineKeyboardMarkup) else None
+    sent = await send(report_page_text(pages, 0), parse_mode='HTML',
+                      reply_markup=report_page_keyboard(pages, 0, base))
+    context.repository.save_paged_report(bot_id, chat_id, sent.message_id,
+        shop_id=context.shop_id, user_id=user_id, permission=permission,
+        system_owner_only=system_owner_only, pages=pages,
+        markup=base.model_dump(exclude_none=True) if base else None)
+    return sent
+
+
+async def send_report_pages(bot, context, chat_id, pages, *, user_id,
+                            reply_markup=None, permission='view', system_owner_only=False):
+    """Outbound reports use the same durable page callbacks as manual reports."""
+    return await _send_report_pages(partial(bot.send_message, chat_id), context,
+        bot_id=bot.id, chat_id=chat_id, user_id=user_id, pages=pages,
+        reply_markup=reply_markup, permission=permission, system_owner_only=system_owner_only)
+
+
 class PagedReportController:
     def __init__(self, context):
         self.context = context
@@ -40,16 +63,10 @@ class PagedReportController:
     async def show(self, message, text, *, reply_markup=None, permission='view', system_owner_only=False):
         text = message_text(text)
         pages = paginate_report_html(text)
-        if len(pages) == 1:
-            return await message.answer(text or '—', parse_mode='HTML', reply_markup=reply_markup)
-        base = reply_markup if isinstance(reply_markup, types.InlineKeyboardMarkup) else None
-        sent = await message.answer(report_page_text(pages, 0), parse_mode='HTML',
-                                    reply_markup=report_page_keyboard(pages, 0, base))
-        self.context.repository.save_paged_report(message.bot.id, message.chat.id, sent.message_id,
-            shop_id=self.context.shop_id, user_id=message.from_user.id, permission=permission,
-            system_owner_only=system_owner_only, pages=pages,
-            markup=base.model_dump(exclude_none=True) if base else None)
-        return sent
+        return await _send_report_pages(message.answer, self.context,
+            bot_id=message.bot.id, chat_id=message.chat.id, user_id=message.from_user.id,
+            pages=pages if len(pages) > 1 else [text], reply_markup=reply_markup,
+            permission=permission, system_owner_only=system_owner_only)
 
     async def handle(self, callback, *, on_home=None):
         if not isinstance(callback.message, types.Message):

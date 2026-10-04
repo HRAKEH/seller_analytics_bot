@@ -1,13 +1,19 @@
 import asyncio
-from html.parser import HTMLParser
+import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+from aiogram.methods import AnswerCallbackQuery, EditMessageText, SendMessage
 import pytest
 
-from app.reports.alerts import format_alert_digest
+from app.bot.paged_reports import report_page_text
+from app.reports.alerts import format_alert_digest, format_alert_digest_pages
+from app.reports.text import utf16_length
 from app.services.alerts import AlertNotification
 from app.services import scheduler
+
+from test_navigation import ui, callback, inline_data
+from test_paged_reports import parsed
 
 
 def notification(message, severity='warning'):
@@ -24,33 +30,30 @@ def test_digest_groups_changes_prioritizes_critical_and_escapes_names():
     assert 'critical &lt;script&gt;&amp;' in text
 
 
-def test_large_digest_stays_in_one_message_and_announces_omitted_changes():
+def test_large_digest_pages_keep_every_event_and_full_escaped_names():
     notes = [notification(f'{i} ' + '📦<&' * 300) for i in range(100)]
     notes.append(notification('critical must stay visible', 'critical'))
-    text = format_alert_digest(notes, shop_name='😀' * 1000)
-    assert len(text.encode('utf-16-le')) // 2 <= 3900
-    assert 'critical must stay visible' in text
-    assert 'Ещё событий:' in text and 'Подробности сокращены.' in text
-    assert 'предупреждений: 100' in text
-
-    class Tags(HTMLParser):
-        def __init__(self):
-            super().__init__()
-            self.starts, self.ends = [], []
-
-        def handle_starttag(self, tag, attrs):
-            self.starts.append(tag)
-
-        def handle_endtag(self, tag):
-            self.ends.append(tag)
-
-    parser = Tags()
-    parser.feed(text)
-    assert parser.starts == parser.ends == ['b', 'b']
+    pages = format_alert_digest_pages(notes, shop_name='😀' * 1000)
+    assert len(pages) > 1 and 'critical must stay visible' in pages[0]
+    bodies = []
+    for index, page in enumerate(pages):
+        displayed = report_page_text(pages, index)
+        assert utf16_length(displayed) <= 3900
+        parsed(displayed)
+        assert page.count('Сводка оповещений') == 1
+        assert 'Критичных: 1 · предупреждений: 100 · восстановлено: 0' in page
+        assert 'Ещё событий:' not in page and 'Подробности сокращены.' not in page
+        body = page.split('\n\n', 1)[1].split('\n\nТекущие проблемы:', 1)[0]
+        bodies.append(''.join(parsed(body).text))
+    combined = ''.join(bodies)
+    assert all(note.message in combined for note in notes)
+    assert combined.count('📦<&') == 30000
+    assert 'Активные проблемы' in pages[-1]
 
 
 def test_no_changes_produce_no_digest():
     assert format_alert_digest([], shop_name='Shop') is None
+    assert format_alert_digest_pages([], shop_name='Shop') == []
 
 
 def context(shop_id, notes, users):
@@ -82,7 +85,7 @@ async def test_multi_shop_cycle_sends_one_digest_per_recipient_without_mixing_sh
     empty = context(3, [], [31])
     registry = SimpleNamespace(contexts=lambda: [first, second, empty],
         maintenance_lock=SimpleNamespace(locked=lambda: False), settings=SimpleNamespace(instance_id='test'))
-    bot = SimpleNamespace(send_message=AsyncMock())
+    bot = SimpleNamespace(id=123456, send_message=AsyncMock())
 
     async def stop(_):
         raise asyncio.CancelledError
@@ -100,7 +103,7 @@ async def test_multi_shop_cycle_sends_one_digest_per_recipient_without_mixing_sh
 @pytest.mark.asyncio
 async def test_single_shop_loop_uses_the_same_digest(monkeypatch):
     ctx = context(1, [notification('stock'), notification('recovered', 'resolved')], [11])
-    bot = SimpleNamespace(send_message=AsyncMock())
+    bot = SimpleNamespace(id=123456, send_message=AsyncMock())
     calls = 0
 
     async def stop_after_cycle(_):
@@ -119,15 +122,103 @@ async def test_single_shop_loop_uses_the_same_digest(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_many_stock_alerts_and_recoveries_are_one_bounded_delivery():
-    notes=[AlertNotification('low_stock',f'ozon:{i}','critical',
-           f'📦 Товар {i} <крем>: остаток 0, доступно 0 шт.') for i in range(150)]
-    notes.append(AlertNotification('low_stock','wb:restored','resolved','📦 Запас восстановлен'))
-    ctx=context(1,notes,[11])
-    bot=SimpleNamespace(send_message=AsyncMock())
-    await scheduler.send_alert_digest(bot,ctx,notes)
-    bot.send_message.assert_awaited_once()
-    text=bot.send_message.await_args.args[1]
-    assert 'Критичных: 150' in text and 'восстановлено: 1' in text
-    assert 'Ещё событий:' in text and 'Активные проблемы' in text
-    assert len(text.encode('utf-16-le'))//2<=3900
+async def test_many_stock_alerts_are_one_message_per_recipient_with_all_pages(ui, monkeypatch):
+    notes = [AlertNotification('low_stock', f'ozon:{i}', 'critical',
+             f'📦 Ozon · артикул {i}: остаток 0 шт. Товар: Крем <{i}> & склад') for i in range(150)]
+    notes.append(AlertNotification('low_stock', 'wildberries:restored', 'resolved',
+                                  '📦 WB · артикул restored: запас восстановлен'))
+    await scheduler.send_alert_digest(ui.bot, ui.ctx, notes)
+    deliveries = [call for call in ui.telegram.methods if isinstance(call, SendMessage)]
+    assert [call.chat_id for call in deliveries] == [101, 102]
+    mids = {}
+    for recipient in (101, 102):
+        message = next(message for (chat, _), message in ui.telegram.messages.items() if chat == recipient)
+        mids[recipient] = message.message_id
+        saved = ui.repo.paged_report(ui.bot.id, recipient, message.message_id)
+        assert saved['user_id'] == recipient and saved['shop_id'] == ui.shop.id
+        assert saved['permission'] == 'view'
+        pages = json.loads(saved['pages_json'])
+        assert len(pages) > 1
+        assert [code for page in pages for code in parsed(page).codes] == [str(i) for i in range(150)] + ['restored']
+        assert all('Критичных: 150' in page and 'восстановлено: 1' in page for page in pages)
+        assert all(utf16_length(report_page_text(pages, index)) <= 3900 for index in range(len(pages)))
+        assert not any(button.copy_text for row in message.reply_markup.inline_keyboard for button in row)
+
+    ui.ctx.collect_inventory = AsyncMock(side_effect=AssertionError('Paging must not refresh inventory'))
+    monkeypatch.setattr(scheduler, 'AlertEngine', lambda *a, **kw: pytest.fail('Paging must use saved events'))
+    mid = mids[101]
+    first = ui.telegram.messages[(101, mid)].text
+    await callback(ui, mid, inline_data(ui, mid, '▶️'))
+    second = ui.telegram.messages[(101, mid)].text
+    assert second != first and second.count('Сводка оповещений') == 1 and 'Страница 2/' in second
+    assert ui.repo.paged_report(ui.bot.id, 102, mids[102])['current_page'] == 0
+    await callback(ui, mid, inline_data(ui, mid, '◀️'))
+    assert ui.telegram.messages[(101, mid)].text == first
+    assert len([call for call in ui.telegram.methods if isinstance(call, SendMessage)]) == 2
+    ui.ctx.collect_inventory.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_auto_digest_keeps_source_shop_dates_and_access_after_restart(ui):
+    notes = [AlertNotification('low_stock', f'ozon:2026-10-{i:02d}', 'warning',
+             f'📦 Ozon · артикул 2026-10-{i:02d}: остаток 1 шт. Снимок: 2026-10-04T06:09:00Z') for i in range(1, 30)]
+    await scheduler.send_alert_digest(ui.bot, ui.ctx, notes)
+    message = next(message for (chat, _), message in ui.telegram.messages.items() if chat == 101)
+    mid = message.message_id
+    saved = ui.repo.paged_report(ui.bot.id, 101, mid)
+    pages = json.loads(saved['pages_json'])
+    assert all('04.10.2026 09:09' in page for page in pages)
+    assert [code for page in pages for code in parsed(page).codes] == [f'2026-10-{i:02d}' for i in range(1, 30)]
+    second = ui.repo.ensure_shop(ui.shop.seller_id, 'Second')
+    ui.repo.grant_shop_access(101, second.id, 'owner')
+    ui.repo.ensure_shop_preferences(second.id)
+    ui.repo.update_shop_preferences(second.id, timezone='Asia/Vladivostok')
+    ui.ctx.shop_id = second.id
+    ui.dp = ui.new_dispatcher()
+    await callback(ui, mid, 'report_page:1')
+    text = ui.telegram.messages[(101, mid)].text
+    assert '🏪 <b>Shop</b>' in text and '04.10.2026 09:09' in text
+    assert 'Second' not in text and '04.10.2026 16:09' not in text
+    assert ui.repo.paged_report(ui.bot.id, 101, mid)['current_page'] == 1
+    edits = len([call for call in ui.telegram.methods if isinstance(call, EditMessageText)])
+    ui.repo.revoke_shop_access(101, ui.shop.id)
+    await callback(ui, mid, 'report_page:0')
+    assert len([call for call in ui.telegram.methods if isinstance(call, EditMessageText)]) == edits
+    assert 'Нет доступа' in ui.telegram.methods[-1].text
+
+
+@pytest.mark.asyncio
+async def test_auto_digest_pages_are_bound_to_the_actual_recipient(ui):
+    await scheduler.send_alert_digest(ui.bot, ui.ctx, [notification(f'Event {i}') for i in range(120)])
+    message = next(message for (chat, _), message in ui.telegram.messages.items() if chat == 101)
+    ui.telegram.messages[(102, message.message_id)] = message
+    await callback(ui, message.message_id, 'report_page:1', user=102)
+    assert isinstance(ui.telegram.methods[-1], AnswerCallbackQuery)
+    assert 'Нет доступа' in ui.telegram.methods[-1].text
+    assert not any(isinstance(call, EditMessageText) for call in ui.telegram.methods)
+    assert ui.repo.paged_report(ui.bot.id, 101, message.message_id)['current_page'] == 0
+
+
+@pytest.mark.asyncio
+async def test_failed_recipient_does_not_block_the_next_auto_digest(ui):
+    ui.telegram.fail_next_send = True
+    await scheduler.send_alert_digest(ui.bot, ui.ctx, [notification(f'Event {i}') for i in range(120)])
+    sends = [call for call in ui.telegram.methods if isinstance(call, SendMessage)]
+    assert [call.chat_id for call in sends] == [101, 102]
+    assert all(chat == 102 for chat, _ in ui.telegram.messages)
+    message = next(iter(ui.telegram.messages.values()))
+    assert ui.repo.paged_report(ui.bot.id, 102, message.message_id)['user_id'] == 102
+    await callback(ui, message.message_id, 'report_page:1', user=102)
+    assert 'Страница 2/' in ui.telegram.messages[(102, message.message_id)].text
+
+
+@pytest.mark.asyncio
+async def test_short_auto_digest_has_no_pages_and_empty_digest_is_not_sent(ui):
+    await scheduler.send_alert_digest(ui.bot, ui.ctx, [])
+    assert not ui.telegram.methods
+    await scheduler.send_alert_digest(ui.bot, ui.ctx, [notification('stock')])
+    sends = [call for call in ui.telegram.methods if isinstance(call, SendMessage)]
+    assert [call.chat_id for call in sends] == [101, 102]
+    assert all(call.reply_markup is None and 'Страница' not in call.text for call in sends)
+    with ui.repo.db.connect() as conn:
+        assert conn.execute('SELECT COUNT(*) FROM telegram_paged_reports').fetchone()[0] == 0
