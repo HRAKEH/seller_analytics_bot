@@ -74,14 +74,14 @@ def buyer_prices():
 
 def test_summary_uses_agreed_money_bases_and_original_currencies_in_details(ui):
     text=preview(ui,buyer_prices())
-    assert 'Всего заказано: <b>159 шт.</b>' in text.summary_html
+    assert 'Всего заказано: <b>159 шт. · ≈ 104 580,53 ₽</b>' in text.summary_html
     assert '29 шт. · ≈ 15 077,53 ₽' in text.summary_html
     assert '130 шт. · 89 503 ₽' in text.summary_html
     assert text.summary_html.index('🟣 Ozon')<text.summary_html.index('🔵 Wildberries')
     assert '33649' not in text.summary_html and '33 649' not in text.summary_html
     assert '33 649,00 ₽' in text.details_html and '14,98 BYN' in text.details_html
     assert '1 BYN = 27,6621 ₽' in text.details_html
-    assert '4,2%' not in text.summary_html and '104 580' not in text.summary_html
+    assert '4,2%' not in text.summary_html
 
 
 @pytest.mark.parametrize('change',[{'complete':False},{'rates':None}])
@@ -90,12 +90,55 @@ def test_missing_prices_or_rates_never_become_full_ruble_total(ui,change):
     ozon=text.summary_html.split('🔵 Wildberries')[0]
     assert '15 077' not in ozon and '33 649' not in ozon
     assert '⏳' in ozon and '14,98 BYN' in text.details_html
+    assert 'Всего заказано: <b>159 шт.</b> · ⏳ сумма неполная.' in text.summary_html
 
 
 def test_complete_rub_prices_and_real_zero_are_not_approximate_or_missing(ui):
     prices=BuyerPriceTotals((CurrencyTotal('RUB',Decimal(0),29),),29,29,29,True,None)
     text=preview(ui,prices)
     assert '29 шт. · 0,00 ₽' in text.summary_html and '≈' not in text.summary_html
+    assert 'Всего заказано: <b>159 шт. · 89 503,00 ₽</b>' in text.summary_html
+
+
+def test_order_total_uses_buyer_prices_without_predelnaya_or_net_substitution(ui):
+    prices=BuyerPriceTotals((CurrencyTotal('RUB',Decimal('14663.15'),29),),29,29,29,True,None)
+    text=preview(ui,prices)
+    assert 'Всего заказано: <b>159 шт. · 104 166,15 ₽</b>' in text.summary_html
+    assert '123 152' not in text.summary_html  # WB + Ozon's maximum API price is a different basis.
+    assert 'Общий итог — сумма показанных цен' in text.details_html
+
+
+@pytest.mark.parametrize('wb_amount,ozon_amount,total',[(0,0,'0,00'),(.1,'0.2','0,30'),(.005,'0.005','0,02')])
+def test_order_total_matches_displayed_kopecks_including_zero(ui,wb_amount,ozon_amount,total):
+    wb=orders(ui,units=1,revenue=wb_amount);oz=ui.repo.ensure_connection(ui.shop.id,'ozon','Ozon')
+    prices=BuyerPriceTotals((CurrencyTotal('RUB',Decimal(str(ozon_amount)),1),),1,1,1,True,None)
+    report=DailyReport(DAY.isoformat(),(
+        MarketplaceDaily('wildberries',wb.id,1,wb_amount,None,None,True,None,None),
+        MarketplaceDaily('ozon',oz.id,1,999,None,None,True,None,None,buyer_prices=prices)))
+    text=format_daily_card(ui.repo,ui.shop.id,report)
+    assert f'Всего заказано: <b>2 шт. · {total} ₽</b>' in text.summary_html
+
+
+def test_no_total_when_wb_amount_missing_even_with_complete_units(ui):
+    wb=orders(ui);oz=ui.repo.ensure_connection(ui.shop.id,'ozon','Ozon')
+    prices=BuyerPriceTotals((CurrencyTotal('RUB',Decimal(100),1),),1,1,1,True,None)
+    report=DailyReport(DAY.isoformat(),(
+        MarketplaceDaily('wildberries',wb.id,1,None,None,None,True,None,None),
+        MarketplaceDaily('ozon',oz.id,1,999,None,None,True,None,None,buyer_prices=prices)))
+    text=format_daily_card(ui.repo,ui.shop.id,report)
+    assert 'Всего заказано: <b>2 шт.</b> · ⏳ сумма неполная.' in text.summary_html
+
+
+def test_order_total_for_a_single_connected_marketplace(ui):
+    orders(ui,units=3,revenue=100.49)
+    text=format_daily_card(ui.repo,ui.shop.id,build_daily_report(ui.repo,ui.shop.id,DAY))
+    assert 'Всего заказано: <b>3 шт. · 100,49 ₽</b>' in text.summary_html
+
+
+def test_unconnected_shop_has_no_invented_zero_total(ui):
+    text=format_daily_card(ui.repo,ui.shop.id,DailyReport(DAY.isoformat(),()))
+    assert 'Всего заказано: ⏳ неполные данные.' in text.summary_html
+    assert '0,00 ₽' not in text.summary_html
 
 
 def test_missing_enabled_market_does_not_turn_available_units_into_total(ui):

@@ -1,4 +1,4 @@
-"""Snapshots for one-message daily reports; monetary bases stay separate."""
+"""Daily cards: order totals use displayed prices; accruals stay separate."""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -34,6 +34,25 @@ def _day(value: str) -> str:
     return date.fromisoformat(value).strftime('%d.%m.%Y')
 
 
+def _orders_total(report: DailyReport) -> tuple[Decimal | None, bool]:
+    """Sum the visible marketplace amounts, never substitute net/max prices."""
+    if not report.complete:return None,False
+    total=Decimal(0);approximate=False
+    for source in report.sources:
+        if source.marketplace=='ozon':
+            prices=source.buyer_prices
+            amount=prices.rub_total if prices else None
+            if amount is None:return None,False
+            approximate=approximate or bool(prices.foreign_currencies)
+        elif source.marketplace=='wildberries' and source.ordered_revenue is not None:
+            amount=Decimal(str(source.ordered_revenue))
+            if not amount.is_finite():return None,False
+            amount=amount.quantize(Decimal('0.01'),rounding=ROUND_HALF_UP)
+        else:return None,False
+        total+=amount
+    return total,approximate
+
+
 def _wb_period(repo, metric) -> str:
     """A report's actual period can differ from its storage/end date."""
     raw=repo.raw_payload_for_run(metric['source_run_id'])
@@ -62,8 +81,14 @@ def format_daily_card(repo, shop_id: int, report: DailyReport) -> DailyCardText:
     if shop:summary.append('🏪 '+_safe(shop.name,80))
     if pref and pref.demo_mode:summary.append('🧪 <b>Учебные данные · DEMO</b>')
     summary.append('')
-    summary.append(f'Всего заказано: <b>{num(report.total_units)} шт.</b>' if report.total_units is not None
-                   else 'Всего заказано: ⏳ неполные данные.')
+    total,approximate=_orders_total(report)
+    if report.total_units is None:
+        summary.append('Всего заказано: ⏳ неполные данные.')
+    elif total is None:
+        summary.append(f'Всего заказано: <b>{num(report.total_units)} шт.</b> · ⏳ сумма неполная.')
+    else:
+        prefix='≈ ' if approximate else ''
+        summary.append(f'Всего заказано: <b>{num(report.total_units)} шт. · {prefix}{rubles(total)}</b>')
     details=['🔎 <b>Подробнее</b>']
     accruals=['💰 <b>Начисления</b>',
               'Финансовые операции и заказы относятся к разным датам.']
@@ -154,7 +179,8 @@ def format_daily_card(repo, shop_id: int, report: DailyReport) -> DailyCardText:
         accruals.append('Нет подключённых финансовых источников.')
     summary.extend(['','Данные предварительные.'])
     if any(s.warning for s in sources):summary.append('⚠️ Есть сбой загрузки — см. «Подробнее».')
-    details.extend(['','Суммы площадок не складываются: основания расчёта различаются.'])
+    details.extend(['','Общий итог — сумма показанных цен: WB до удержаний, Ozon по цене покупателя. '
+        'При пересчёте валют это оценка по ЦБ. Начисления после удержаний смотрите отдельно.'])
     accruals.extend(['','Это не чистая прибыль: себестоимость и налоги здесь не вычитаются.'])
     return DailyCardText('\n'.join(summary),'\n'.join(details),'\n'.join(accruals))
 
