@@ -17,7 +17,7 @@ class RefreshStage:
     skipped: bool = False
 
 
-async def refresh_reports(ctx, start: date, end: date, progress=None) -> tuple[RefreshStage,...]:
+async def refresh_reports(ctx, start: date, end: date, progress=None, *, include_finance=True) -> tuple[RefreshStage,...]:
     if end < start or (end-start).days >= 31:
         raise ValueError('Обновление отчётов: от 1 до 31 дня')
     if ctx.demo_mode():
@@ -50,6 +50,7 @@ async def refresh_reports(ctx, start: date, end: date, progress=None) -> tuple[R
                     lambda day=day: _one(ctx.collector.collect_ozon_orders_day(ctx.ozon_connection_id,day,shop_id=ctx.shop_id)))
         for key,method,title in (('finance',ctx.collector.collect_finance,'Начисления и удержания'),
                                  ('advertising',ctx.collector.collect_advertising,'Рекламная статистика')):
+            if key=='finance' and not include_finance:continue
             for market,wb,ozon in (('WB',ctx.wb_connection_id,None),('Ozon',None,ctx.ozon_connection_id)):
                 if wb is None and ozon is None:continue
                 kwargs={'start':start,'end':end,'wb_connection_id':wb,'ozon_connection_id':ozon}

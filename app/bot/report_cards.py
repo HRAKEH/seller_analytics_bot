@@ -31,8 +31,10 @@ async def send_daily_card(bot, ctx, chat_id: int, day: date, *, user_id: int,
     card={'shop_id':ctx.shop_id,'report_day':day.isoformat(),**asdict(text),
           'section':'summary','status_note':status_note,'page':0}
     can_refresh=ctx.repository.can_user(user_id,ctx.shop_id,'operate')
+    if not ctx.repository.can_user(user_id,ctx.shop_id,'view'):return None
     message=await bot.send_message(chat_id,render_daily_card(card),parse_mode='HTML',
-                                  reply_markup=daily_card_keyboard(can_refresh=can_refresh))
+        reply_markup=daily_card_keyboard(can_refresh=can_refresh,
+            can_finance=ctx.repository.can_user(user_id,ctx.shop_id,'finance')))
     ctx.repository.save_report_card(bot.id,chat_id,message.message_id,**card)
     return message
 
@@ -70,13 +72,17 @@ class DailyCardController:
 
     async def _edit(self, bot, key, card, user_id: int) -> bool:
         repo=self.context.repository
+        if not repo.can_user(user_id,card['shop_id'],'view'):return False
+        if card['section']=='accruals' and not repo.can_user(user_id,card['shop_id'],'finance'):
+            card['section']='summary';card['page']=0
         pages=daily_card_pages(card)
         card['page']=max(0,min(int(card.get('page',0)),len(pages)-1))
         try:
             pref=repo.get_shop_preferences(card['shop_id'])
             await bot.edit_message_text(readable_text(render_daily_card(card),tz=pref.timezone if pref else 'Europe/Moscow'),chat_id=key[1],message_id=key[2],
                 parse_mode='HTML',reply_markup=daily_card_keyboard(card['section'],
-                    can_refresh=repo.can_user(user_id,card['shop_id'],'operate'),page=card['page'],pages=len(pages)))
+                    can_refresh=repo.can_user(user_id,card['shop_id'],'operate'),
+                    can_finance=repo.can_user(user_id,card['shop_id'],'finance'),page=card['page'],pages=len(pages)))
         except TelegramBadRequest as exc:
             if 'message is not modified' not in str(exc).lower():
                 log.warning('Cannot edit daily card %s',key,exc_info=True)
@@ -110,6 +116,9 @@ class DailyCardController:
                 return await self._answer(callback,'Откройте новый отчёт через «Вчера» или выбор даты.',alert=True)
             if not self.context.repository.can_user(callback.from_user.id,card['shop_id'],'view'):
                 return await self._answer(callback,'Нет доступа к магазину этого отчёта.',alert=True)
+            if (action=='accruals' or (is_page and card['section']=='accruals')) and not self.context.repository.can_user(
+                    callback.from_user.id,card['shop_id'],'finance'):
+                return await self._answer(callback,'Начисления доступны владельцу и бухгалтеру.',alert=True)
             if is_page and card['section']=='summary':
                 return await self._answer(callback,'Сначала откройте «Подробнее» или «Начисления».')
             if action!='collapse' and not is_page and card['section']!='summary':
@@ -132,7 +141,7 @@ class DailyCardController:
             if card is None:
                 return await self._answer(callback,'Откройте новый отчёт через «Вчера» или выбор даты.',alert=True)
             if not repo.can_user(user_id,card['shop_id'],'operate'):
-                return await self._answer(callback,'Обновление доступно владельцу или аналитику этого магазина.',alert=True)
+                return await self._answer(callback,'Недостаточно прав для обновления этого магазина.',alert=True)
             if key in self._refreshing:
                 return await self._answer(callback,'Этот отчёт уже обновляется.')
             if card['section']!='summary':
@@ -172,7 +181,10 @@ class DailyCardController:
                 await self._finish(message,key,user_id,None,
                     '⏳ Началась другая загрузка этого магазина. Повторите позже; пока показаны сохранённые данные.')
                 return
-            stages=await ctx.refresh_reports(day,day)
+            if repo.can_user(user_id,ctx.shop_id,'finance'):
+                stages=await ctx.refresh_reports(day,day)
+            else:
+                stages=await ctx.refresh_reports(day,day,include_finance=False)
             active=[stage for stage in stages if not stage.skipped]
             if active:
                 text=await prepare_daily_card(ctx,day)

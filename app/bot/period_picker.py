@@ -5,6 +5,7 @@ import secrets
 
 from aiogram import types
 from aiogram.utils.keyboard import InlineKeyboardBuilder
+from app.access import action_permission
 
 
 MONTHS=('Январь','Февраль','Март','Апрель','Май','Июнь','Июль','Август','Сентябрь','Октябрь','Ноябрь','Декабрь')
@@ -63,7 +64,8 @@ class PeriodPicker:
 
     async def launch(self,message,state,action):
         title,permission,_=self.actions[action]
-        if not message.from_user or not self.ctx.repository.can_user(message.from_user.id,self.ctx.shop_id,permission):
+        if not message.from_user or not all(self.ctx.repository.can_user(message.from_user.id,self.ctx.shop_id,p)
+                for p in (permission,action_permission(action))):
             return await message.answer('⛔ Недостаточно прав для этого действия.')
         await state.clear()
         # Keep legacy one-line input supported, while the normal flow needs no typing.
@@ -87,7 +89,8 @@ class PeriodPicker:
             return await callback.answer('Этот выбор периода устарел. Откройте функцию заново.',show_alert=True)
         if action not in self.actions:return await callback.answer('Неизвестное действие.',show_alert=True)
         title,permission,handler=self.actions[action]
-        if not self.ctx.repository.can_user(callback.from_user.id,self.ctx.shop_id,permission):
+        if not all(self.ctx.repository.can_user(callback.from_user.id,self.ctx.shop_id,p)
+                for p in (permission,action_permission(action))):
             return await callback.answer('Недостаточно прав.',show_alert=True)
         if kind=='noop':return await callback.answer()
         if kind=='cancel':

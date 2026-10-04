@@ -11,6 +11,7 @@ from .models import (Seller, Shop, MarketplaceConnection, MetricPoint, SourceRun
                      ShopPreferences, CommerceEventPoint, AdCampaignPoint, AdProductPoint)
 from app.services.metrics import definition
 from app.services.numeric import finite_number
+from app.access import PERMISSIONS, ROLE_LABELS, can_role, normalize_role
 
 
 def utcnow() -> str:
@@ -161,8 +162,7 @@ class Repository:
 
     def grant_shop_access(self, telegram_user_id: int, shop_id: int, role: str,
                           display_name: str = '') -> None:
-        role=(role or '').strip().lower()
-        if role not in {'owner','analyst','viewer'}: raise ValueError('role must be owner, analyst or viewer')
+        role=normalize_role(role)
         self.ensure_bot_user(telegram_user_id,display_name)
         now=utcnow()
         with self.db.connect() as c:
@@ -206,20 +206,59 @@ class Repository:
                JOIN bot_users bu ON bu.telegram_user_id=usa.telegram_user_id
                WHERE usa.shop_id=? AND bu.active=1"""
         if roles:
-            clean=[r for r in roles if r in {'owner','analyst','viewer'}]
+            clean=[normalize_role(r) for r in roles if r in {*ROLE_LABELS,'analyst'}]
             if clean:
                 sql += ' AND usa.role IN ('+','.join('?' for _ in clean)+')'; params.extend(clean)
-        sql += " ORDER BY CASE usa.role WHEN 'owner' THEN 1 WHEN 'analyst' THEN 2 ELSE 3 END,bu.telegram_user_id"
+        sql += " ORDER BY CASE usa.role WHEN 'owner' THEN 1 WHEN 'accountant' THEN 2 WHEN 'manager' THEN 3 ELSE 4 END,bu.telegram_user_id"
         with self.db.connect() as c:
             rows=c.execute(sql,params).fetchall()
         return [dict(r) for r in rows]
 
     def can_user(self, telegram_user_id: int, shop_id: int, permission: str = 'view') -> bool:
-        role=self.role_for_user(telegram_user_id,shop_id)
-        levels={'viewer':10,'analyst':20,'owner':30}
-        needed={'view':10,'operate':20,'manage':30}.get(permission)
-        if needed is None: raise ValueError('unknown permission')
-        return role is not None and levels.get(role,0) >= needed
+        return can_role(self.role_for_user(telegram_user_id,shop_id),permission)
+
+    def manage_employee_access(self, actor_id: int, shop_id: int, user_id: int, role: str | None,
+                               *, display_name: str = '', protected_user_ids=(), expected_role=...) -> bool:
+        """Authorize and change one shop's access under the same write lock."""
+        user_id=int(user_id)
+        if not 0 < user_id < 2**63:
+            raise ValueError('Telegram ID должен быть положительным числом.')
+        role=normalize_role(role) if role is not None else None
+        now=utcnow()
+        with self.db.connect() as c:
+            c.execute('BEGIN IMMEDIATE')
+            actor=c.execute('''SELECT a.role FROM user_shop_access a JOIN bot_users u
+                ON u.telegram_user_id=a.telegram_user_id JOIN shops s ON s.id=a.shop_id
+                WHERE a.telegram_user_id=? AND a.shop_id=? AND u.active=1 AND s.active=1''',
+                (int(actor_id),int(shop_id))).fetchone()
+            if not actor or actor['role']!='owner':
+                raise PermissionError('Управлять сотрудниками может только владелец этого магазина.')
+            previous=c.execute('SELECT role FROM user_shop_access WHERE telegram_user_id=? AND shop_id=?',
+                (user_id,int(shop_id))).fetchone()
+            old_role=str(previous['role']) if previous else None
+            if expected_role is not ... and old_role!=expected_role:
+                raise ValueError('Доступ уже изменился. Откройте карточку сотрудника заново.')
+            if user_id in protected_user_ids and role!='owner':
+                raise ValueError('Это владелец всего бота. Его доступ задаётся на хостинге и здесь не меняется.')
+            if old_role=='owner' and role!='owner':
+                count=c.execute('''SELECT COUNT(*) FROM user_shop_access a JOIN bot_users u
+                    ON u.telegram_user_id=a.telegram_user_id WHERE a.shop_id=? AND a.role='owner' AND u.active=1''',
+                    (int(shop_id),)).fetchone()[0]
+                if count<=1:
+                    raise ValueError('Нельзя удалить или понизить роль последнего владельца магазина.')
+            if role is None:
+                c.execute('DELETE FROM user_shop_access WHERE telegram_user_id=? AND shop_id=?',(user_id,int(shop_id)))
+                c.execute('DELETE FROM user_shop_selection WHERE telegram_user_id=? AND shop_id=?',(user_id,int(shop_id)))
+                return previous is not None
+            clean=str(display_name or '').strip()[:200]
+            c.execute('''INSERT INTO bot_users(telegram_user_id,display_name,active,created_at,updated_at)
+                VALUES(?,?,1,?,?) ON CONFLICT(telegram_user_id) DO UPDATE SET
+                display_name=CASE WHEN excluded.display_name<>'' THEN excluded.display_name ELSE bot_users.display_name END,
+                active=1,updated_at=excluded.updated_at''',(user_id,clean,now,now))
+            c.execute('''INSERT INTO user_shop_access(telegram_user_id,shop_id,role,created_at,updated_at)
+                VALUES(?,?,?,?,?) ON CONFLICT(telegram_user_id,shop_id) DO UPDATE SET
+                role=excluded.role,updated_at=excluded.updated_at''',(user_id,int(shop_id),role,now,now))
+            return True
 
     def select_authorized_shop_for_user(self, telegram_user_id: int, shop_id: int) -> None:
         if not self.can_user(telegram_user_id,shop_id,'view'):
@@ -285,14 +324,15 @@ class Repository:
     def save_paged_report(self, bot_id: int, chat_id: int, message_id: int, *, shop_id: int,
                           user_id: int, permission: str, system_owner_only: bool,
                           pages: list[str], markup: dict | None = None) -> None:
-        if permission not in {'view','operate','manage'} or not pages:
+        if permission not in PERMISSIONS or not pages:
             raise ValueError('invalid paged report')
+        coarse=permission if permission in {'view','operate','manage'} else 'view'
         with self.db.connect() as c:
             c.execute('''INSERT INTO telegram_paged_reports
                 (bot_id,chat_id,message_id,shop_id,user_id,permission,system_owner_only,
-                 pages_json,markup_json,current_page,created_at) VALUES(?,?,?,?,?,?,?,?,?,0,?)''',
-                (bot_id,chat_id,message_id,shop_id,user_id,permission,int(system_owner_only),
-                 json.dumps(pages,ensure_ascii=False),json.dumps(markup) if markup else None,utcnow()))
+                 pages_json,markup_json,current_page,created_at,capability) VALUES(?,?,?,?,?,?,?,?,?,0,?,?)''',
+                (bot_id,chat_id,message_id,shop_id,user_id,coarse,int(system_owner_only),
+                 json.dumps(pages,ensure_ascii=False),json.dumps(markup) if markup else None,utcnow(),permission))
 
     def paged_report(self, bot_id: int, chat_id: int, message_id: int) -> dict[str,Any] | None:
         with self.db.connect() as c:

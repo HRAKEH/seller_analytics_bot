@@ -61,6 +61,9 @@ class PagedReportController:
         self._locks = WeakValueDictionary()
 
     async def show(self, message, text, *, reply_markup=None, permission='view', system_owner_only=False):
+        if (not message.from_user or not self.context.repository.can_user(message.from_user.id,self.context.shop_id,permission)
+                or system_owner_only and message.from_user.id not in self.context.settings.owner_ids):
+            return await message.answer('⛔ Нет доступа к этому отчёту.')
         text = message_text(text)
         pages = paginate_report_html(text)
         return await _send_report_pages(message.answer, self.context,
@@ -81,8 +84,11 @@ class PagedReportController:
                 return await callback.answer('Откройте раздел заново.', show_alert=True)
             shop = repo.get_shop(saved['shop_id'])
             user = callback.from_user.id
+            capability = saved['capability']
             if (shop is None or not shop.active or user != saved['user_id'] or
                 not repo.can_user(user, saved['shop_id'], saved['permission']) or
+                (capability == 'legacy' and user not in self.context.settings.owner_ids) or
+                (capability != 'legacy' and not repo.can_user(user, saved['shop_id'], capability)) or
                 saved['system_owner_only'] and user not in self.context.settings.owner_ids):
                 return await callback.answer('Нет доступа к этому отчёту.', show_alert=True)
             action = str(callback.data or '').removeprefix('report_page:')

@@ -748,7 +748,26 @@ def _migration_19(conn: sqlite3.Connection) -> None:
     )''')
 
 
-MIGRATIONS: dict[int, Migration] = {1: _migration_1, 2: _migration_2, 3: _migration_3, 4: _migration_4, 5: _migration_5, 6: _migration_6, 7: _migration_7, 8: _migration_8, 9: _migration_9, 10: _migration_10, 11: _migration_11, 12: _migration_12, 13: _migration_13, 14: _migration_14, 15: _migration_15, 16: _migration_16, 17: _migration_17, 18: _migration_18, 19: _migration_19}
+def _migration_20(conn: sqlite3.Connection) -> None:
+    conn.execute('''CREATE TABLE user_shop_access_v20 (
+        telegram_user_id INTEGER NOT NULL REFERENCES bot_users(telegram_user_id) ON DELETE CASCADE,
+        shop_id INTEGER NOT NULL REFERENCES shops(id) ON DELETE CASCADE,
+        role TEXT NOT NULL CHECK(role IN ('owner','accountant','manager','viewer')),
+        created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+        PRIMARY KEY(telegram_user_id,shop_id)
+    )''')
+    conn.execute('''INSERT INTO user_shop_access_v20
+        SELECT telegram_user_id,shop_id,CASE role WHEN 'analyst' THEN 'accountant' ELSE role END,
+               created_at,updated_at FROM user_shop_access''')
+    conn.execute('DROP TABLE user_shop_access')
+    conn.execute('ALTER TABLE user_shop_access_v20 RENAME TO user_shop_access')
+    conn.execute('CREATE INDEX idx_user_shop_access_shop ON user_shop_access(shop_id,role,telegram_user_id)')
+    # Older snapshots did not record the kind of data they contained. Keep
+    # them for the installation owner; other users must reopen the report.
+    conn.execute("ALTER TABLE telegram_paged_reports ADD COLUMN capability TEXT NOT NULL DEFAULT 'legacy'")
+
+
+MIGRATIONS: dict[int, Migration] = {1: _migration_1, 2: _migration_2, 3: _migration_3, 4: _migration_4, 5: _migration_5, 6: _migration_6, 7: _migration_7, 8: _migration_8, 9: _migration_9, 10: _migration_10, 11: _migration_11, 12: _migration_12, 13: _migration_13, 14: _migration_14, 15: _migration_15, 16: _migration_16, 17: _migration_17, 18: _migration_18, 19: _migration_19, 20: _migration_20}
 LATEST_SCHEMA_VERSION = max(MIGRATIONS)
 
 

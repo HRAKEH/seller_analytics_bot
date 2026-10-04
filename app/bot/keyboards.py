@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+from app.access import action_permission, can_role, normalize_role
 
 from aiogram.utils.keyboard import ReplyKeyboardBuilder, InlineKeyboardBuilder
 
@@ -9,7 +10,8 @@ BACK = '⬅️ Назад'
 CANCEL = '❌ Отмена'
 
 
-def daily_card_keyboard(section: str = 'summary', *, can_refresh: bool = True, page: int = 0, pages: int = 1):
+def daily_card_keyboard(section: str = 'summary', *, can_refresh: bool = True, can_finance: bool = True,
+                        page: int = 0, pages: int = 1):
     builder=InlineKeyboardBuilder()
     if section!='summary':
         if pages>1:
@@ -20,7 +22,7 @@ def daily_card_keyboard(section: str = 'summary', *, can_refresh: bool = True, p
         builder.adjust(3,1) if pages>1 else builder.adjust(1)
     else:
         builder.button(text='Подробнее',callback_data='daily_card:details')
-        builder.button(text='Начисления',callback_data='daily_card:accruals')
+        if can_finance:builder.button(text='Начисления',callback_data='daily_card:accruals')
         if can_refresh:builder.button(text='Обновить',callback_data='daily_card:refresh')
         builder.adjust(3)
     return builder.as_markup()
@@ -41,8 +43,8 @@ COMMAND_BUTTONS: dict[str, str] = {
     'shop_restore': '♻️ Вернуть магазин',
     'shop_delete': '🗑 Удалить магазин',
     'profiles': '🗝 Профили окружения',
-    'users': '👥 Пользователи',
-    'user_add': '➕ Дать доступ',
+    'users': '👥 Сотрудники',
+    'user_add': '➕ Добавить сотрудника',
     'user_remove': '➖ Отозвать доступ',
     'my_access': '🙋 Мой доступ',
     'export': '📤 Экспорт данных',
@@ -108,13 +110,19 @@ MENU_TECH = '🧰 Техническое'
 
 
 def _role(role: str | None) -> str:
-    value = (role or 'viewer').lower()
-    return value if value in {'viewer', 'analyst', 'owner'} else 'viewer'
+    try:return normalize_role(role or 'viewer')
+    except ValueError:return 'viewer'
 
 
-def _build(buttons: tuple[str, ...] | list[str], *, columns: int = 2):
+def _build(buttons: tuple[str, ...] | list[str], *, columns: int = 2, role=None, system_owner=False):
     kb = ReplyKeyboardBuilder()
+    actions={v:k for k,v in COMMAND_BUTTONS.items()} | {
+        '🔄 Обновить финансы':'finance_update', '🔄 Обновить рекламу':'ads_update',
+        MENU_TECH:'technical_menu'}
     for text in buttons:
+        permission=action_permission(actions.get(text,''))
+        if role is not None and (not can_role(role,permission) or permission=='technical' and not system_owner):
+            continue
         kb.button(text=text)
     kb.adjust(columns)
     return kb.as_markup(resize_keyboard=True)
@@ -123,7 +131,7 @@ def _build(buttons: tuple[str, ...] | list[str], *, columns: int = 2):
 def main_keyboard(role: str | None = 'owner'):
     role = _role(role)
     buttons = [MENU_REPORTS, MENU_PRODUCTS, MENU_MONEY, MENU_SUPPLY, MENU_CONTROL, MENU_SHOP, MENU_SERVICE]
-    return _build(buttons, columns=2)
+    return _build(buttons, columns=2, role=role)
 
 
 def menu_button_texts() -> frozenset[str]:
@@ -145,10 +153,10 @@ def reports_keyboard(role: str | None = 'owner', *, system_owner: bool = False):
         '📅 Месяц', '🗓 Другая дата',
         '📜 Что уже загружено',
     ]
-    if role in {'analyst', 'owner'}:
+    if can_role(role,'operate'):
         buttons += ['🔄 Обновить вчера', '📥 Догрузить данные', COMMAND_BUTTONS['refresh']]
     buttons += [BACK, HOME]
-    return _build(buttons)
+    return _build(buttons,role=role,system_owner=system_owner)
 
 
 def products_keyboard(role: str | None = 'owner', *, system_owner: bool = False):
@@ -157,10 +165,10 @@ def products_keyboard(role: str | None = 'owner', *, system_owner: bool = False)
         COMMAND_BUTTONS['products'], COMMAND_BUTTONS['stocks'],
         COMMAND_BUTTONS['sku_finance'],
     ]
-    if role in {'analyst', 'owner'}:
+    if can_role(role,'operate'):
         buttons += ['🔄 Обновить остатки', COMMAND_BUTTONS['import_costs']]
     buttons += [BACK, HOME]
-    return _build(buttons)
+    return _build(buttons,role=role,system_owner=system_owner)
 
 
 def money_keyboard(role: str | None = 'owner', *, system_owner: bool = False):
@@ -170,10 +178,10 @@ def money_keyboard(role: str | None = 'owner', *, system_owner: bool = False):
         COMMAND_BUTTONS['management'], COMMAND_BUTTONS['reconcile'],
         COMMAND_BUTTONS['sources'], COMMAND_BUTTONS['accruals'], COMMAND_BUTTONS['wb_accruals'],
     ]
-    if role in {'analyst','owner'}:
+    if can_role(role,'operate'):
         buttons += [COMMAND_BUTTONS['refresh'], '🔄 Обновить финансы', '🔄 Обновить рекламу']
     buttons += [BACK, HOME]
-    return _build(buttons)
+    return _build(buttons,role=role,system_owner=system_owner)
 
 
 def supply_keyboard(role: str | None = 'owner', *, system_owner: bool = False):
@@ -182,10 +190,11 @@ def supply_keyboard(role: str | None = 'owner', *, system_owner: bool = False):
         COMMAND_BUTTONS['supply'], COMMAND_BUTTONS['inbound'],
         COMMAND_BUTTONS['promotions'], COMMAND_BUTTONS['forecast_quality'],
     ]
-    if role in {'analyst', 'owner'}:
+    if can_role(role,'operate'):
         buttons += [COMMAND_BUTTONS['supply_refresh'], COMMAND_BUTTONS['inbound_refresh'], COMMAND_BUTTONS['promotions_refresh']]
+    buttons += [COMMAND_BUTTONS['supply_settings']]
     buttons += [BACK, HOME]
-    return _build(buttons)
+    return _build(buttons,role=role,system_owner=system_owner)
 
 
 def control_keyboard(role: str | None = 'owner', *, system_owner: bool = False):
@@ -194,7 +203,7 @@ def control_keyboard(role: str | None = 'owner', *, system_owner: bool = False):
         COMMAND_BUTTONS['status'], COMMAND_BUTTONS['action_history'],
         BACK, HOME,
     ]
-    return _build(buttons)
+    return _build(buttons,role=_role(role),system_owner=system_owner)
 
 
 def shop_keyboard(role: str | None = 'owner', *, system_owner: bool = False):
@@ -204,10 +213,12 @@ def shop_keyboard(role: str | None = 'owner', *, system_owner: bool = False):
         COMMAND_BUTTONS['settings'], COMMAND_BUTTONS['readiness'],
         COMMAND_BUTTONS['help'], COMMAND_BUTTONS['my_access'],
     ]
-    if role in {'analyst','owner'}:
+    if system_owner:
         buttons += [COMMAND_BUTTONS['connect_check']]
+    if can_role(role,'settings'):
+        buttons += [COMMAND_BUTTONS['setup']]
     if role == 'owner':
-        buttons += [COMMAND_BUTTONS['setup'], COMMAND_BUTTONS['users'],
+        buttons += [COMMAND_BUTTONS['users'],
                     COMMAND_BUTTONS['user_add'], COMMAND_BUTTONS['user_remove']]
     if system_owner:
         buttons += [
@@ -216,16 +227,16 @@ def shop_keyboard(role: str | None = 'owner', *, system_owner: bool = False):
             COMMAND_BUTTONS['shop_restore'], COMMAND_BUTTONS['shop_delete'],
         ]
     buttons += [BACK, HOME]
-    return _build(buttons)
+    return _build(buttons,role=role,system_owner=system_owner)
 
 
 def service_keyboard(role: str | None = 'owner', *, system_owner: bool = False):
     role = _role(role)
     buttons = ['📤 Экспорт']
-    if role in {'analyst','owner'} or system_owner:
+    if system_owner:
         buttons += [MENU_TECH]
     buttons += [BACK, HOME]
-    return _build(buttons)
+    return _build(buttons,role=role,system_owner=system_owner)
 
 
 def technical_keyboard(role: str | None = 'owner', *, system_owner: bool = False):
@@ -237,7 +248,7 @@ def technical_keyboard(role: str | None = 'owner', *, system_owner: bool = False
             COMMAND_BUTTONS['shop_add'], COMMAND_BUTTONS['shop_profile'], COMMAND_BUTTONS['profiles'],
         ]
     buttons += [BACK, HOME]
-    return _build(buttons)
+    return _build(buttons, role=role, system_owner=system_owner)
 
 
 def input_keyboard():

@@ -18,6 +18,28 @@ from app.reports.ads import build_advertising_report
 from app.reports.management import build_management_report
 from app.services.supply import build_supply_plan, evaluate_forecast_quality, build_supply_calibration
 from app.services.actions import build_action_center
+from app.access import item_visible
+
+# Export explicit operational fields so a future financial field added to a
+# repository query cannot silently become visible to a manager.
+OPERATIONAL_METRICS=frozenset({'ordered_units','ordered_revenue','cancellations_units','cancelled_units',
+    'delivered_units','returned_units','fulfillment_units','buyer_price_units',
+    'buyer_price_revenue','ad_spend','ad_sales','ad_orders','ad_clicks','ad_impressions',
+    'ad_attributed_sales','stock_units','sold_units','redeemed_units','returns_units',
+    'sales_units','sales_revenue','return_units','return_revenue'})
+PRODUCT_FIELDS=frozenset({'product_id','internal_sku','name','listing_id','marketplace_sku',
+    'offer_id','marketplace','ordered_units','ordered_revenue'})
+INVENTORY_FIELDS=PRODUCT_FIELDS|{'connection_id','fulfillment_scheme','available_units','reserved_units','captured_at'}
+INBOUND_FIELDS=frozenset({'marketplace','external_supply_id','status','planned_at','arrival_at',
+    'warehouse_name','marketplace_sku','planned_units','accepted_units','remaining_units',
+    'product_id','internal_sku','name','updated_at'})
+PROMOTION_FIELDS=frozenset({'marketplace','external_promotion_id','promotion_name','promo_type',
+    'start_at','end_at','marketplace_sku','in_action','base_price','promo_price','discount_pct',
+    'listing_id','product_id','internal_sku','product_name'})
+
+
+def _fields(rows, allowed):
+    return [{key:value for key,value in row.items() if key in allowed} for row in rows]
 
 
 @dataclass(frozen=True)
@@ -68,7 +90,8 @@ def _cost_rows(repo: Repository, shop_id: int) -> list[dict[str,Any]]:
     return [dict(r) for r in rows]
 
 
-def collect_export_tables(repo: Repository, shop_id: int, end: date, days: int) -> dict[str,list[dict[str,Any]]]:
+def collect_export_tables(repo: Repository, shop_id: int, end: date, days: int, *,
+                          include_finance=True, include_technical=True) -> dict[str,list[dict[str,Any]]]:
     start=end-timedelta(days=days-1); start_s=start.isoformat(); end_s=end.isoformat()
     shop=repo.get_shop(shop_id)
     units=repo.product_period_totals(shop_id,start_s,end_s,'ordered_units')
@@ -78,15 +101,17 @@ def collect_export_tables(repo: Repository, shop_id: int, end: date, days: int) 
     for r in units:
         x=dict(r); x['ordered_units']=float(x.pop('value')); x['ordered_revenue']=rev.get((x['marketplace'],x['marketplace_sku']),0.0); products.append(x)
     inventory=repo.latest_inventory_by_scheme(shop_id)
-    finance=build_finance_report(repo,shop_id,end,days)
     finance_rows=[]
-    for src in finance.sources:
-        for key,value in sorted(src.metrics.items()):
-            finance_rows.append({'marketplace':src.marketplace,'metric_key':key,'value':value})
-        finance_rows.append({'marketplace':src.marketplace,'metric_key':'estimated_order_cogs','value':src.estimated_order_cogs})
-        finance_rows.append({'marketplace':src.marketplace,'metric_key':'cogs_coverage_pct','value':src.cogs_coverage_pct})
-    rec=build_reconciliation_report(repo,shop_id,end,days)
-    rec_rows=[r.__dict__ for r in rec.rows]
+    rec_rows=[]
+    if include_finance:
+        finance=build_finance_report(repo,shop_id,end,days)
+        for src in finance.sources:
+            for key,value in sorted(src.metrics.items()):
+                finance_rows.append({'marketplace':src.marketplace,'metric_key':key,'value':value})
+            finance_rows.append({'marketplace':src.marketplace,'metric_key':'estimated_order_cogs','value':src.estimated_order_cogs})
+            finance_rows.append({'marketplace':src.marketplace,'metric_key':'cogs_coverage_pct','value':src.cogs_coverage_pct})
+        rec=build_reconciliation_report(repo,shop_id,end,days)
+        rec_rows=[r.__dict__ for r in rec.rows]
     ads=build_advertising_report(repo,shop_id,end,days)
     ad_rows=[]
     for r in ads.campaigns:
@@ -97,14 +122,14 @@ def collect_export_tables(repo: Repository, shop_id: int, end: date, days: int) 
         ad_rows.append({'level':'sku','marketplace':r.marketplace,'key':r.key,'name':r.name,
                         'spend':r.spend,'attributed_sales':r.attributed_sales,'orders':r.orders,
                         'clicks':r.clicks,'impressions':r.impressions,'drr_pct':r.drr,'roas':r.roas})
-    mgmt=build_management_report(repo,shop_id,end,days)
+    mgmt=build_management_report(repo,shop_id,end,days) if include_finance else None
     management_rows=[{
         'marketplace':r.marketplace,'ordered_revenue':r.ordered_revenue,'estimated_cogs':r.estimated_cogs,
         'cogs_coverage_pct':r.cogs_coverage_pct,'marketplace_expenses':r.marketplace_expenses,
         'ad_spend':r.ad_spend,'compensation':r.compensation,'estimated_result':r.estimated_result,
         'financial_sales':r.financial_sales,'marketplace_net':r.marketplace_net,
         'goods_payable':r.goods_payable,'bank_payment':r.bank_payment,
-    } for r in mgmt.sources]
+    } for r in (mgmt.sources if mgmt else ())]
     supply=build_supply_plan(repo,shop_id,end,lookback_days=max(days,14),persist=False)
     supply_rows=[{
         'internal_sku':r.internal_sku,'name':r.name,'abc_class':r.abc_class,'xyz_class':r.xyz_class,
@@ -143,9 +168,21 @@ def collect_export_tables(repo: Repository, shop_id: int, end: date, days: int) 
         {'key':'generated_at_utc','value':datetime.now(timezone.utc).isoformat(timespec='seconds')},
         {'key':'schema_version','value':repo.db.schema_version()},
     ]
-    return {'Summary':summary,'Daily':_daily_rows(repo,shop_id,start_s,end_s),'Products':products,
+    tables={'Summary':summary,'Daily':_daily_rows(repo,shop_id,start_s,end_s),'Products':products,
             'Inventory':inventory,'Inbound':inbound_rows,'Promotions':promotion_rows,'Supply':supply_rows,'ForecastQuality':quality_rows,'Calibration':calibration_rows,'Actions':action_rows,'ActionHistory':action_history_rows,
-            'Finance':finance_rows,'Advertising':ad_rows,'Management':management_rows,'Reconciliation':rec_rows,'Costs':_cost_rows(repo,shop_id)}
+            'Finance':finance_rows,'Advertising':ad_rows,'Management':management_rows,'Reconciliation':rec_rows,'Costs':_cost_rows(repo,shop_id) if include_finance else []}
+    if not include_technical:
+        tables['Summary']=[row for row in summary if row['key'] not in {'credential_profile','schema_version'}]
+    tables['Actions']=[row for row in action_rows if item_visible(row,finance=include_finance,technical=include_technical)]
+    tables['ActionHistory']=[row for row in action_history_rows if item_visible(row,finance=include_finance,technical=include_technical)]
+    if not include_finance:
+        for name in ('Finance','Management','Reconciliation','Costs'):tables.pop(name)
+        tables['Daily']=[row for row in tables['Daily'] if row['metric_key'] in OPERATIONAL_METRICS]
+        tables['Products']=_fields(products,PRODUCT_FIELDS)
+        tables['Inventory']=_fields(inventory,INVENTORY_FIELDS)
+        tables['Inbound']=_fields(inbound_rows,INBOUND_FIELDS)
+        tables['Promotions']=_fields(promotion_rows,PROMOTION_FIELDS)
+    return tables
 
 
 def _headers(rows: list[dict[str,Any]]) -> list[str]:
@@ -156,8 +193,10 @@ def _headers(rows: list[dict[str,Any]]) -> list[str]:
     return out
 
 
-def export_xlsx(repo: Repository, shop_id: int, end: date, days: int, path: Path) -> ExportResult:
-    tables=collect_export_tables(repo,shop_id,end,days); path.parent.mkdir(parents=True,exist_ok=True)
+def export_xlsx(repo: Repository, shop_id: int, end: date, days: int, path: Path, *,
+                include_finance=True, include_technical=True) -> ExportResult:
+    tables=collect_export_tables(repo,shop_id,end,days,include_finance=include_finance,
+        include_technical=include_technical); path.parent.mkdir(parents=True,exist_ok=True)
     wb=Workbook(); wb.remove(wb.active)
     for name,rows in tables.items():
         ws=wb.create_sheet(name[:31]); headers=_headers(rows)
@@ -176,8 +215,10 @@ def export_xlsx(repo: Repository, shop_id: int, end: date, days: int, path: Path
     return ExportResult(path,'xlsx',(end-timedelta(days=days-1)).isoformat(),end.isoformat())
 
 
-def export_csv_zip(repo: Repository, shop_id: int, end: date, days: int, path: Path) -> ExportResult:
-    tables=collect_export_tables(repo,shop_id,end,days); path.parent.mkdir(parents=True,exist_ok=True)
+def export_csv_zip(repo: Repository, shop_id: int, end: date, days: int, path: Path, *,
+                   include_finance=True, include_technical=True) -> ExportResult:
+    tables=collect_export_tables(repo,shop_id,end,days,include_finance=include_finance,
+        include_technical=include_technical); path.parent.mkdir(parents=True,exist_ok=True)
     with zipfile.ZipFile(path,'w',zipfile.ZIP_DEFLATED) as z:
         for name,rows in tables.items():
             headers=_headers(rows); buf=io.StringIO(newline='')

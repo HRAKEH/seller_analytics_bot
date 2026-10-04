@@ -102,9 +102,9 @@ class AppContext:
                 out.append(item)
             return out
 
-    async def refresh_reports(self, start: date, end: date, progress=None):
+    async def refresh_reports(self, start: date, end: date, progress=None, *, include_finance=True):
         from app.services.report_refresh import refresh_reports
-        return await refresh_reports(self,start,end,progress)
+        return await refresh_reports(self,start,end,progress,include_finance=include_finance)
 
     async def collect_buyer_prices(self, day: date):
         if self.demo_mode() or self.ozon_connection_id is None:

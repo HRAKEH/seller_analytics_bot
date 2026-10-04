@@ -181,7 +181,8 @@ class ShopContextMiddleware(BaseMiddleware):
             ctx=await self.registry.context_for_user(user.id)
         except PermissionError:
             if isinstance(event,types.Message):
-                return await event.answer('⛔ У вас нет доступа к магазинам этого бота. Попросите владельца выдать доступ по вашему Telegram ID.')
+                return await event.answer(f'🔐 Ваш Telegram ID: <code>{user.id}</code>\n'
+                    'Доступ к магазинам пока не выдан. Передайте этот ID владельцу бота.',parse_mode='HTML')
             return None
         token=_current_context.set(ctx)
         log_tokens=set_log_context(shop_id=ctx.shop_id,user_id=user.id)

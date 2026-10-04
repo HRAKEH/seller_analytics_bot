@@ -1,6 +1,7 @@
 from __future__ import annotations
 from datetime import date, datetime, timedelta
 import asyncio
+from dataclasses import replace
 from html import escape
 from pathlib import Path
 import tempfile
@@ -42,6 +43,8 @@ from .operational_cards import OperationalCards
 from .presentation import PresentationMiddleware
 from .paged_reports import PagedReportController
 from app.reports.cards import format_daily_card
+from app.access import action_permission, item_visible, normalize_role, role_label
+from .employees import EmployeeController, EmployeeStates
 from .keyboards import (
     main_keyboard, reports_keyboard, products_keyboard, money_keyboard, supply_keyboard,
     control_keyboard, shop_keyboard, service_keyboard, technical_keyboard, input_keyboard, shop_picker_keyboard,
@@ -81,8 +84,22 @@ class BackfillStates(StatesGroup):
 
 
 def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
+    command_labels={label:key for key,label in COMMAND_BUTTONS.items()} | {
+        '🔎 Сверка':'reconcile', '📈 Результат':'management', '💾 Backup':'backup',
+        '⚙️ Статус':'status', '⚙️ Настройки':'settings', '📤 Экспорт':'export',
+        '🔄 Обновить финансы':'finance_update', MENU_TECH:'technical_menu',
+        '👥 Пользователи':'users', '➕ Дать доступ':'user_add'}
+
+    def request_action(message):
+        text=str(message.text or '')
+        return text.split(maxsplit=1)[0].split('@')[0].lstrip('/').lower() if text.startswith('/') else command_labels.get(text,'')
+
     def allowed(message: types.Message, permission: str = 'view') -> bool:
-        return bool(message.from_user and ctx.repository.can_user(message.from_user.id,ctx.shop_id,permission))
+        if not message.from_user:return False
+        required=action_permission(request_action(message))
+        return (ctx.repository.can_user(message.from_user.id,ctx.shop_id,permission) and
+                ctx.repository.can_user(message.from_user.id,ctx.shop_id,required) and
+                (required!='technical' or is_system_owner(message)))
 
     navigation=NavigationMessages(lambda: ctx.repository)
     daily_cards=DailyCardController(ctx,registry)
@@ -96,20 +113,27 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
     paged_reports = PagedReportController(ctx)
 
     async def denied(message: types.Message, permission: str = 'view'):
-        need={'view':'просмотр','operate':'аналитика/обновление данных','manage':'управление магазином'}.get(permission,permission)
+        required=action_permission(request_action(message))
+        if required!='view':permission=required
+        need={'view':'просмотр','operate':'обновление данных','manage':'управление сотрудниками',
+              'finance':'финансовые отчёты','costs':'себестоимость','settings':'изменение рабочих настроек',
+              'technical':'технические функции владельца всего бота'}.get(permission,permission)
         await message.answer(f'⛔ Недостаточно прав: требуется доступ «{need}».')
 
     def is_system_owner(message: types.Message) -> bool:
         return bool(message.from_user and message.from_user.id in ctx.settings.owner_ids)
 
     async def system_denied(message: types.Message):
-        await message.answer('⛔ Эта операция управляет всем экземпляром бота и доступна только system owner из TELEGRAM_OWNER_ID.')
+        await message.answer('⛔ Эта функция доступна только владельцу всего бота.')
 
     def keyboard_for(message: types.Message):
         uid=message.from_user.id if message.from_user else 0
         return main_keyboard(ctx.repository.role_for_user(uid,ctx.shop_id))
 
     async def send(message: types.Message, text: str, *, permission='view', system_owner_only=False, reply_markup=None):
+        required=action_permission(request_action(message))
+        if required!='view':permission=required
+        system_owner_only=system_owner_only or required=='technical'
         await paged_reports.show(message,text,permission=permission,system_owner_only=system_owner_only,
                                  reply_markup=reply_markup or keyboard_for(message))
         await navigation.dismiss(message)
@@ -154,6 +178,17 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
                 return getattr(self._base,name)
 
         return MessageTextProxy(message,text,actor_user)
+
+    employees=EmployeeController(ctx,navigation,show_main_menu,command_copy)
+
+    @dp.message(StateFilter(EmployeeStates.waiting_id), F.text,
+                ~F.text.startswith('/'), ~F.text.in_({HOME, CANCEL}))
+    async def employee_id_input(message: types.Message, state: FSMContext):
+        await employees.input_id(message,state)
+
+    @dp.callback_query(F.data.startswith('staff:'))
+    async def employee_buttons(callback: types.CallbackQuery, state: FSMContext):
+        await employees.handle(callback,state)
 
     # Global navigation is registered before wizard state handlers so menu
     # buttons can never be accidentally consumed as a shop name/date/etc.
@@ -255,14 +290,14 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
         report_message=await send_daily_card(message.bot,ctx,message.chat.id,day,
             user_id=uid,text=text)
         await navigation.dismiss(message)
-        if force:
+        if force and report_message is not None:
             await daily_cards.refresh(report_message,uid)
 
     @dp.callback_query(F.data.startswith('daily_card:'))
     async def cb_daily_card(callback: types.CallbackQuery):
         await daily_cards.handle(callback)
 
-    def settings_text() -> str:
+    def settings_text(*, technical=False) -> str:
         p=pref(); shop=ctx.repository.get_shop(ctx.shop_id)
         core=[]
         if p.demo_mode:
@@ -275,7 +310,7 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
         return '\n'.join([
             '⚙️ <b>Настройки магазина</b>', '━━━━━━━━━━━━━━━━',
             f'Название: <b>{escape(shop.name if shop else "Магазин")}</b>',
-            f'Профиль ключей: <code>{escape(shop.credential_profile if shop else "DEFAULT")}</code>',
+            f'Профиль ключей: <code>{escape(shop.credential_profile if shop else "DEFAULT")}</code>' if technical else '',
             f'Часовой пояс: <code>{escape(p.timezone)}</code>',
             f'Ежедневный отчёт: <b>{p.report_time}</b>',
             f'Товарный отчёт: {p.product_report_days} дн.',
@@ -286,9 +321,9 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
             f'Алерты: {"✅" if p.alerts_enabled else "⏸"} · каждые {p.alerts_interval_minutes} мин.',
             f'Первичная настройка: {"✅ завершена" if p.setup_completed else "⚠️ не завершена"}',
             f'Режим данных: {"🧪 DEMO" if p.demo_mode else "🟢 реальные API"}',
-            f'Onboarding: <code>{escape(p.onboarding_version or "—")}</code>',
+            f'Onboarding: <code>{escape(p.onboarding_version or "—")}</code>' if technical else '',
             '', *core,
-            '', 'Секреты API хранятся только в переменных окружения хостинга и здесь не показываются.'
+            '', 'Секреты API хранятся только в переменных окружения хостинга и здесь не показываются.' if technical else ''
         ])
 
     # --- multi-shop / export / backup -----------------------------------
@@ -306,9 +341,10 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
             sources=[]
             if creds.has_wb: sources.append('WB')
             if creds.has_ozon: sources.append('Ozon')
-            lines.append(f'{mark} <b>#{shop.id} {escape(shop.name)}</b> · {escape(str(row["role"]))} · <code>{escape(shop.credential_profile)}</code> · {" + ".join(sources) or "без API"}')
+            profile=' · <code>'+escape(shop.credential_profile)+'</code>' if is_system_owner(message) else ''
+            lines.append(f'{mark} <b>#{shop.id} {escape(shop.name)}</b> · {role_label(row["role"])}{profile} · {" + ".join(sources) or "без API"}')
         lines += ['', 'Нажмите на магазин ниже, чтобы переключиться.']
-        if allowed(message,'manage'):
+        if is_system_owner(message):
             lines += ['Для нового магазина: «➕ Добавить магазин».',
                       'Для смены профиля ключей: «🔐 Профиль ключей».']
         picker=[registry.repository.get_shop(int(row['id'])) for row in shops]
@@ -317,7 +353,7 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
         markup=shop_picker_keyboard(picker,'select',current_shop_id=ctx.shop_id)
         from app.reports.text import paginate_report_html
         if len(paginate_report_html(text))>1:
-            await send(message,text,reply_markup=markup)
+            await send(message,text,reply_markup=markup,system_owner_only=is_system_owner(message))
         else:
             await navigation.show(message,text,parse_mode='HTML',reply_markup=markup)
 
@@ -622,55 +658,46 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
                    permission='manage',system_owner_only=True)
 
     @dp.message(Command('users'))
-    async def cmd_users(message: types.Message):
+    async def cmd_users(message: types.Message, state: FSMContext):
         if not allowed(message,'manage'): return await denied(message,'manage')
-        rows=ctx.repository.users_for_shop(ctx.shop_id)
-        lines=['👥 <b>Доступ к текущему магазину</b>','━━━━━━━━━━━━━━━━']
-        if not rows: lines.append('Нет пользователей.')
-        for row in rows:
-            name=f" · {escape(str(row['display_name']))}" if row.get('display_name') else ''
-            lines.append(f"• <code>{int(row['telegram_user_id'])}</code>{name} · <b>{escape(str(row['role']))}</b>")
-        lines += ['', 'Выберите действие кнопкой ниже. Telegram ID понадобится только для самого пользователя.']
-        await send(message,'\n'.join(lines),permission='manage',reply_markup=users_admin_keyboard())
+        await employees.open(message,state)
 
     @dp.message(Command('user_add'))
-    async def cmd_user_add(message: types.Message):
+    async def cmd_user_add(message: types.Message, state: FSMContext = None):
         if not allowed(message,'manage'): return await denied(message,'manage')
         parts=(message.text or '').split(maxsplit=3)
-        if len(parts)<3: return await message.answer('Формат: /user_add TELEGRAM_ID viewer|analyst|owner [Имя]')
+        if len(parts)<3: return await employees.add(message,state)
         try: uid=int(parts[1])
         except ValueError: return await message.answer('TELEGRAM_ID должен быть числом.')
-        role=parts[2].lower(); name=parts[3] if len(parts)>3 else ''
-        if role not in {'viewer','analyst','owner'}: return await message.answer('Роль: viewer, analyst или owner.')
-        current_role=ctx.repository.role_for_user(uid,ctx.shop_id)
-        if current_role=='owner' and role!='owner':
-            owners=ctx.repository.users_for_shop(ctx.shop_id,roles=['owner'])
-            if len(owners)<=1:
-                return await message.answer('⚠️ Нельзя понизить роль последнего владельца магазина.')
-        ctx.repository.grant_shop_access(uid,ctx.shop_id,role,display_name=name)
-        await message.answer(f'✅ Пользователю <code>{uid}</code> выдана роль <b>{role}</b> для текущего магазина.',parse_mode='HTML')
+        name=parts[3] if len(parts)>3 else ''
+        try:
+            role=normalize_role(parts[2])
+            ctx.repository.manage_employee_access(message.from_user.id,ctx.shop_id,uid,role,
+                display_name=name,protected_user_ids=ctx.settings.owner_ids)
+        except (ValueError,PermissionError) as exc:return await message.answer('⚠️ '+escape(str(exc)))
+        await message.answer(f'✅ Пользователю <code>{uid}</code> выдана роль <b>{role_label(role)}</b> для текущего магазина.',parse_mode='HTML')
 
     @dp.message(Command('user_remove'))
-    async def cmd_user_remove(message: types.Message):
+    async def cmd_user_remove(message: types.Message, state: FSMContext = None):
         if not allowed(message,'manage'): return await denied(message,'manage')
         parts=(message.text or '').split(maxsplit=1)
-        if len(parts)<2: return await message.answer('Формат: /user_remove TELEGRAM_ID')
+        if len(parts)<2: return await employees.open(message,state)
         try: uid=int(parts[1])
         except ValueError: return await message.answer('TELEGRAM_ID должен быть числом.')
-        if uid==message.from_user.id and ctx.repository.role_for_user(uid,ctx.shop_id)=='owner':
-            owners=[x for x in ctx.repository.users_for_shop(ctx.shop_id,roles=['owner'])]
-            if len(owners)<=1: return await message.answer('⚠️ Нельзя удалить последнего владельца магазина.')
-        removed=ctx.repository.revoke_shop_access(uid,ctx.shop_id)
+        try:
+            removed=ctx.repository.manage_employee_access(message.from_user.id,ctx.shop_id,uid,None,
+                protected_user_ids=ctx.settings.owner_ids)
+        except (ValueError,PermissionError) as exc:return await message.answer('⚠️ '+escape(str(exc)))
         await message.answer('✅ Доступ отозван.' if removed else 'ℹ️ У пользователя не было доступа к этому магазину.')
 
     @dp.message(Command('my_access'))
     async def cmd_my_access(message: types.Message):
         if not allowed(message): return await denied(message)
         rows=ctx.repository.shops_for_user(message.from_user.id)
-        lines=['🔐 <b>Мой доступ</b>']
+        lines=['🔐 <b>Мой доступ</b>',f'Telegram ID: <code>{message.from_user.id}</code>']
         for row in rows:
             mark='✅' if int(row['id'])==ctx.shop_id else '▫️'
-            lines.append(f"{mark} #{int(row['id'])} {escape(str(row['name']))} · <b>{escape(str(row['role']))}</b>")
+            lines.append(f"{mark} #{int(row['id'])} {escape(str(row['name']))} · <b>{role_label(row['role'])}</b>")
         await send(message,'\n'.join(lines))
 
     @dp.message(Command('export'))
@@ -688,7 +715,13 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
             with tempfile.TemporaryDirectory(prefix='seller-bot-export-') as tmp:
                 suffix='.xlsx' if fmt=='xlsx' else '_csv.zip'
                 path=Path(tmp)/f'sellerbot_shop_{ctx.shop_id}_{end.isoformat()}{suffix}'
-                result=export_xlsx(ctx.repository,ctx.shop_id,end,days,path) if fmt=='xlsx' else export_csv_zip(ctx.repository,ctx.shop_id,end,days,path)
+                include_finance=allowed(message,'finance');include_technical=is_system_owner(message)
+                exporter=export_xlsx if fmt=='xlsx' else export_csv_zip
+                result=exporter(ctx.repository,ctx.shop_id,end,days,path,
+                    include_finance=include_finance,include_technical=include_technical)
+                if not allowed(message) or (include_finance and not allowed(message,'finance')) or (
+                        include_technical and not is_system_owner(message)):
+                    return await denied(message)
                 caption=f'📤 {shop.name if shop else "Магазин"} · {result.start} — {result.end}'
                 await message.answer_document(FSInputFile(str(result.path)),caption=caption)
                 await navigation.dismiss(message)
@@ -771,7 +804,7 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
 
     @dp.message(Command('setup'))
     async def cmd_setup(message: types.Message, state: FSMContext):
-        if not allowed(message,'manage'): return await denied(message,'manage')
+        if not allowed(message,'settings'): return await denied(message,'settings')
         await state.clear(); await state.set_state(SetupStates.shop_name)
         shop=ctx.repository.get_shop(ctx.shop_id)
         await navigation.show(message,
@@ -781,7 +814,7 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
 
     @dp.message(StateFilter(SetupStates.shop_name))
     async def setup_name(message: types.Message, state: FSMContext):
-        if not allowed(message,'manage'): return await denied(message,'manage')
+        if not allowed(message,'settings'): return await denied(message,'settings')
         value=(message.text or '').strip()
         if not value or value.startswith('/'):
             return await message.answer('Введите обычным текстом название магазина.')
@@ -794,7 +827,7 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
 
     @dp.message(StateFilter(SetupStates.timezone))
     async def setup_timezone(message: types.Message, state: FSMContext):
-        if not allowed(message,'manage'): return await denied(message,'manage')
+        if not allowed(message,'settings'): return await denied(message,'settings')
         try: update_validated(ctx.repository,ctx.shop_id,timezone=(message.text or '').strip())
         except ValueError as exc: return await message.answer(f'⚠️ {escape(str(exc))}')
         await state.set_state(SetupStates.report_time)
@@ -802,7 +835,7 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
 
     @dp.message(StateFilter(SetupStates.report_time))
     async def setup_report_time(message: types.Message, state: FSMContext):
-        if not allowed(message,'manage'): return await denied(message,'manage')
+        if not allowed(message,'settings'): return await denied(message,'settings')
         try: update_validated(ctx.repository,ctx.shop_id,report_time=(message.text or '').strip())
         except ValueError as exc: return await message.answer(f'⚠️ {escape(str(exc))}')
         await state.set_state(SetupStates.stock_risk_days)
@@ -810,7 +843,7 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
 
     @dp.message(StateFilter(SetupStates.stock_risk_days))
     async def setup_stock(message: types.Message, state: FSMContext):
-        if not allowed(message,'manage'): return await denied(message,'manage')
+        if not allowed(message,'settings'): return await denied(message,'settings')
         try: update_validated(ctx.repository,ctx.shop_id,stock_risk_days=(message.text or '').strip())
         except ValueError as exc: return await message.answer(f'⚠️ {escape(str(exc))}')
         await state.set_state(SetupStates.order_drop_pct)
@@ -818,7 +851,7 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
 
     @dp.message(StateFilter(SetupStates.order_drop_pct))
     async def setup_order_drop(message: types.Message, state: FSMContext):
-        if not allowed(message,'manage'): return await denied(message,'manage')
+        if not allowed(message,'settings'): return await denied(message,'settings')
         try: update_validated(ctx.repository,ctx.shop_id,alert_order_drop_pct=(message.text or '').strip())
         except ValueError as exc: return await message.answer(f'⚠️ {escape(str(exc))}')
         await state.set_state(SetupStates.drr_pct)
@@ -826,14 +859,14 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
 
     @dp.message(StateFilter(SetupStates.drr_pct))
     async def setup_drr(message: types.Message, state: FSMContext):
-        if not allowed(message,'manage'): return await denied(message,'manage')
+        if not allowed(message,'settings'): return await denied(message,'settings')
         try:
             update_validated(ctx.repository,ctx.shop_id,alert_drr_pct=(message.text or '').strip(),setup_completed=True,onboarding_version='19')
         except ValueError as exc:
             return await message.answer(f'⚠️ {escape(str(exc))}')
         await state.clear()
         report=await build_readiness(ctx,live=False,persist=True)
-        await send(message,'✅ <b>Первичная настройка завершена.</b>\n\n'+settings_text()+'\n\n'+format_readiness(report),permission='manage')
+        await send(message,'✅ <b>Первичная настройка завершена.</b>\n\n'+settings_text()+'\n\n'+format_readiness(report),permission='settings')
 
     @dp.message(Command('readiness'))
     async def cmd_readiness(message: types.Message):
@@ -870,12 +903,12 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
     @dp.message(Command('settings'))
     async def cmd_settings(message: types.Message):
         if not allowed(message): return await denied(message)
-        await send(message,settings_text())
+        await send(message,settings_text(technical=is_system_owner(message)),system_owner_only=is_system_owner(message))
 
     # --- imports / product linking --------------------------------------
     @dp.message(Command('import_costs'))
     async def cmd_import_costs(message: types.Message, state: FSMContext):
-        if not allowed(message,'operate'): return await denied(message,'operate')
+        if not allowed(message,'costs'): return await denied(message,'costs')
         await state.set_state(CostImportStates.waiting_file)
         await navigation.show(message,
             '📥 <b>Импорт себестоимости</b>\nПришлите CSV или XLSX файлом.\n\n'
@@ -887,7 +920,7 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
 
     @dp.message(StateFilter(CostImportStates.waiting_file), F.document)
     async def import_cost_file(message: types.Message, state: FSMContext):
-        if not allowed(message,'operate'): return await denied(message,'operate')
+        if not allowed(message,'costs'): return await denied(message,'costs')
         doc=message.document
         filename=Path(doc.file_name or 'costs.csv').name
         suffix=Path(filename).suffix.lower()
@@ -901,6 +934,9 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
                 local=Path(tmp)/filename
                 remote=await message.bot.get_file(doc.file_id)
                 await message.bot.download_file(remote.file_path,destination=str(local))
+                if not allowed(message,'costs'):
+                    await state.clear()
+                    return await denied(message,'costs')
                 summary=import_costs(ctx.repository,ctx.shop_id,local,
                                      default_effective_date=local_now().date().isoformat())
         except Exception as exc:
@@ -913,16 +949,16 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
             lines += ['', '<b>Первые ошибки</b>']
             for e in summary.errors[:8]:
                 lines.append(f"• строка {e.get('row','?')}: {escape(str(e.get('error','')))}")
-        await send(message,'\n'.join(lines),permission='operate')
+        await send(message,'\n'.join(lines),permission='costs')
 
     @dp.message(StateFilter(CostImportStates.waiting_file))
     async def import_cost_file_expected(message: types.Message):
-        if not allowed(message,'operate'): return await denied(message,'operate')
+        if not allowed(message,'costs'): return await denied(message,'costs')
         await message.answer('Пришлите именно CSV/XLSX как документ или нажмите «❌ Отмена».')
 
     @dp.message(Command('link'))
     async def cmd_link(message: types.Message):
-        if not allowed(message,'operate'): return await denied(message,'operate')
+        if not allowed(message,'costs'): return await denied(message,'costs')
         parts=(message.text or '').split()
         if len(parts)<3:
             return await message.answer('Формат: /link <internal_sku> wb:<sku> ozon:<sku>')
@@ -1217,10 +1253,15 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
         progress=await message.answer(f'🔄 Обновляю все отчёты {start} — {end}. Запросы могут занять несколько минут из-за лимитов API.')
         async def update_progress(label):
             await progress.edit_text(f'🔄 {start} — {end}\n{label}…')
-        try: stages=await ctx.refresh_reports(start,end,progress=update_progress)
+        try:
+            if allowed(message,'finance'):
+                stages=await ctx.refresh_reports(start,end,progress=update_progress)
+            else:
+                stages=await ctx.refresh_reports(start,end,progress=update_progress,include_finance=False)
         except RuntimeError as exc:return await message.answer(f'⚠️ {escape(str(exc)[:220])}')
         await send(message,format_refresh(stages,start,end),permission='operate')
-        await send(message,format_finance(build_finance_report(ctx.repository,ctx.shop_id,end,days)),permission='operate')
+        if allowed(message,'finance'):
+            await send(message,format_finance(build_finance_report(ctx.repository,ctx.shop_id,end,days)),permission='finance')
 
     @dp.message(Command('sources'))
     async def cmd_sources(message: types.Message):
@@ -1237,14 +1278,14 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
         from app.reports.accruals import build_accrual_ledger, format_accrual_ledger, export_accrual_ledger
         ledger=build_accrual_ledger(ctx.repository,ctx.shop_id,start.isoformat(),end.isoformat())
         await send(message,format_accrual_ledger(ledger))
-        if ledger.rows:
+        if ledger.rows and allowed(message,'finance'):
             with tempfile.TemporaryDirectory(prefix='sellerbot-accruals-') as folder:
                 path=export_accrual_ledger(ledger,Path(folder)/f'ozon_accruals_{start}_{end}.csv')
                 await message.answer_document(FSInputFile(path),caption='Операции из сохранённого ответа Ozon API. Расходы указаны положительно; корректировки — со знаком минус.')
 
     @dp.message(Command('cost'))
     async def cmd_cost(message: types.Message):
-        if not allowed(message,'operate'): return await denied(message,'operate')
+        if not allowed(message,'costs'): return await denied(message,'costs')
         parts=(message.text or '').split()
         if len(parts) not in {4,5}:
             return await message.answer('Формат: /cost wb 12345678 350 [YYYY-MM-DD]')
@@ -1267,7 +1308,7 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
         from app.reports.wb_accruals import build_wb_accrual_ledger, format_wb_accrual_ledger, export_wb_accrual_ledger
         ledger=build_wb_accrual_ledger(ctx.repository,ctx.shop_id,start.isoformat(),end.isoformat())
         await send(message,format_wb_accrual_ledger(ledger))
-        if ledger.rows:
+        if ledger.rows and allowed(message,'finance'):
             with tempfile.TemporaryDirectory(prefix='sellerbot-wb-accruals-') as folder:
                 path=export_wb_accrual_ledger(ledger,Path(folder)/f'wb_accruals_{start}_{end}.csv')
                 await message.answer_document(FSInputFile(path),caption='Итоги сохранённых финансовых отчётов WB: номера, периоды, суммы. Это строки отчётов, не новые заказы.')
@@ -1284,12 +1325,17 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
         await operational_cards.show(message, 'alerts')
         await navigation.dismiss(message)
 
-    def current_action_center():
-        end=local_now().date()-timedelta(days=1)
-        return build_action_center(ctx.repository,ctx.shop_id,end,persist=False)
+    def visible_item(user_id,item):
+        return item_visible(item,finance=ctx.repository.can_user(user_id,ctx.shop_id,'finance'),
+            technical=user_id in ctx.settings.owner_ids)
 
-    def find_action_by_ref(ref: str):
-        center=current_action_center()
+    def current_action_center(user_id):
+        end=local_now().date()-timedelta(days=1)
+        report=build_action_center(ctx.repository,ctx.shop_id,end,persist=False)
+        return replace(report,items=tuple(item for item in report.items if visible_item(user_id,item)))
+
+    def find_action_by_ref(ref: str,user_id):
+        center=current_action_center(user_id)
         item=next((x for x in center.items if action_ref(str(x.action_key))==ref),None)
         return center,item
 
@@ -1307,7 +1353,7 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
     async def cb_action_list(callback: types.CallbackQuery):
         if callback.from_user is None or not ctx.repository.can_user(callback.from_user.id,ctx.shop_id,'view'):
             return await callback.answer('Недостаточно прав.',show_alert=True)
-        center=current_action_center()
+        center=current_action_center(callback.from_user.id)
         await callback.answer()
         if callback.message:
             await callback.message.edit_text(
@@ -1320,7 +1366,7 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
         if callback.from_user is None or not ctx.repository.can_user(callback.from_user.id,ctx.shop_id,'view'):
             return await callback.answer('Недостаточно прав.',show_alert=True)
         ref=(callback.data or '').rsplit(':',1)[-1]
-        _,item=find_action_by_ref(ref)
+        _,item=find_action_by_ref(ref,callback.from_user.id)
         if item is None:
             return await callback.answer('Действие уже изменилось или исчезло.',show_alert=True)
         state=' · ✅ принято' if item.status=='acknowledged' else (' · ⏰ отложено' if item.status=='snoozed' else '')
@@ -1343,7 +1389,7 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
         if callback.from_user is None or not ctx.repository.can_user(callback.from_user.id,ctx.shop_id,'operate'):
             return await callback.answer('Недостаточно прав.',show_alert=True)
         ref=(callback.data or '').rsplit(':',1)[-1]
-        _,item=find_action_by_ref(ref)
+        _,item=find_action_by_ref(ref,callback.from_user.id)
         if item is None:
             return await callback.answer('Действие уже изменилось или исчезло.',show_alert=True)
         ok=ctx.repository.set_action_status(ctx.shop_id,item.action_key,'acknowledged',telegram_user_id=callback.from_user.id)
@@ -1356,7 +1402,7 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
         if callback.from_user is None or not ctx.repository.can_user(callback.from_user.id,ctx.shop_id,'operate'):
             return await callback.answer('Недостаточно прав.',show_alert=True)
         ref=(callback.data or '').rsplit(':',1)[-1]
-        _,item=find_action_by_ref(ref)
+        _,item=find_action_by_ref(ref,callback.from_user.id)
         if item is None:
             return await callback.answer('Действие уже изменилось или исчезло.',show_alert=True)
         ok=ctx.repository.set_action_status(
@@ -1376,7 +1422,10 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
         except ValueError: return await message.answer('Период должен быть числом дней, например 14.')
         end=local_now().date()-timedelta(days=1); start=end-timedelta(days=days-1)
         rows=ctx.repository.action_history(ctx.shop_id,start.isoformat(),end.isoformat())
-        await send(message,format_action_history(rows,days=days))
+        rows=[row for row in rows if visible_item(message.from_user.id,row)]
+        await send(message,format_action_history(rows,days=days),
+            permission='finance' if allowed(message,'finance') else 'view',
+            system_owner_only=is_system_owner(message))
 
     @dp.message(Command('action_ack'))
     async def cmd_action_ack(message: types.Message):
@@ -1384,6 +1433,8 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
         parts=(message.text or '').split(maxsplit=1)
         if len(parts)<2: return await message.answer('Укажите код действия из Action Center.')
         key=parts[1].strip()
+        if not any(item.action_key==key for item in current_action_center(message.from_user.id).items):
+            return await message.answer('⛔ Действие недоступно или уже неактивно. Откройте «Что сделать сегодня».')
         if ctx.repository.set_action_status(ctx.shop_id,key,'acknowledged',telegram_user_id=message.from_user.id):
             await message.answer('✅ Действие отмечено как принято. Оно останется видимым, пока фактическая проблема не исчезнет.')
         else: await message.answer('⚠️ Активное действие с таким кодом не найдено.')
@@ -1394,6 +1445,8 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
         parts=(message.text or '').split()
         if len(parts)<2: return await message.answer('Укажите код действия и, при необходимости, часы: <code>action_key 24</code>',parse_mode='HTML')
         key=parts[1]
+        if not any(item.action_key==key for item in current_action_center(message.from_user.id).items):
+            return await message.answer('⛔ Действие недоступно или уже неактивно. Откройте «Что сделать сегодня».')
         try: hours=max(1,min(int(parts[2]) if len(parts)>2 else 24,720))
         except ValueError: return await message.answer('Часы должны быть целым числом от 1 до 720.')
         if ctx.repository.set_action_status(ctx.shop_id,key,'snoozed',telegram_user_id=message.from_user.id,snooze_hours=hours):
@@ -1513,12 +1566,12 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
             f'Макс. lead-буфер: {p.get("max_lead_buffer_days",7)} дн.',
             f'Макс. safety-буфер: {p.get("max_safety_buffer_days",7)} дн.',
             '', 'Товар: кнопка «✏️ Настроить SKU».',
-            'Общие defaults (owner): кнопка «🧰 Defaults поставок».'])
+            'Изменение параметров доступно владельцу и бухгалтеру.'])
         await send(message,text)
 
     @dp.message(Command('supply_defaults'))
     async def cmd_supply_defaults(message: types.Message):
-        if not allowed(message,'manage'): return await denied(message,'manage')
+        if not allowed(message,'settings'): return await denied(message,'settings')
         parts=(message.text or '').split()[1:]
         if len(parts)<3: return await message.answer('Формат: /supply_defaults LEAD SAFETY TARGET [LOOKBACK] [XYZ_WEEKS] [SEASONALITY_0_1] [FORECAST_HORIZON] [AUTO_CAL_0_1] [MAX_LEAD_BUFFER] [MAX_SAFETY_BUFFER]')
         try:
@@ -1536,7 +1589,7 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
 
     @dp.message(Command('supply_set'))
     async def cmd_supply_set(message: types.Message):
-        if not allowed(message,'manage'): return await denied(message,'manage')
+        if not allowed(message,'settings'): return await denied(message,'settings')
         parts=(message.text or '').split()[1:]
         if len(parts)<4: return await message.answer('Формат: /supply_set SKU LEAD SAFETY TARGET [PACK] [MIN_ORDER]')
         sku=parts[0]
@@ -1557,8 +1610,10 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
             icon='🟣' if conn.marketplace=='ozon' else '🔵'
             lines.append(f'{icon} {escape(conn.display_name)}: {"✅" if conn.enabled else "⏸"}')
             lines.append(f'  последний успех: {success.finished_at if success else "—"}')
-            if latest and latest.status=='failed': lines.append(f'  ⚠️ {escape((latest.error or "ошибка")[:180])}')
-        await send(message,'\n'.join(lines))
+            if latest and latest.status=='failed':
+                lines.append(f'  ⚠️ {escape((latest.error or "ошибка")[:180])}' if is_system_owner(message)
+                             else '  ⚠️ Последняя загрузка не удалась. Попросите владельца проверить подключение.')
+        await send(message,'\n'.join(lines),system_owner_only=is_system_owner(message))
 
     @dp.message(Command('health'))
     async def cmd_health(message: types.Message):
@@ -1726,8 +1781,8 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
         'shop': 'view', 'shop_add': 'manage', 'shop_profile': 'manage',
         'shop_archive': 'manage', 'shop_restore': 'manage', 'shop_delete': 'manage',
         'user_add': 'manage', 'user_remove': 'manage', 'export': 'view',
-        'day': 'operate', 'link': 'operate', 'cost': 'operate',
-        'supply_sku': 'view', 'supply_defaults': 'manage', 'supply_set': 'manage',
+        'day': 'operate', 'link': 'costs', 'cost': 'costs',
+        'supply_sku': 'view', 'supply_defaults': 'settings', 'supply_set': 'settings',
         'job_retry': 'manage', 'action_ack': 'operate', 'action_snooze': 'operate',
     }
 
@@ -1799,9 +1854,9 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
     async def btn_menu_shop_delete(message: types.Message,state: FSMContext):
         await state.clear(); await show_shop_picker(message,'delete')
     @dp.message(F.text == COMMAND_BUTTONS['user_add'])
-    async def btn_menu_user_add(message: types.Message,state: FSMContext): await launch_input_action(message,state,'user_add')
+    async def btn_menu_user_add(message: types.Message,state: FSMContext): await employees.add(message,state)
     @dp.message(F.text == COMMAND_BUTTONS['user_remove'])
-    async def btn_menu_user_remove(message: types.Message,state: FSMContext): await launch_input_action(message,state,'user_remove')
+    async def btn_menu_user_remove(message: types.Message,state: FSMContext): await employees.open(message,state)
     @dp.message(F.text == COMMAND_BUTTONS['export'])
     async def btn_menu_export(message: types.Message,state: FSMContext): await launch_input_action(message,state,'export')
     @dp.message(F.text == COMMAND_BUTTONS['day'])
@@ -1854,7 +1909,7 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
     @dp.message(F.text == COMMAND_BUTTONS['shop_archived'])
     async def btn_menu_shop_archived(message: types.Message): await cmd_shop_archived(message)
     @dp.message(F.text == COMMAND_BUTTONS['users'])
-    async def btn_menu_users(message: types.Message): await cmd_users(message)
+    async def btn_menu_users(message: types.Message,state: FSMContext): await cmd_users(message,state)
     @dp.message(F.text == COMMAND_BUTTONS['my_access'])
     async def btn_menu_my_access(message: types.Message): await cmd_my_access(message)
     @dp.message(F.text == COMMAND_BUTTONS['backup'])
@@ -1940,12 +1995,15 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
             return
         await callback.answer()
         if callback.message:
-            selected='user_add' if action=='add' else 'user_remove'
-            await start_menu_input(callback.message,state,selected,prompts[selected])
+            if action not in {'add','remove'}:return
+            message=command_copy(callback.message,'users','',actor_user=callback.from_user)
+            if action=='add':await employees.add(message,state)
+            else:await employees.open(message,state)
 
     @dp.callback_query(F.data.startswith('retry:run:'))
     async def cb_retry_job(callback: types.CallbackQuery):
-        if callback.from_user is None or not ctx.repository.can_user(callback.from_user.id,ctx.shop_id,'manage'):
+        if (callback.from_user is None or callback.from_user.id not in ctx.settings.owner_ids or
+            not ctx.repository.can_user(callback.from_user.id,ctx.shop_id,'technical')):
             return await callback.answer('Недостаточно прав.',show_alert=True)
         try: job_id=int((callback.data or '').rsplit(':',1)[1])
         except ValueError: return await callback.answer('Некорректная задача.',show_alert=True)
@@ -2195,7 +2253,7 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
         'supply_sku': (btn_menu_supply_sku, True),
         'user_add': (btn_menu_user_add, True),
         'user_remove': (btn_menu_user_remove, True),
-        'users': (btn_menu_users, False),
+        'users': (btn_menu_users, True),
         'wb_accruals': (btn_menu_wb_accruals, True),
         'week': (btn_week, False),
         'yesterday': (btn_yesterday, False),

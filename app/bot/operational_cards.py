@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 from datetime import datetime, timedelta
 from weakref import WeakValueDictionary
 from zoneinfo import ZoneInfo
@@ -14,6 +15,7 @@ from app.reports.operations import format_action_center, format_action_detail
 from app.reports.products import build_product_report
 from app.reports.text import page_slice
 from app.services.actions import build_action_center
+from app.access import item_visible
 from .keyboards import action_ref
 
 
@@ -60,11 +62,14 @@ class OperationalCards:
             raise ValueError('shop unavailable')
         return ctx
 
-    def _data(self, ctx, kind, *, persist=False):
+    def _data(self, ctx, kind, user_id, *, persist=False):
         pref = ctx.preferences()
         day = datetime.now(ZoneInfo(pref.timezone)).date() - timedelta(days=1)
         if kind == 'actions':
             report = build_action_center(ctx.repository, ctx.shop_id, day, persist=persist)
+            report=replace(report,items=tuple(item for item in report.items if item_visible(item,
+                finance=ctx.repository.can_user(user_id,ctx.shop_id,'finance'),
+                technical=user_id in ctx.settings.owner_ids)))
             items = sorted(report.items, key=lambda item: (item.priority, item.category, item.title))
         else:
             report = build_product_report(ctx.repository, ctx.shop_id, day,
@@ -83,7 +88,7 @@ class OperationalCards:
         ctx = self.context
         if not message.from_user or not ctx.repository.can_user(message.from_user.id, ctx.shop_id, 'view'):
             return await message.answer('⛔ Недостаточно прав.')
-        report, items = self._data(ctx, kind, persist=kind == 'actions' and
+        report, items = self._data(ctx, kind, message.from_user.id, persist=kind == 'actions' and
                                    ctx.repository.can_user(message.from_user.id, ctx.shop_id, 'operate'))
         text, markup = self._list(ctx, kind, report, items, 0)
         return await message.answer(text, parse_mode='HTML', reply_markup=markup)
@@ -118,7 +123,7 @@ class OperationalCards:
             return await callback.answer('Сообщение недоступно.', show_alert=True)
         key = (callback.message.chat.id, callback.message.message_id)
         async with self._lock(key):
-            report, items = self._data(ctx, kind)
+            report, items = self._data(ctx, kind, callback.from_user.id)
             if action == 'list':
                 text, markup = self._list(ctx, kind, report, items, page)
                 await callback.answer()
@@ -133,7 +138,7 @@ class OperationalCards:
                     telegram_user_id=callback.from_user.id, snooze_hours=24)
                 if not ok:
                     return await callback.answer('Не удалось обновить действие.', show_alert=True)
-                report, items = self._data(ctx, kind)
+                report, items = self._data(ctx, kind, callback.from_user.id)
                 await callback.answer('Принято' if action == 'ack' else 'Отложено на 24 часа')
                 if action == 'snooze':
                     text, markup = self._list(ctx, kind, report, items, page)
