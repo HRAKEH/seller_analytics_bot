@@ -17,9 +17,13 @@ class WbAccrualLedger:
     end: str
     loaded_dates: tuple[str,...]
     rows: tuple[dict,...]
+    source_run_ids: tuple[int,...] = ()
 
 
-def build_wb_accrual_ledger(repo, shop_id: int, start: str, end: str) -> WbAccrualLedger:
+def build_wb_accrual_ledger(repo, shop_id: int, start: str, end: str, *, source_run_ids=None) -> WbAccrualLedger:
+    pinned = source_run_ids is not None
+    ids = tuple(dict.fromkeys(int(value) for value in (source_run_ids or ())))
+    selection = ' AND sr.id IN (' + ','.join('?' for _ in ids) + ')' if ids else (' AND 0' if pinned else '')
     with repo.db.connect() as c:
         payloads=c.execute('''WITH ranked AS (
             SELECT sr.id,sr.connection_id,sr.data_date,sr.finished_at,rp.payload_json,
@@ -29,8 +33,13 @@ def build_wb_accrual_ledger(repo, shop_id: int, start: str, end: str) -> WbAccru
             JOIN marketplace_connections mc ON mc.id=sr.connection_id
             WHERE mc.shop_id=? AND mc.marketplace='wildberries'
               AND sr.endpoint='finance/sales-reports/list' AND sr.status='success'
-              AND sr.data_date BETWEEN ? AND ?)
-            SELECT * FROM ranked WHERE rn=1 ORDER BY finished_at DESC,id DESC''',(shop_id,start,end)).fetchall()
+              AND sr.data_date BETWEEN ? AND ?''' + selection + ''')
+            SELECT * FROM ranked WHERE rn=1 ORDER BY finished_at DESC,id DESC''',(shop_id,start,end,*ids)).fetchall()
+    if pinned and {row['id'] for row in payloads} != set(ids):
+        raise ValueError('Сохранённый источник недоступен. Откройте начисления заново.')
+    if pinned:
+        order={value:index for index,value in enumerate(ids)}
+        payloads=sorted(payloads,key=lambda row:order[row['id']])
     rows=[]; seen=set()
     keys=('financial_sales','goods_payable','bank_payment','logistics','storage','acceptance','services','penalties','compensation')
     for source in payloads:
@@ -51,7 +60,7 @@ def build_wb_accrual_ledger(repo, shop_id: int, start: str, end: str) -> WbAccru
                 'report_to':str(report.get('dateTo') or '')[:10],
                 **{key:metrics.get(key) for key in keys},'verified_at':source['finished_at']})
     rows.sort(key=lambda r:(r['date'],str(r['report_id'])))
-    return WbAccrualLedger(start,end,tuple(sorted({r['date'] for r in rows})),tuple(rows))
+    return WbAccrualLedger(start,end,tuple(sorted({r['date'] for r in rows})),tuple(rows),tuple(p['id'] for p in payloads))
 
 
 @readable_dates
@@ -78,5 +87,5 @@ def format_wb_accrual_ledger(ledger: WbAccrualLedger) -> str:
     return '\n'.join(lines)
 
 
-def export_wb_accrual_ledger(ledger: WbAccrualLedger, path: Path) -> Path:
-    return export_accrual_ledger(ledger,path)
+def export_wb_accrual_ledger(ledger: WbAccrualLedger, path: Path, *, timezone='Europe/Moscow', shop_name='') -> Path:
+    return export_accrual_ledger(ledger,path,timezone=timezone,shop_name=shop_name,marketplace='wb')

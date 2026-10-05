@@ -345,6 +345,30 @@ class Repository:
             c.execute('UPDATE telegram_paged_reports SET current_page=? WHERE bot_id=? AND chat_id=? AND message_id=?',
                       (max(0,int(page)),bot_id,chat_id,message_id))
 
+    def save_data_view(self, bot_id: int, chat_id: int, message_id: int, *, shop_id: int,
+                       user_id: int, kind: str, payload: dict) -> None:
+        if kind not in {'ozon', 'wb', 'export'}:
+            raise ValueError('invalid data view')
+        now = utcnow()
+        with self.db.connect() as c:
+            c.execute('''INSERT INTO telegram_data_views
+                VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(bot_id,chat_id,message_id)
+                DO UPDATE SET payload_json=excluded.payload_json,updated_at=excluded.updated_at
+                WHERE telegram_data_views.shop_id=excluded.shop_id
+                  AND telegram_data_views.user_id=excluded.user_id
+                  AND telegram_data_views.kind=excluded.kind''',
+                (bot_id,chat_id,message_id,shop_id,user_id,kind,
+                 json.dumps(payload,ensure_ascii=False),now,now))
+
+    def data_view(self, bot_id: int, chat_id: int, message_id: int) -> dict | None:
+        with self.db.connect() as c:
+            row = c.execute('SELECT * FROM telegram_data_views WHERE bot_id=? AND chat_id=? AND message_id=?',
+                            (bot_id,chat_id,message_id)).fetchone()
+        if row is None:return None
+        data = dict(row)
+        data['payload'] = json.loads(data.pop('payload_json'))
+        return data
+
     def get_job_state(self, shop_id: int, job_key: str) -> str | None:
         with self.db.connect() as c:
             r=c.execute("SELECT last_run_key FROM shop_job_state WHERE shop_id=? AND job_key=?",(shop_id,job_key)).fetchone()

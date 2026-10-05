@@ -9,7 +9,6 @@ from pathlib import Path
 from typing import Any
 
 from openpyxl import Workbook
-from openpyxl.styles import Font
 
 from app.storage import Repository
 from app.reports.finance import build_finance_report
@@ -19,6 +18,7 @@ from app.reports.management import build_management_report
 from app.services.supply import build_supply_plan, evaluate_forecast_quality, build_supply_calibration
 from app.services.actions import build_action_center
 from app.access import item_visible
+from .spreadsheet_format import SHEETS, write_sheet, add_descriptions, description_rows
 
 # Export explicit operational fields so a future financial field added to a
 # repository query cannot silently become visible to a manager.
@@ -198,19 +198,11 @@ def export_xlsx(repo: Repository, shop_id: int, end: date, days: int, path: Path
     tables=collect_export_tables(repo,shop_id,end,days,include_finance=include_finance,
         include_technical=include_technical); path.parent.mkdir(parents=True,exist_ok=True)
     wb=Workbook(); wb.remove(wb.active)
+    pref=repo.get_shop_preferences(shop_id)
+    timezone=pref.timezone if pref else 'Europe/Moscow'
     for name,rows in tables.items():
-        ws=wb.create_sheet(name[:31]); headers=_headers(rows)
-        if headers:
-            ws.append(headers)
-            for cell in ws[1]: cell.font=Font(bold=True)
-            for row in rows: ws.append([_safe_spreadsheet_value(row.get(h)) for h in headers])
-            ws.freeze_panes='A2'; ws.auto_filter.ref=ws.dimensions
-            for column in ws.columns:
-                letter=column[0].column_letter
-                width=min(40,max(10,max(len(str(c.value or '')) for c in column)+2))
-                ws.column_dimensions[letter].width=width
-        else:
-            ws.append(['Нет данных'])
+        write_sheet(wb,name,rows,timezone=timezone)
+    add_descriptions(wb,tables)
     wb.save(path)
     return ExportResult(path,'xlsx',(end-timedelta(days=days-1)).isoformat(),end.isoformat())
 
@@ -229,4 +221,13 @@ def export_csv_zip(repo: Repository, shop_id: int, end: date, days: int, path: P
             else:
                 writer.writerow({'message':'Нет данных'})
             z.writestr(name.lower()+'.csv',buf.getvalue().encode('utf-8-sig'))
+        descriptions=description_rows(tables)
+        buf=io.StringIO(newline='')
+        writer=csv.DictWriter(buf,fieldnames=('sheet','field','label','meaning'))
+        writer.writeheader();writer.writerows(_safe_row(row) for row in descriptions)
+        z.writestr('Описание_полей.csv',buf.getvalue().encode('utf-8-sig'))
+        legend=['Данные магазина из сохранённой базы.', 'CSV сохраняет исходные коды колонок и значения.',
+                'В «Описание_полей.csv» находятся русские названия и пояснения.', '']
+        legend.extend(name.lower()+'.csv — '+SHEETS[name][0]+': '+SHEETS[name][1] for name in tables)
+        z.writestr('Описание_файлов.txt','\n'.join(legend).encode('utf-8-sig'))
     return ExportResult(path,'csv',(end-timedelta(days=days-1)).isoformat(),end.isoformat())

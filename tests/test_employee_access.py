@@ -412,12 +412,13 @@ def test_manager_export_no_finances_hidden_fields_or_technical_tasks(ui,tmp_path
         include_finance=False,include_technical=False)
     if fmt=='xlsx':
         wb=load_workbook(result.path);names=wb.sheetnames
-        content=json.dumps([[list(row) for row in sheet.values] for sheet in wb],ensure_ascii=False)
+        content=json.dumps([[list(row) for row in sheet.values] for sheet in wb],ensure_ascii=False,default=str)
     else:
         with zipfile.ZipFile(result.path) as archive:
             names=[p.removesuffix('.csv').title() for p in archive.namelist()]
             content='\n'.join(archive.read(p).decode('utf-8-sig') for p in archive.namelist())
-    assert not {'Finance','Costs','Management','Reconciliation'}&set(names)
+    assert not {'Finance','Costs','Management','Reconciliation',
+                'Финансовая сводка','Себестоимость','Результат магазина','Сверка данных'}&set(names)
     assert 'PUBLIC PRODUCT' in content and 'PUBLIC STOCK' in content and 'ad_spend' in content
     assert all(hidden not in content for hidden in ('987654.32','876543.21','999888.77','cost_price','PRIVATE','credential_profile','schema_version'))
 
@@ -447,7 +448,8 @@ def test_schema19_role_upgrade_preserves_access_timestamps_and_snapshots(tmp_pat
         previous=[tuple(row) for row in c.execute('SELECT * FROM user_shop_access ORDER BY telegram_user_id')]
     repo.save_report_card(123,101,9,shop_id=shop.id,report_day='2026-10-01',summary_html='Summary',
         details_html='Detail',accruals_html='Accruals',section='summary',status_note='',page=0)
-    assert db.initialize_safely()==20 and db.integrity_check()
+    from app.storage import LATEST_SCHEMA_VERSION
+    assert db.initialize_safely()==LATEST_SCHEMA_VERSION and db.integrity_check()
     with db.connect() as c:
         migrated=[tuple(row) for row in c.execute('SELECT * FROM user_shop_access ORDER BY telegram_user_id')]
     assert migrated==[(uid,sid,'accountant' if role=='analyst' else role,created,updated)

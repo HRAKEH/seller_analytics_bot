@@ -237,7 +237,7 @@ def test_common_report_export_and_retry_flows_are_button_driven(monkeypatch):
     assert {'🗓 Другая дата','📥 Догрузить данные','📜 Что уже загружено'} <= reports
     assert ('Вчера','report_date:1') in kb.report_date_keyboard()
     assert ('30 дней','export:period:30') in kb.export_period_keyboard()
-    assert ('📊 Excel','export:run:30:xlsx') in kb.export_format_keyboard(30)
+    assert ('📊 Excel (.xlsx)','export:run:30:xlsx') in kb.export_format_keyboard(30)
     users=kb.users_admin_keyboard()
     assert ('➕ Дать доступ','users:add') in users
     retry=kb.retry_jobs_keyboard([{'id':7,'status':'dead'},{'id':8,'status':'success'}])

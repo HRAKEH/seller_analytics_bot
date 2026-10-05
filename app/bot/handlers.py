@@ -42,6 +42,8 @@ from .report_cards import DailyCardController, send_daily_card
 from .operational_cards import OperationalCards
 from .presentation import PresentationMiddleware
 from .paged_reports import PagedReportController
+from .data_views import DataViewController
+from app.services.spreadsheet_format import export_filename
 from app.reports.cards import format_daily_card
 from app.access import action_permission, item_visible, normalize_role, role_label
 from .employees import EmployeeController, EmployeeStates
@@ -50,7 +52,7 @@ from .keyboards import (
     control_keyboard, shop_keyboard, service_keyboard, technical_keyboard, input_keyboard, shop_picker_keyboard,
     shop_confirm_keyboard, backfill_source_keyboard, backfill_period_keyboard, backfill_running_keyboard,
     action_center_keyboard, action_item_keyboard, action_ref,
-    report_date_keyboard, export_period_keyboard, export_format_keyboard,
+    report_date_keyboard,
     users_admin_keyboard, retry_jobs_keyboard, COMMAND_BUTTONS, menu_button_texts,
     MENU_REPORTS, MENU_PRODUCTS, MENU_MONEY, MENU_SUPPLY, MENU_CONTROL, MENU_SHOP, MENU_SERVICE, MENU_TECH,
     HOME, BACK, CANCEL,
@@ -86,7 +88,7 @@ class BackfillStates(StatesGroup):
 def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
     command_labels={label:key for key,label in COMMAND_BUTTONS.items()} | {
         '🔎 Сверка':'reconcile', '📈 Результат':'management', '💾 Backup':'backup',
-        '⚙️ Статус':'status', '⚙️ Настройки':'settings', '📤 Экспорт':'export',
+        '⚙️ Статус':'status', '⚙️ Настройки':'settings', '📤 Экспорт':'export', '📤 Экспорт данных':'export',
         '🔄 Обновить финансы':'finance_update', MENU_TECH:'technical_menu',
         '👥 Пользователи':'users', '➕ Дать доступ':'user_add'}
 
@@ -111,6 +113,13 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
     dp.callback_query.middleware(presentation)
     operational_cards = OperationalCards(ctx, registry)
     paged_reports = PagedReportController(ctx)
+    data_views = DataViewController(ctx,navigation)
+
+    @dp.callback_query(F.data.startswith('data_view:'))
+    async def cb_data_view(callback: types.CallbackQuery):
+        async def home(cb):
+            await show_main_menu(command_copy(cb.message,'start','',actor_user=cb.from_user))
+        await data_views.handle(callback,on_home=home)
 
     async def denied(message: types.Message, permission: str = 'view'):
         required=action_permission(request_action(message))
@@ -704,6 +713,8 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
     async def cmd_export(message: types.Message):
         if not allowed(message): return await denied(message)
         parts=(message.text or '').split()
+        if len(parts)==1:
+            return await data_views.show_export(message,local_now().date()-timedelta(days=1))
         try: days=int(parts[1]) if len(parts)>1 else 30
         except ValueError: return await message.answer('Формат: /export [дней] [xlsx|csv]')
         fmt=(parts[2].lower() if len(parts)>2 else 'xlsx')
@@ -714,7 +725,8 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
         try:
             with tempfile.TemporaryDirectory(prefix='seller-bot-export-') as tmp:
                 suffix='.xlsx' if fmt=='xlsx' else '_csv.zip'
-                path=Path(tmp)/f'sellerbot_shop_{ctx.shop_id}_{end.isoformat()}{suffix}'
+                start=(end-timedelta(days=days-1)).isoformat()
+                path=Path(tmp)/export_filename('Данные',shop.name if shop else 'Магазин',start,end.isoformat(),suffix)
                 include_finance=allowed(message,'finance');include_technical=is_system_owner(message)
                 exporter=export_xlsx if fmt=='xlsx' else export_csv_zip
                 result=exporter(ctx.repository,ctx.shop_id,end,days,path,
@@ -1275,13 +1287,7 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
         if not allowed(message):return await denied(message)
         try: days,start,end=parse_report_period(message.text or '',1,local_now().date())
         except ValueError:return await message.answer('Формат: /accruals [дней] [YYYY-MM-DD] · от 1 до 31 дня, без будущих дат.')
-        from app.reports.accruals import build_accrual_ledger, format_accrual_ledger, export_accrual_ledger
-        ledger=build_accrual_ledger(ctx.repository,ctx.shop_id,start.isoformat(),end.isoformat())
-        await send(message,format_accrual_ledger(ledger))
-        if ledger.rows and allowed(message,'finance'):
-            with tempfile.TemporaryDirectory(prefix='sellerbot-accruals-') as folder:
-                path=export_accrual_ledger(ledger,Path(folder)/f'ozon_accruals_{start}_{end}.csv')
-                await message.answer_document(FSInputFile(path),caption='Операции из сохранённого ответа Ozon API. Расходы указаны положительно; корректировки — со знаком минус.')
+        await data_views.show_accruals(message,'ozon',start,end)
 
     @dp.message(Command('cost'))
     async def cmd_cost(message: types.Message):
@@ -1305,13 +1311,7 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
         if not allowed(message):return await denied(message)
         try: days,start,end=parse_report_period(message.text or '',1,local_now().date())
         except ValueError:return await message.answer('Формат: /wb_accruals [дней] [YYYY-MM-DD] · от 1 до 31 дня.')
-        from app.reports.wb_accruals import build_wb_accrual_ledger, format_wb_accrual_ledger, export_wb_accrual_ledger
-        ledger=build_wb_accrual_ledger(ctx.repository,ctx.shop_id,start.isoformat(),end.isoformat())
-        await send(message,format_wb_accrual_ledger(ledger))
-        if ledger.rows and allowed(message,'finance'):
-            with tempfile.TemporaryDirectory(prefix='sellerbot-wb-accruals-') as folder:
-                path=export_wb_accrual_ledger(ledger,Path(folder)/f'wb_accruals_{start}_{end}.csv')
-                await message.answer_document(FSInputFile(path),caption='Итоги сохранённых финансовых отчётов WB: номера, периоды, суммы. Это строки отчётов, не новые заказы.')
+        await data_views.show_accruals(message,'wb',start,end)
 
     @dp.message(Command('alerts'))
     async def cmd_alerts(message: types.Message):
@@ -1704,7 +1704,7 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
 
     @dp.message(F.text == MENU_SERVICE)
     async def menu_service(message: types.Message):
-        await show_submenu(message,'🛠 <b>Ещё</b>\nЭкспорт и редкие служебные функции.',service_keyboard)
+        await show_submenu(message,'🛠 <b>Ещё</b>\nСкачать данные магазина и служебные функции.',service_keyboard)
 
     @dp.message(F.text == MENU_TECH)
     async def menu_technical(message: types.Message):
@@ -1753,8 +1753,8 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
     prompts = {
         'refresh': '🔄 <b>Обновить все отчёты</b>\nВведите: <code>дней YYYY-MM-DD</code>\nОдин день: <code>1 2026-09-28</code>. Неделя до выбранной даты: <code>7 2026-09-28</code>. Максимум 31 день. Запросы могут занять несколько минут.',
         'sources': '📡 <b>Полнота источников</b>\nВведите: <code>дней YYYY-MM-DD</code>, например <code>1 2026-09-28</code>. Читает БД без запросов API.',
-        'accruals': '🧮 <b>Начисления Ozon</b>\nВведите: <code>дней YYYY-MM-DD</code>, например <code>1 2026-09-28</code>. Покажет суммы и выгрузит операции в CSV из сохранённого ответа API.',
-        'wb_accruals': '🧮 <b>Начисления WB</b>\nВыберите период кнопками. Покажет сохранённые итоги финансовых отчётов WB и CSV.',
+        'accruals': '🧮 <b>Начисления Ozon</b>\nВыберите период кнопками. Детали можно раскрыть; скачать — в CSV или Excel.',
+        'wb_accruals': '🧮 <b>Начисления WB</b>\nВыберите период кнопками. Настоящие периоды отчётов указаны отдельно. Можно скачать CSV или Excel.',
         'shop': '🔁 <b>Выбор магазина</b>\nВведите ID магазина. Его можно посмотреть кнопкой «🏪 Список магазинов».',
         'shop_add': '➕ <b>Новый магазин</b>\nВведите: <code>Название | PROFILE</code>\nПример: <code>Мой второй магазин | SHOP2</code>',
         'shop_profile': '🔐 <b>Профиль ключей</b>\nВведите имя профиля окружения, например <code>SHOP2</code>.',
@@ -1763,7 +1763,7 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
         'shop_delete': '🗑 <b>Удалить магазин</b>\nБезвозвратно удаляет только архивный магазин. Введите: <code>ID DELETE</code>.',
         'user_add': '➕ <b>Дать доступ</b>\nВведите: <code>TELEGRAM_ID viewer|analyst|owner [Имя]</code>',
         'user_remove': '➖ <b>Отозвать доступ</b>\nВведите Telegram ID пользователя.',
-        'export': '📤 <b>Экспорт</b>\nВведите: <code>дней формат</code>\nНапример: <code>30 xlsx</code> или <code>90 csv</code>.',
+        'export': '📤 <b>Скачать данные магазина</b>\nВыберите период и формат кнопками: Excel или архив CSV.',
         'day': '🗓 <b>Отчёт по дате</b>\nВведите дату в формате <code>YYYY-MM-DD</code>.',
         'link': '🔗 <b>Связать листинги</b>\nВведите: <code>INTERNAL_SKU wb:SKU ozon:SKU</code>',
         'cost': '💲 <b>Себестоимость</b>\nВведите: <code>wb|ozon SKU сумма [YYYY-MM-DD]</code>\nПример: <code>wb 12345678 350 2026-09-01</code>',
@@ -1857,8 +1857,6 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
     async def btn_menu_user_add(message: types.Message,state: FSMContext): await employees.add(message,state)
     @dp.message(F.text == COMMAND_BUTTONS['user_remove'])
     async def btn_menu_user_remove(message: types.Message,state: FSMContext): await employees.open(message,state)
-    @dp.message(F.text == COMMAND_BUTTONS['export'])
-    async def btn_menu_export(message: types.Message,state: FSMContext): await launch_input_action(message,state,'export')
     @dp.message(F.text == COMMAND_BUTTONS['day'])
     async def btn_menu_day(message: types.Message,state: FSMContext): await launch_input_action(message,state,'day')
     @dp.message(F.text == COMMAND_BUTTONS['link'])
@@ -2053,45 +2051,19 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
         await send(message,'\n'.join(['📜 <b>Данные в базе</b>']+
             [f'{"✅" if got==total else "⏳"} {day} · источников {got}/{total}' for day,got,total in rows]))
 
+    @dp.message(F.text == COMMAND_BUTTONS['export'])
     @dp.message(F.text == '📤 Экспорт')
-    async def btn_export_picker(message: types.Message):
+    @dp.message(F.text == '📤 Экспорт данных')
+    async def btn_export_picker(message: types.Message, state: FSMContext = None):
         if not allowed(message): return await denied(message)
-        await navigation.show(message,'📤 <b>Экспорт</b>\nЗа какой период?',parse_mode='HTML',reply_markup=export_period_keyboard())
+        if state is not None: await state.clear()
+        await data_views.show_export(message,local_now().date()-timedelta(days=1))
 
     @dp.callback_query(F.data.startswith('export:'))
     async def cb_export(callback: types.CallbackQuery):
-        if callback.from_user is None or not ctx.repository.can_user(callback.from_user.id,ctx.shop_id,'view'):
-            return await callback.answer('Недостаточно прав.',show_alert=True)
-        parts=(callback.data or '').split(':')
-        action=parts[1] if len(parts)>1 else ''
-        if action=='cancel':
-            await callback.answer('Отменено')
-            if callback.message:
-                await show_main_menu(command_copy(callback.message,'start','',actor_user=callback.from_user))
-            return
-        if action=='back':
-            await callback.answer()
-            if callback.message:
-                await callback.message.edit_text('📤 <b>Экспорт</b>\nЗа какой период?',parse_mode='HTML',reply_markup=export_period_keyboard())
-            return
-        if action=='period' and len(parts)==3:
-            try: days=int(parts[2])
-            except ValueError: return await callback.answer('Некорректный период.',show_alert=True)
-            await callback.answer()
-            if callback.message:
-                await callback.message.edit_text(
-                    f'📤 <b>Экспорт за {days} дней</b>\nВыберите формат:',
-                    parse_mode='HTML',reply_markup=export_format_keyboard(days))
-            return
-        if action=='run' and len(parts)==4 and callback.message:
-            try: days=int(parts[2])
-            except ValueError: return await callback.answer('Некорректный период.',show_alert=True)
-            fmt=parts[3]
-            await callback.answer('Формирую файл…')
-            await cmd_export(command_copy(
-                callback.message,'export',f'{days} {fmt}',actor_user=callback.from_user))
-            return
-        await callback.answer('Некорректное действие.',show_alert=True)
+        # Older pickers did not record their originating shop or user. Reopen
+        # instead of applying an old download button to the current selection.
+        await callback.answer('Откройте «Скачать данные магазина» заново.',show_alert=True)
 
     # --- keyboard buttons ------------------------------------------------
     @dp.message(F.text == '📊 Вчера')

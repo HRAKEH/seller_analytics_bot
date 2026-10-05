@@ -264,19 +264,19 @@ async def test_manual_date_and_parameter_values_are_kept(ui):
 @pytest.mark.asyncio
 async def test_export_edits_one_selector_then_keeps_file(ui):
     await press(ui,'📤 Экспорт'); selector=active(ui)
-    await callback(ui,selector,'export:period:7')
+    await callback(ui,selector,'data_view:days:7')
     assert active(ui)==selector
     assert 'Выберите формат' in ui.telegram.messages[(101,selector)].text
-    await callback(ui,selector,'export:run:7:csv')
+    await callback(ui,selector,'data_view:file:csv')
     document=ui.telegram.sequence
     assert ui.telegram.messages[(101,document)].document is not None
-    assert active(ui) is None and (101,selector) not in ui.telegram.messages
+    assert active(ui)==selector and (101,selector) in ui.telegram.messages
     await press(ui,HOME)
-    assert (101,document) in ui.telegram.messages
+    assert (101,document) in ui.telegram.messages and (101,selector) not in ui.telegram.messages
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('picker,data',[('🗓 Другая дата','report_date:cancel'),('📤 Экспорт','export:cancel')])
+@pytest.mark.parametrize('picker,data',[('🗓 Другая дата','report_date:cancel'),('📤 Экспорт','data_view:home')])
 async def test_cancel_returns_to_one_working_main_menu(ui,picker,data):
     await press(ui,picker); selector=active(ui)
     await callback(ui,selector,data)

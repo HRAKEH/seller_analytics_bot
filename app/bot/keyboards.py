@@ -47,7 +47,7 @@ COMMAND_BUTTONS: dict[str, str] = {
     'user_add': '➕ Добавить сотрудника',
     'user_remove': '➖ Отозвать доступ',
     'my_access': '🙋 Мой доступ',
-    'export': '📤 Экспорт данных',
+    'export': '📤 Скачать данные магазина',
     'backup': '💾 Создать backup',
     'backups': '🗂 История backup',
     'restore': '♻️ Восстановить backup',
@@ -232,7 +232,7 @@ def shop_keyboard(role: str | None = 'owner', *, system_owner: bool = False):
 
 def service_keyboard(role: str | None = 'owner', *, system_owner: bool = False):
     role = _role(role)
-    buttons = ['📤 Экспорт']
+    buttons = [COMMAND_BUTTONS['export']]
     if system_owner:
         buttons += [MENU_TECH]
     buttons += [BACK, HOME]
@@ -326,8 +326,8 @@ def export_period_keyboard():
 
 def export_format_keyboard(days: int):
     kb=InlineKeyboardBuilder()
-    kb.button(text='📊 Excel',callback_data=f'export:run:{int(days)}:xlsx')
-    kb.button(text='🗂 CSV ZIP',callback_data=f'export:run:{int(days)}:csv')
+    kb.button(text='📊 Excel (.xlsx)',callback_data=f'export:run:{int(days)}:xlsx')
+    kb.button(text='🗂 Архив CSV (.zip)',callback_data=f'export:run:{int(days)}:csv')
     kb.button(text='⬅️ Назад',callback_data='export:back')
     kb.button(text='❌ Отмена',callback_data='export:cancel')
     kb.adjust(2,2)

@@ -202,7 +202,8 @@ def test_schema18_upgrade_adds_pages_without_changing_daily_snapshots(tmp_path):
             if version==19:break
             migration(conn);conn.execute("INSERT INTO schema_migrations VALUES(?,datetime('now'))",(version,))
         assert 'page' not in [row[1] for row in conn.execute('PRAGMA table_info(telegram_report_cards)')]
-    assert db.initialize_safely()==20
+    from app.storage import LATEST_SCHEMA_VERSION
+    assert db.initialize_safely()==LATEST_SCHEMA_VERSION
     assert list((tmp_path/'backups').glob('pre_migration_v18_*.sqlite3'))
     with db.connect() as conn:
         assert 'page' in [row[1] for row in conn.execute('PRAGMA table_info(telegram_report_cards)')]

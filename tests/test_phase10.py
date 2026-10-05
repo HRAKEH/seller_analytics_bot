@@ -67,8 +67,8 @@ def test_export_xlsx_and_csv_zip(tmp_path):
     ])
     xlsx=export_xlsx(repo,shop.id,date(2026,9,28),1,tmp_path/'export.xlsx')
     wb=load_workbook(xlsx.path,read_only=True)
-    assert {'Summary','Daily','Products','Inventory','Finance','Reconciliation','Costs'} <= set(wb.sheetnames)
-    assert wb['Products'].max_row>=2
+    assert {'О файле','Показатели по дням','Товары','Остатки','Финансовая сводка','Сверка данных','Себестоимость','Описание полей'} <= set(wb.sheetnames)
+    assert wb['Товары'].max_row>=2
     csv_result=export_csv_zip(repo,shop.id,date(2026,9,28),1,tmp_path/'export_csv.zip')
     with zipfile.ZipFile(csv_result.path) as z:
         names=set(z.namelist())

@@ -25,7 +25,9 @@ class ImportSummary:
 
 
 def _headers(row: dict[str,Any]) -> dict[str,Any]:
-    return {str(k or '').strip().lower():v for k,v in row.items()}
+    from .spreadsheet_format import TITLES
+    aliases={TITLES[k].lower():k for k in ('marketplace','marketplace_sku','cost_price','effective_date','internal_sku','name','offer_id')}
+    return {aliases.get(str(k or '').strip().lower(),str(k or '').strip().lower()):v for k,v in row.items()}
 
 
 def _read_csv(path: Path) -> list[dict[str,Any]]:

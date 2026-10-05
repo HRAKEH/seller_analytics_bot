@@ -16,6 +16,7 @@ class AccrualLedger:
     end: str
     loaded_dates: tuple[str,...]
     rows: tuple[dict,...]
+    source_run_ids: tuple[int,...] = ()
 
 
 def _fee_types(node):
@@ -28,7 +29,10 @@ def _fee_types(node):
     return result
 
 
-def build_accrual_ledger(repo, shop_id: int, start: str, end: str) -> AccrualLedger:
+def build_accrual_ledger(repo, shop_id: int, start: str, end: str, *, source_run_ids=None) -> AccrualLedger:
+    pinned = source_run_ids is not None
+    ids = tuple(dict.fromkeys(int(value) for value in (source_run_ids or ())))
+    selection = ' AND sr.id IN (' + ','.join('?' for _ in ids) + ')' if ids else (' AND 0' if pinned else '')
     with repo.db.connect() as c:
         payloads=c.execute('''WITH ranked AS (
             SELECT sr.id,sr.connection_id,sr.data_date,sr.finished_at,rp.payload_json,
@@ -37,8 +41,10 @@ def build_accrual_ledger(repo, shop_id: int, start: str, end: str) -> AccrualLed
             FROM source_runs sr JOIN raw_payloads rp ON rp.source_run_id=sr.id
             JOIN marketplace_connections mc ON mc.id=sr.connection_id
             WHERE mc.shop_id=? AND mc.marketplace='ozon' AND sr.endpoint='finance/accrual/by-day'
-              AND sr.status='success' AND sr.data_date BETWEEN ? AND ?)
-            SELECT * FROM ranked WHERE rn=1 ORDER BY data_date,connection_id''',(shop_id,start,end)).fetchall()
+              AND sr.status='success' AND sr.data_date BETWEEN ? AND ?''' + selection + ''')
+            SELECT * FROM ranked WHERE rn=1 ORDER BY data_date,connection_id''',(shop_id,start,end,*ids)).fetchall()
+    if pinned and {row['id'] for row in payloads} != set(ids):
+        raise ValueError('Сохранённый источник недоступен. Откройте начисления заново.')
     rows=[]
     for source in payloads:
         payload=json.loads(source['payload_json'])
@@ -65,7 +71,7 @@ def build_accrual_ledger(repo, shop_id: int, start: str, end: str) -> AccrualLed
                 'other_components':money_sum([metrics['marketplace_net'],-explained]),
                 'verified_at':source['finished_at'],
             })
-    return AccrualLedger(start,end,tuple(sorted({p['data_date'] for p in payloads})),tuple(rows))
+    return AccrualLedger(start,end,tuple(sorted({p['data_date'] for p in payloads})),tuple(rows),tuple(p['id'] for p in payloads))
 
 
 @readable_dates
@@ -87,11 +93,21 @@ def format_accrual_ledger(ledger: AccrualLedger) -> str:
     return '\n'.join(lines)
 
 
-def export_accrual_ledger(ledger: AccrualLedger, path: Path) -> Path:
+def export_accrual_ledger(ledger: AccrualLedger, path: Path, *, timezone='Europe/Moscow', shop_name='', marketplace='ozon') -> Path:
+    if Path(path).suffix.lower()=='.xlsx':
+        from app.services.accrual_export import export_accrual_xlsx
+        return export_accrual_xlsx(ledger,path,marketplace=marketplace,timezone=timezone,shop_name=shop_name)
     from app.services.exporting import _safe_row
     path=Path(path);path.parent.mkdir(parents=True,exist_ok=True)
     with path.open('w',encoding='utf-8-sig',newline='') as stream:
-        writer=csv.DictWriter(stream,fieldnames=list(ledger.rows[0]),delimiter=';')
+        fields=list(ledger.rows[0]) if ledger.rows else (
+            ['date','source_run_id','report_id','report_type','report_from','report_to','financial_sales',
+             'goods_payable','bank_payment','logistics','storage','acceptance','services','penalties','compensation','verified_at']
+            if marketplace=='wb' else
+            ['date','source_run_id','operation_index','operation_id','unit_number','operation_date','category',
+             'posting_number','sku','fee_type_ids','financial_sales','commission','logistics','services',
+             'ads_already_in_services','marketplace_net','other_components','verified_at'])
+        writer=csv.DictWriter(stream,fieldnames=fields,delimiter=';')
         writer.writeheader()
         writer.writerows(_safe_row(row) for row in ledger.rows)
     return path
