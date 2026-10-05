@@ -5,6 +5,7 @@ from datetime import date, datetime, timedelta
 from typing import Iterable
 import json
 import logging
+import asyncio
 
 from app.integrations import OzonClient, WildberriesClient, OzonPerformanceClient, FetchResult
 from app.integrations.wildberries import decode_wb_token
@@ -33,6 +34,11 @@ from .inbound import normalize_wb_supply, normalize_ozon_order
 from .promotions import normalize_wb_promotions, normalize_ozon_promotions, PromotionNormalizationError, wb_promotion_finished
 from .ozon_dates import MOSCOW, posting_day, posting_range
 from .wb_funnel import normalize_wb_funnel
+from .daily_events import (
+    WB_CANCELS, OZON_RETURNS, OZON_REALIZATION, DailyEventError,
+    split_event_rows, normalize_ozon_realization_day, normalize_wb_sales_day, wb_event_day,
+    normalize_wb_cancellations_day, normalize_ozon_returns_day,
+)
 
 log=logging.getLogger(__name__)
 
@@ -48,6 +54,7 @@ class CollectionOutcome:
 
 class CollectionService:
     _shared_wb_auto_disabled: dict[str,set[str]] = {}
+    _shared_ozon_event_disabled: dict[str, set[str]] = {}
 
     def __init__(self, repository: Repository, *, ozon: OzonClient | None = None,
                  wildberries: WildberriesClient | None = None, ozon_performance: OzonPerformanceClient | None = None):
@@ -61,6 +68,8 @@ class CollectionService:
                 getattr(wildberries,'rate_scope',f'instance:{id(wildberries)}'),set())
         else:
             self._auto_disabled_endpoints=set()
+        scope=getattr(ozon,'rate_scope',None)
+        self._event_disabled=self._shared_ozon_event_disabled.setdefault(scope,set()) if scope else set()
 
     async def _ozon_analytics_all(self, payload: dict) -> FetchResult:
         if self.ozon is None:
@@ -562,23 +571,128 @@ class CollectionService:
             return [self._failure(connection_id,endpoint,start.isoformat(),'wildberries',result)]
         try:
             observations=normalize_wb_sales_events(result.data,start_date=start.isoformat(),end_date=end.isoformat())
-        except ReconciliationNormalizationError as exc:
-            rid=self.repo.record_failure(connection_id,endpoint,start.isoformat(),f'Normalization: {exc}',attempts=result.attempts)
-            return [CollectionOutcome('wildberries',start.isoformat(),False,rid,str(exc))]
+            normalize_wb_sales_day(result.data,start.isoformat())
+        except (ReconciliationNormalizationError,DailyEventError) as exc:
+            failed=[]
+            for offset in range((end-start).days+1):
+                ds=(start+timedelta(days=offset)).isoformat()
+                rid=self.repo.record_failure(connection_id,endpoint,ds,f'Normalization: {exc}',attempts=result.attempts)
+                failed.append(CollectionOutcome('wildberries',ds,False,rid,str(exc)))
+            return failed
         grouped: dict[str,list[CommerceObservation]]={}
         raw_by_day: dict[str,list[dict]]={}
         for obs in observations: grouped.setdefault(obs.data_date,[]).append(obs)
         for row in result.data or []:
-            ds=str(row.get('date') or '')[:10]
-            if start.isoformat() <= ds <= end.isoformat(): raw_by_day.setdefault(ds,[]).append(row)
+            ds=wb_event_day(row.get('date'))
+            if ds is not None and start.isoformat() <= ds <= end.isoformat():raw_by_day.setdefault(ds,[]).append(row)
         outcomes=[]; current=start
         while current <= end:
             ds=current.isoformat(); raw=raw_by_day.get(ds,[])
+            # Validate event-day quantities/prices separately from reconciliation.
+            # Unknown event identities must not become a successful zero day.
+            try:
+                normalize_wb_sales_day(raw, ds)
+            except DailyEventError as exc:
+                rid=self.repo.record_failure(connection_id,endpoint,ds,str(exc),attempts=result.attempts)
+                outcomes.append(CollectionOutcome('wildberries',ds,False,rid,str(exc)))
+                current += timedelta(days=1)
+                continue
             rid=self.repo.record_success(connection_id,endpoint,ds,raw,[],attempts=result.attempts)
             self._save_commerce_observations(shop_id=shop_id,connection_id=connection_id,
                 marketplace='wildberries',source_run_id=rid,observations=grouped.get(ds,[]))
             outcomes.append(CollectionOutcome('wildberries',ds,True,rid,'sales/returns loaded'))
             current += timedelta(days=1)
+        return outcomes
+
+    async def collect_daily_events_range(self, *, start: date, end: date,
+                                         wb_connection_id: int | None = None,
+                                         ozon_connection_id: int | None = None) -> list[CollectionOutcome]:
+        """Independent event snapshots; denied optional APIs never retry orders.
+
+        WB sales are already collected by collect_wb_sales_range. Here we add
+        cancellation dates, Ozon customer returns and its daily realization.
+        """
+        if end < start or (end-start).days >= 31:
+            raise ValueError('События за день: период от 1 до 31 дня')
+        days = [start + timedelta(days=i) for i in range((end-start).days+1)]
+        outcomes = []
+
+        def failed_range(connection_id, endpoint, market, result):
+            for day in days:
+                outcomes.append(self._failure(connection_id, endpoint, day.isoformat(), market, result))
+
+        async def collect_range(connection_id, endpoint, market, client, method, *args):
+            if client is None or getattr(client, method, None) is None:
+                return  # An uninjected optional client remains visibly missing.
+            if market == 'ozon' and endpoint in self._event_disabled:
+                result = FetchResult.failure(market, 'Нет доступа к источнику событий Ozon; проверьте права API.', 403, 0)
+            else:
+                try:
+                    result = await getattr(client, method)(*args)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    log.exception('Daily event source %s failed independently',endpoint)
+                    result = FetchResult.failure(market, 'Не удалось загрузить источник событий.', None, 1)
+            if not result.ok:
+                if market == 'ozon' and result.status_code in {401, 402, 403}:
+                    self._event_disabled.add(endpoint)
+                failed_range(connection_id, endpoint, market, result)
+                return
+            try:
+                grouped, undated = split_event_rows(result.data, endpoint, start.isoformat(), end.isoformat())
+            except DailyEventError as exc:
+                failed_range(connection_id, endpoint, market, FetchResult.failure(market, str(exc), 200, result.attempts))
+                return
+            for day in days:
+                ds = day.isoformat()
+                key = 'orders' if endpoint == WB_CANCELS else 'returns'
+                payload = {key: grouped.get(ds, []), 'undated_rows': undated}
+                reading = (normalize_wb_cancellations_day(payload, ds) if endpoint == WB_CANCELS
+                           else normalize_ozon_returns_day(payload, ds))
+                complete = reading.units is not None
+                rid = self.repo.record_success(connection_id, endpoint, ds, payload, [], attempts=result.attempts,
+                    status='success' if complete else 'partial', error=reading.warning)
+                outcomes.append(CollectionOutcome(market, ds, complete, rid, reading.warning or 'daily events loaded'))
+
+        if wb_connection_id is not None:
+            await collect_range(wb_connection_id, WB_CANCELS, 'wildberries', self.wb,
+                                'orders_since', start.isoformat())
+        if ozon_connection_id is not None:
+            since, to = posting_range(start, end)
+            await collect_range(ozon_connection_id, OZON_RETURNS, 'ozon', self.ozon,
+                                'customer_returns_all', since, to)
+            if self.ozon is not None and getattr(self.ozon, 'realization_day', None) is not None:
+                today = datetime.now(MOSCOW).date()
+                for day in days:
+                    if not 0 <= (today-day).days <= 31:
+                        result = FetchResult.failure('ozon', 'Ozon: дневная реализация доступна только за последние 32 календарных дня.', None, 0)
+                    elif OZON_REALIZATION in self._event_disabled:
+                        result = FetchResult.failure('ozon', 'Ozon: нет доступа к дневной реализации; требуется Premium Plus/Pro и права API.', 403, 0)
+                    else:
+                        try:
+                            result = await self.ozon.realization_day(day)
+                        except asyncio.CancelledError:
+                            raise
+                        except Exception:
+                            log.exception('Daily Ozon realization source failed independently')
+                            result = FetchResult.failure('ozon', 'Не удалось загрузить дневную реализацию.', None, 1)
+                    ds = day.isoformat()
+                    if not result.ok:
+                        if result.status_code in {401, 402, 403}:
+                            self._event_disabled.add(OZON_REALIZATION)
+                        outcomes.append(self._failure(ozon_connection_id, OZON_REALIZATION, ds, 'ozon', result))
+                        continue
+                    try:
+                        reading=normalize_ozon_realization_day(result.data)[0]
+                    except DailyEventError as exc:
+                        result = FetchResult.failure('ozon', str(exc), 200, result.attempts)
+                        outcomes.append(self._failure(ozon_connection_id, OZON_REALIZATION, ds, 'ozon', result))
+                        continue
+                    complete=reading.units is not None
+                    rid = self.repo.record_success(ozon_connection_id, OZON_REALIZATION, ds, result.data, [], attempts=result.attempts,
+                        status='success' if complete else 'partial',error=reading.warning)
+                    outcomes.append(CollectionOutcome('ozon', ds, complete, rid, reading.warning or 'daily realization loaded'))
         return outcomes
 
     async def collect_inventory(self, *, shop_id: int, wb_connection_id: int | None = None,

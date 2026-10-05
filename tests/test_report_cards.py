@@ -167,11 +167,11 @@ async def test_expand_and_collapse_edit_one_message_keep_snapshot_and_only_colla
     await tap(ui,message,section)
     expanded=ui.telegram.messages[(101,message.message_id)]
     assert expanded.text.startswith(summary+'\n\n') and '999 шт.' not in expanded.text
-    assert labels(expanded)==['Свернуть'] and stored(ui,message)['section']==section
+    assert labels(expanded)==['Свернуть','🗓 Выбрать дату',HOME] and stored(ui,message)['section']==section
     await tap(ui,message,'collapse')
     collapsed=ui.telegram.messages[(101,message.message_id)]
     assert collapsed.text==summary
-    assert labels(collapsed)==['Подробнее','Начисления','Обновить']
+    assert labels(collapsed)==['Подробнее','Начисления','Обновить','🗓 Выбрать дату',HOME]
     assert sum(isinstance(m,EditMessageText) for m in ui.telegram.methods)==2
     assert not any(isinstance(m,SendMessage) for m in ui.telegram.methods)
 
@@ -219,7 +219,7 @@ async def test_refresh_uses_card_date_edits_values_without_new_messages_or_chang
     async def refresh(start,end):
         assert start==end==DAY
         during=ui.telegram.messages[(101,message.message_id)]
-        assert labels(during)==['Подробнее','Начисления','Обновить'] and 'Обновляю' in during.text
+        assert labels(during)==['Подробнее','Начисления','Обновить','🗓 Выбрать дату',HOME] and 'Обновляю' in during.text
         orders(ui,units=131,revenue=90000,revision=2)
         return (RefreshStage('orders','Заказы WB',True),)
     ui.ctx.refresh_reports=AsyncMock(side_effect=refresh)
@@ -227,7 +227,7 @@ async def test_refresh_uses_card_date_edits_values_without_new_messages_or_chang
     await tap(ui,message,'refresh')
     result=ui.telegram.messages[(101,message.message_id)]
     assert '131 шт. · 90 000 ₽' in result.text and '01.10.2026' in result.text
-    assert labels(result)==['Подробнее','Начисления','Обновить']
+    assert labels(result)==['Подробнее','Начисления','Обновить','🗓 Выбрать дату',HOME]
     assert not any(isinstance(m,SendMessage) for m in ui.telegram.methods)
     ui.ctx.refresh_reports.assert_awaited_once_with(DAY,DAY)
 
@@ -255,19 +255,19 @@ async def test_duplicate_refresh_does_not_collect_twice_and_view_changes_work_du
     ui.ctx.refresh_reports.assert_awaited_once()
     result=ui.telegram.messages[(101,message.message_id)]
     assert stored(ui,message)['section']==('summary' if collapse else 'details')
-    assert labels(result)==(['Подробнее','Начисления','Обновить'] if collapse else ['Свернуть'])
+    assert labels(result)==(['Подробнее','Начисления','Обновить','🗓 Выбрать дату',HOME] if collapse else ['Свернуть','🗓 Выбрать дату',HOME])
     assert '131 шт.' in result.text
 
 
 @pytest.mark.asyncio
 async def test_viewer_can_expand_but_cannot_refresh_even_with_forged_callback(ui):
     orders(ui); message=await card(ui,user=102)
-    assert labels(message)==['Подробнее','Начисления']
+    assert labels(message)==['Подробнее','Начисления','🗓 Выбрать дату',HOME]
     ui.ctx.refresh_reports=AsyncMock()
     await tap(ui,message,'details',user=102); await tap(ui,message,'collapse',user=102)
     await tap(ui,message,'refresh',user=102)
     ui.ctx.refresh_reports.assert_not_awaited()
-    assert labels(ui.telegram.messages[(102,message.message_id)])==['Подробнее','Начисления']
+    assert labels(ui.telegram.messages[(102,message.message_id)])==['Подробнее','Начисления','🗓 Выбрать дату',HOME]
     assert any(isinstance(m,AnswerCallbackQuery) and m.show_alert for m in ui.telegram.methods)
 
 
@@ -349,7 +349,7 @@ async def test_failed_or_skipped_refresh_keeps_values_and_does_not_claim_complet
     await tap(ui,message,'refresh')
     result=ui.telegram.messages[(101,message.message_id)]
     assert '130 шт. · 89 503 ₽' in result.text
-    assert '✅' not in result.text and 'do-not-display' not in result.text
+    assert '✅ Подключённые источники обновлены.' not in result.text and 'do-not-display' not in result.text
     # The in-process guard is released after every result.
     await tap(ui,message,'refresh')
     assert ui.ctx.refresh_reports.await_count==2
@@ -488,7 +488,7 @@ async def test_scheduler_sender_prepares_one_snapshot_and_sends_one_card_to_each
     prepare.assert_awaited_once()
     for method in sends:
         assert [b.text for row in method.reply_markup.inline_keyboard for b in row]==(
-            ['Подробнее','Начисления','Обновить'] if method.chat_id==101 else ['Подробнее','Начисления'])
+            ['Подробнее','Начисления','Обновить','🗓 Выбрать дату',HOME] if method.chat_id==101 else ['Подробнее','Начисления','🗓 Выбрать дату',HOME])
 
 
 def test_schema17_upgrade_keeps_navigation_and_creates_persistent_report_snapshots(tmp_path):

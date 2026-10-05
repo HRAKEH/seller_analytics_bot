@@ -6,6 +6,7 @@ from app.storage import Repository, MarketplaceConnection
 from app.services.buyer_prices import BuyerPriceTotals, build_buyer_prices
 from app.services.currency import CurrencyRateError, ensure_cbr_rates
 from app.services.ozon_buyouts import BuyoutCheck, build_buyout_check
+from app.services.daily_events import DailyEvents, build_daily_events
 
 @dataclass(frozen=True)
 class MarketplaceDaily:
@@ -23,6 +24,7 @@ class MarketplaceDaily:
     finance_freshness: str | None = None
     buyer_prices: BuyerPriceTotals | None = None
     buyout_check: BuyoutCheck | None = None
+    events: DailyEvents | None = None
 
 @dataclass(frozen=True)
 class DailyReport:
@@ -88,6 +90,7 @@ def build_daily_report(repo: Repository, shop_id: int, day: date) -> DailyReport
             build_buyer_prices(repo, conn.id, day, units['value'] if units else None)
             if conn.marketplace == 'ozon' else None,
             build_buyout_check(repo,conn.id,day) if conn.marketplace=='ozon' else None,
+            build_daily_events(repo, conn.id, conn.marketplace, day),
         ))
     return DailyReport(ds, tuple(sources))
 

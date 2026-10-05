@@ -11,6 +11,8 @@ from .daily import DailyReport
 from .formatter import num, source_name
 from app.services.ozon_buyouts import format_buyout_check
 from .text import paginate_report_html, utf16_length
+from .dates import display_time
+from app.services.daily_events import DayEvent, build_daily_events
 
 
 @dataclass(frozen=True)
@@ -32,6 +34,33 @@ def _safe(value, limit: int = 150) -> str:
 
 def _day(value: str) -> str:
     return date.fromisoformat(value).strftime('%d.%m.%Y')
+
+
+def _event_line(label: str, event: DayEvent) -> str:
+    if event.units is None:
+        status = ('⏳ неполные данные' if event.available_units else
+                  '⏳ источник недоступен' if event.warning and 'доступ' in event.warning else
+                  '⏳ нет подтверждённых данных' if event.warning else '⏳ данные не загружены')
+        return label + ': ' + status
+    text = label + f': <b>{event.units} шт.'
+    if event.amount is not None:
+        text += ' · ' + rubles(event.amount)
+    elif not label.startswith('❌'):
+        text += ' · ⏳ сумма не подтверждена'
+    return text + '</b>'
+
+
+def _event_details(label: str, event: DayEvent, *, tz: str) -> list[str]:
+    lines = [label + ': ' + _safe(event.source, 160) + '.']
+    if event.units is None and event.available_units:
+        lines.append(f'Подтверждено в доступной части: {event.available_units} шт.; это неполный итог.')
+    if event.price_note:
+        lines.append(_safe(event.price_note, 240))
+    if event.freshness:
+        lines.append('Проверено: ' + display_time(event.freshness, tz=tz))
+    if event.warning:
+        lines.append('⚠️ ' + _safe(event.warning, 450))
+    return lines
 
 
 def _orders_total(report: DailyReport) -> tuple[Decimal | None, bool]:
@@ -77,7 +106,7 @@ def _wb_period(repo, metric) -> str:
 def format_daily_card(repo, shop_id: int, report: DailyReport) -> DailyCardText:
     shop=repo.get_shop(shop_id)
     pref=repo.get_shop_preferences(shop_id)
-    summary=[f'📊 <b>Заказы · {_day(report.day)}</b>']
+    summary=[f'📊 <b>Отчёт за {_day(report.day)}</b>']
     if shop:summary.append('🏪 '+_safe(shop.name,80))
     if pref and pref.demo_mode:summary.append('🧪 <b>Учебные данные · DEMO</b>')
     summary.append('')
@@ -93,6 +122,8 @@ def format_daily_card(repo, shop_id: int, report: DailyReport) -> DailyCardText:
     accruals=['💰 <b>Начисления</b>',
               'Финансовые операции и заказы относятся к разным датам.']
     sources=sorted(report.sources,key=lambda s: (s.marketplace!='ozon',s.connection_id))
+    event_freshness=[]
+    tz=pref.timezone if pref else 'Europe/Moscow'
     for s in sources:
         label=source_name(s.marketplace)
         summary.extend(['',label])
@@ -104,13 +135,13 @@ def format_daily_card(repo, shop_id: int, report: DailyReport) -> DailyCardText:
             converted=prices.rub_total if prices else None
             if s.units is not None and converted is not None:
                 approximate='≈ ' if prices.foreign_currencies else ''
-                summary.append(f'<b>{units} · {approximate}{rubles(converted)}</b>')
+                summary.append(f'🛒 Заказано: <b>{units} · {approximate}{rubles(converted)}</b>')
                 currencies=', '.join(prices.foreign_currencies)
-                summary.append(f'По цене покупателя, с пересчётом {currencies} по ЦБ.' if currencies
-                               else 'По цене покупателя.')
+                details.append(f'Заказы по цене покупателя, с пересчётом {currencies} по ЦБ.' if currencies
+                               else 'Заказы по цене покупателя.')
             else:
-                summary.append('<b>'+units+'</b>')
-                summary.append('По цене покупателя: ⏳ цены пока неполные.' if not prices or not prices.complete
+                summary.append('🛒 Заказано: <b>'+units+'</b> · ⏳ сумма неполная.')
+                details.append('По цене покупателя: ⏳ цены пока неполные.' if not prices or not prices.complete
                                else 'По цене покупателя: ⏳ нет полного итога в рублях.')
             details.append('Источник заказов: аналитика Ozon.')
             if s.ordered_revenue is not None:
@@ -148,11 +179,10 @@ def format_daily_card(repo, shop_id: int, report: DailyReport) -> DailyCardText:
         else:
             if s.units is not None and s.ordered_revenue is not None:
                 precision=0 if float(s.ordered_revenue).is_integer() else 2
-                summary.append(f'<b>{units} · {rubles(s.ordered_revenue,precision=precision)}</b>')
+                summary.append(f'🛒 Заказано: <b>{units} · {rubles(s.ordered_revenue,precision=precision)}</b>')
             else:
-                summary.append('<b>'+units+'</b>')
-                if s.ordered_revenue is None:summary.append('⏳ Сумма заказов не загружена.')
-            summary.append('Стоимость заказов до удержаний.')
+                summary.append('🛒 Заказано: <b>'+units+'</b> · ⏳ сумма неполная.')
+            details.append('Стоимость заказов до удержаний.')
             source='Воронка продаж WB' if str(s.order_source or '').startswith('analytics/orders') else 'Статистика WB, резервный источник'
             details.append('Источник заказов: '+source+'.')
             finance=repo.latest_metric(s.connection_id,report.day,'bank_payment')
@@ -167,7 +197,18 @@ def format_daily_card(repo, shop_id: int, report: DailyReport) -> DailyCardText:
                 accruals.append('К перечислению за товар: '+rubles(goods['value'])+'.')
                 accruals.append('После комиссии и эквайринга, до остальных расходов; это отдельный показатель.')
                 if not finance:accruals.append(_wb_period(repo,goods))
-        if s.cancellations is not None:details.append('Отмены: '+num(s.cancellations)+' шт.')
+        events=s.events or build_daily_events(repo,s.connection_id,s.marketplace,date.fromisoformat(report.day))
+        for label,event in (('✅ Выкуплено',events.buyouts),('↩️ Возвращено',events.returns),
+                            ('❌ Отменено',events.cancellations)):
+            summary.append(_event_line(label,event))
+            details.extend(_event_details(label,event,tz=tz))
+            if event.freshness:event_freshness.append(event.freshness)
+        if s.marketplace=='ozon':
+            details.append('Выкуплено: по дневному отчёту реализации Ozon. Клиентские возвраты: '
+                           'после вручения, по дате возврата покупателем; отказы при вручении сюда не входят.')
+        if s.cancellations is not None:
+            details.append('Отмены среди заказов, созданных в этот день: '+num(s.cancellations)+
+                           ' шт. Это другой показатель; он не подставляется в строку «Отменено».')
         if s.freshness:details.append('Заказы обновлены: '+_safe(s.freshness,50))
         if s.warning:details.append('⚠️ Последняя загрузка заказов не удалась; показаны сохранённые данные.')
         if finance:
@@ -177,7 +218,10 @@ def format_daily_card(repo, shop_id: int, report: DailyReport) -> DailyCardText:
         summary.append('\n⏳ Подключите маркетплейсы и загрузите данные.')
         details.append('Нет подключённых источников для этого магазина.')
         accruals.append('Нет подключённых финансовых источников.')
-    summary.extend(['','Данные предварительные.'])
+    summary.extend(['','ℹ️ Каждый показатель относится к дате своего события. '
+                    'Начисления после удержаний открываются отдельно.','Данные предварительные.'])
+    if event_freshness:
+        summary.append('🕘 События проверены: '+display_time(min(event_freshness),tz=tz))
     if any(s.warning for s in sources):summary.append('⚠️ Есть сбой загрузки — см. «Подробнее».')
     details.extend(['','Общий итог — сумма показанных цен: WB до удержаний, Ozon по цене покупателя. '
         'При пересчёте валют это оценка по ЦБ. Начисления после удержаний смотрите отдельно.'])

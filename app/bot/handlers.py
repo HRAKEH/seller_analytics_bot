@@ -304,7 +304,9 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
 
     @dp.callback_query(F.data.startswith('daily_card:'))
     async def cb_daily_card(callback: types.CallbackQuery):
-        await daily_cards.handle(callback)
+        async def home(cb):
+            await show_main_menu(command_copy(cb.message,'start','',actor_user=cb.from_user))
+        await daily_cards.handle(callback,on_home=home)
 
     def settings_text(*, technical=False) -> str:
         p=pref(); shop=ctx.repository.get_shop(ctx.shop_id)

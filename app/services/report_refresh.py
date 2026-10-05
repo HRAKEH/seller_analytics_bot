@@ -64,6 +64,11 @@ async def refresh_reports(ctx, start: date, end: date, progress=None, *, include
         if ctx.wb_connection_id is not None:
             await run('sales','Продажи и возвраты WB',lambda:ctx.collector.collect_wb_sales_range(
                 shop_id=ctx.shop_id,connection_id=ctx.wb_connection_id,start=start,end=end))
+        events=getattr(ctx.collector,'collect_daily_events_range',None)
+        if events is not None:
+            await run('events','Выкупы, клиентские возвраты и даты отмен',lambda:events(
+                start=start,end=end,wb_connection_id=ctx.wb_connection_id,
+                ozon_connection_id=ctx.ozon_connection_id))
     return tuple(stages)
 
 

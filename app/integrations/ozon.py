@@ -87,6 +87,53 @@ class OzonClient(MarketplaceClient):
     async def fbs_postings(self, payload: dict) -> FetchResult:
         return await self.request('POST', '/v4/posting/fbs/list', json=payload, headers=self._headers(), rate_key='postings', min_interval=1.0)
 
+    async def realization_day(self, day: date) -> FetchResult:
+        """Daily realization is a separate Premium API, not order analytics."""
+        return await self.request('POST', '/v1/finance/realization/by-day',
+            json={'day': day.day, 'month': day.month, 'year': day.year},
+            headers=self._headers(), rate_key='realization', min_interval=1.0)
+
+    async def customer_returns_all(self, since: str, to: str, *, max_pages: int = 500) -> FetchResult:
+        """FBO and FBS returns by customer return date, with last_id pagination.
+
+        The normalizer distinguishes ClientReturn from refusals/cancellations;
+        a logistics movement or a status-change date is not a customer return.
+        """
+        last_id = 0
+        seen = set()
+        rows = []
+        attempts = 0
+        for _ in range(max_pages):
+            result = await self.request('POST', '/v1/returns/list',
+                json={'filter': {'logistic_return_date': {'time_from': since, 'time_to': to}},
+                      'limit': 500, 'last_id': last_id},
+                headers=self._headers(), rate_key='returns', min_interval=1.0)
+            attempts += result.attempts
+            if not result.ok:
+                return FetchResult.failure(self.source, result.error or 'Ozon returns error',
+                    result.status_code, attempts)
+            body = result.data if isinstance(result.data, dict) else {}
+            page = body.get('returns')
+            has_next = body.get('has_next')
+            if (not isinstance(page, list) or any(not isinstance(row, dict) for row in page)
+                    or not isinstance(has_next, bool)):
+                return FetchResult.failure(self.source, 'Ozon returns has no complete returns/has_next response',
+                    result.status_code, attempts)
+            rows.extend(page)
+            if not has_next:
+                return FetchResult.success(self.source, {'returns': rows, 'has_next': False},
+                    result.status_code or 200, attempts)
+            try:
+                cursor = int(page[-1]['id'])
+            except (ValueError, TypeError, KeyError, IndexError):
+                cursor = 0
+            if cursor <= 0 or cursor == last_id or cursor in seen:
+                return FetchResult.failure(self.source, 'Ozon returns cursor did not advance',
+                    result.status_code, attempts)
+            seen.add(cursor)
+            last_id = cursor
+        return FetchResult.failure(self.source, 'Ozon returns pagination safety limit reached', 200, attempts)
+
     async def fbo_postings(self, payload: dict) -> FetchResult:
         return await self.request('POST', '/v3/posting/fbo/list', json=payload, headers=self._headers(), rate_key='postings', min_interval=1.0)
 

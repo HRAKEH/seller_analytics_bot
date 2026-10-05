@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import hashlib
+import calendar
+from datetime import date
 from app.access import action_permission, can_role, normalize_role
 
 from aiogram.utils.keyboard import ReplyKeyboardBuilder, InlineKeyboardBuilder
@@ -19,13 +21,40 @@ def daily_card_keyboard(section: str = 'summary', *, can_refresh: bool = True, c
             builder.button(text=f'{page+1}/{pages}',callback_data=f'daily_card:page:{page}')
             builder.button(text='▶️',callback_data=f'daily_card:page:{min(pages-1,page+1)}')
         builder.button(text='Свернуть',callback_data='daily_card:collapse')
-        builder.adjust(3,1) if pages>1 else builder.adjust(1)
+        builder.button(text='🗓 Выбрать дату',callback_data='daily_card:date')
+        builder.button(text=HOME,callback_data='daily_card:home')
+        builder.adjust(3,1,2) if pages>1 else builder.adjust(1,2)
     else:
         builder.button(text='Подробнее',callback_data='daily_card:details')
         if can_finance:builder.button(text='Начисления',callback_data='daily_card:accruals')
         if can_refresh:builder.button(text='Обновить',callback_data='daily_card:refresh')
-        builder.adjust(3)
+        builder.button(text='🗓 Выбрать дату',callback_data='daily_card:date')
+        builder.button(text=HOME,callback_data='daily_card:home')
+        builder.adjust(2 if can_finance else 1,2 if can_refresh else 1,1)
     return builder.as_markup()
+
+
+def daily_date_keyboard(month: date, today: date):
+    """Calendar stays attached to the persisted daily card and its shop."""
+    kb=InlineKeyboardBuilder()
+    previous=(month.replace(day=1)-date.resolution).replace(day=1)
+    following=(month.replace(day=28)+4*date.resolution).replace(day=1)
+    names=('Январь','Февраль','Март','Апрель','Май','Июнь','Июль','Август','Сентябрь','Октябрь','Ноябрь','Декабрь')
+    kb.button(text='◀️',callback_data=f'daily_card:month:{previous:%Y%m}' if previous.year>=2000 else 'daily_card:noop')
+    kb.button(text=f'{names[month.month-1]} {month.year}',callback_data='daily_card:noop')
+    kb.button(text='▶️',callback_data=f'daily_card:month:{following:%Y%m}' if following<today else 'daily_card:noop')
+    for day in ('Пн','Вт','Ср','Чт','Пт','Сб','Вс'):
+        kb.button(text=day,callback_data='daily_card:noop')
+    weeks=calendar.monthcalendar(month.year,month.month)
+    for week in weeks:
+        for number in week:
+            selected=month.replace(day=number) if number else None
+            kb.button(text=str(number) if number else '·',callback_data=(
+                f'daily_card:day:{selected:%Y%m%d}' if selected and selected<today else 'daily_card:noop'))
+    kb.button(text='⬅️ К отчёту',callback_data='daily_card:collapse')
+    kb.button(text=HOME,callback_data='daily_card:home')
+    kb.adjust(3,7,*([7]*len(weeks)),2)
+    return kb.as_markup()
 
 
 # One canonical Telegram button for every public slash command.  The mapping is

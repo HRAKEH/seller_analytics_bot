@@ -302,7 +302,8 @@ class Repository:
 
     def save_report_card(self, bot_id: int, chat_id: int, message_id: int, *, shop_id: int,
                          report_day: str, summary_html: str, details_html: str,
-                         accruals_html: str, section: str = 'summary', status_note: str = '', page: int = 0) -> None:
+                         accruals_html: str, section: str = 'summary', status_note: str = '', page: int = 0,
+                         allow_date_change: bool = False) -> None:
         if section not in {'summary','details','accruals'}:
             raise ValueError('invalid report section')
         date.fromisoformat(report_day)
@@ -313,13 +314,14 @@ class Repository:
                  accruals_html,section,status_note,created_at,updated_at,page)
                 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(bot_id,chat_id,message_id) DO UPDATE SET
+                    report_day=excluded.report_day,
                     summary_html=excluded.summary_html,details_html=excluded.details_html,
                     accruals_html=excluded.accruals_html,section=excluded.section,
                     status_note=excluded.status_note,updated_at=excluded.updated_at,page=excluded.page
                 WHERE telegram_report_cards.shop_id=excluded.shop_id
-                  AND telegram_report_cards.report_day=excluded.report_day''',
+                  AND (telegram_report_cards.report_day=excluded.report_day OR ?)''',
                 (bot_id,chat_id,message_id,shop_id,report_day,summary_html,details_html,
-                 accruals_html,section,status_note,now,now,max(0,int(page))))
+                 accruals_html,section,status_note,now,now,max(0,int(page)),int(allow_date_change)))
 
     def save_paged_report(self, bot_id: int, chat_id: int, message_id: int, *, shop_id: int,
                           user_id: int, permission: str, system_owner_only: bool,

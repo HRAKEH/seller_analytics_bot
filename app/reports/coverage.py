@@ -2,7 +2,13 @@
 from dataclasses import dataclass
 from datetime import date, timedelta
 from html import escape
+import json
 from .dates import readable_dates
+from app.services.daily_events import (
+    WB_SALES, WB_CANCELS, OZON_RETURNS, OZON_REALIZATION, DailyEventError,
+    normalize_wb_sales_day, normalize_wb_cancellations_day,
+    normalize_ozon_returns_day, normalize_ozon_realization_day,
+)
 
 
 @dataclass(frozen=True)
@@ -15,6 +21,7 @@ class SourceCoverage:
     missing_dates: tuple[str,...] = ()
     failed_dates: tuple[str,...] = ()
     partial_dates: tuple[str,...] = ()
+    note: str | None = None
 
 
 def build_source_coverage(repo, shop_id: int, start: str, end: str) -> tuple[SourceCoverage,...]:
@@ -49,7 +56,7 @@ def build_source_coverage(repo, shop_id: int, start: str, end: str) -> tuple[Sou
                 for r in attempts:
                     ep=r['endpoint']
                     family=('Заказы' if ep.startswith(('statistics/orders','analytics/orders'))
-                            else 'Финансы' if ep.startswith('finance/') and ep!='finance/products/buyout'
+                            else 'Финансы' if ep.startswith('finance/') and ep not in {'finance/products/buyout',OZON_REALIZATION}
                             else 'Рекламная статистика' if ep.startswith(('promotion/','ads/','performance/')) else None)
                     if family==label:
                         primary_funnel=label=='Заказы' and conn.marketplace=='wildberries' and any(
@@ -60,6 +67,43 @@ def build_source_coverage(repo, shop_id: int, start: str, end: str) -> tuple[Sou
                 partial=tuple(sorted({r['data_date'] for r in selected if r['status']=='partial'}))
                 result.append(SourceCoverage(conn.marketplace,label,len(present),len(dates),min(checked) if checked else None,
                     tuple(d for d in dates if d not in present),failed,partial))
+            snapshots=c.execute('''WITH ranked AS (
+                SELECT sr.*,rp.payload_json,
+                  ROW_NUMBER() OVER(PARTITION BY sr.endpoint,sr.data_date ORDER BY sr.finished_at DESC,sr.id DESC) rn
+                FROM source_runs sr JOIN raw_payloads rp ON rp.source_run_id=sr.id
+                WHERE sr.connection_id=? AND sr.data_date BETWEEN ? AND ?
+                  AND sr.status IN ('success','partial') AND sr.endpoint IN (?,?,?,?))
+                SELECT * FROM ranked WHERE rn=1''',
+                (conn.id,start,end,WB_SALES,WB_CANCELS,OZON_RETURNS,OZON_REALIZATION)).fetchall()
+            definitions=(
+                (('Выкупы по дате события',WB_SALES,0),('Клиентские возвраты',WB_SALES,1),('Отмены по дате события',WB_CANCELS,None))
+                if conn.marketplace=='wildberries' else
+                (('Выкупы: реализация за день',OZON_REALIZATION,0),('Клиентские возвраты',OZON_RETURNS,None)))
+            for label,endpoint,index in definitions:
+                present=set();partial=set();checked=[]
+                for row in snapshots:
+                    if row['endpoint']!=endpoint:continue
+                    ds=row['data_date']
+                    try:
+                        payload=json.loads(row['payload_json'])
+                        if endpoint==WB_SALES:reading=normalize_wb_sales_day(payload,ds)[index]
+                        elif endpoint==WB_CANCELS:reading=normalize_wb_cancellations_day(payload,ds)
+                        elif endpoint==OZON_RETURNS:reading=normalize_ozon_returns_day(payload,ds)
+                        else:reading=normalize_ozon_realization_day(payload)[index]
+                        if row['status']=='success' and reading.units is not None:
+                            present.add(ds);checked.append(row['finished_at'])
+                        else:partial.add(ds)
+                    except (DailyEventError,ValueError,TypeError,KeyError):partial.add(ds)
+                latest={}
+                for row in attempts:
+                    if row['endpoint']==endpoint:latest.setdefault(row['data_date'],row)
+                failed=tuple(ds for ds in dates if ds in latest and latest[ds]['status']=='failed')
+                note='Дневная реализация требует доступа Premium Plus/Pro; отсутствие доступа не означает ноль выкупов.' if endpoint==OZON_REALIZATION else None
+                result.append(SourceCoverage(conn.marketplace,label,len(present),len(dates),min(checked) if checked else None,
+                    tuple(ds for ds in dates if ds not in present),failed,tuple(sorted(partial)),note))
+            if conn.marketplace=='ozon':
+                result.append(SourceCoverage('ozon','Отмены по дате события',0,len(dates),None,dates,
+                    note='Точная дата всех отмен пока не подтверждена источниками; статусы заказов другого дня не подставляются.'))
     return tuple(result)
 
 
@@ -77,5 +121,7 @@ def format_source_coverage(rows) -> str:
             lines.append('  нет данных: '+dates)
         if row.failed_dates:lines.append('  есть неуспешные повторные запросы; сохранён предыдущий успешный ответ')
         if row.partial_dates:lines.append('  часть ответов API неполная; итог предварительный')
+        if row.note:lines.append('  '+escape(row.note))
+    lines.append('Полнота событий показывает количество. Для суммы дополнительно нужны подтверждённые цены и валюта.')
     lines.append('Время проверки показывает загрузку API; начисления площадки могут корректироваться позднее.')
     return '\n'.join(lines)

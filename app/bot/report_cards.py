@@ -3,8 +3,9 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import asdict
-from datetime import date
+from datetime import date, datetime
 import logging
+from zoneinfo import ZoneInfo
 from weakref import WeakValueDictionary
 
 from aiogram import types
@@ -12,7 +13,7 @@ from aiogram.exceptions import TelegramAPIError, TelegramBadRequest
 
 from app.reports.cards import DailyCardText, format_daily_card, render_daily_card, daily_card_pages
 from app.reports.daily import build_daily_report_with_currency
-from .keyboards import daily_card_keyboard
+from .keyboards import daily_card_keyboard, daily_date_keyboard
 from app.reports.dates import readable_text
 
 log=logging.getLogger(__name__)
@@ -70,7 +71,7 @@ class DailyCardController:
         try:await callback.answer(text,show_alert=alert)
         except TelegramAPIError:log.debug('Daily card callback acknowledgement expired',exc_info=True)
 
-    async def _edit(self, bot, key, card, user_id: int) -> bool:
+    async def _edit(self, bot, key, card, user_id: int, *, allow_date_change: bool = False) -> bool:
         repo=self.context.repository
         if not repo.can_user(user_id,card['shop_id'],'view'):return False
         if card['section']=='accruals' and not repo.can_user(user_id,card['shop_id'],'finance'):
@@ -92,14 +93,16 @@ class DailyCardController:
             return False
         # Persist only the state Telegram actually accepted, so failed edits can
         # be retried without a new message or an inconsistent collapse button.
-        repo.save_report_card(*key,**{field:card[field] for field in (
+        repo.save_report_card(*key,allow_date_change=allow_date_change,**{field:card[field] for field in (
             'shop_id','report_day','summary_html','details_html','accruals_html','section','status_note','page')})
         return True
 
-    async def handle(self, callback: types.CallbackQuery):
+    async def handle(self, callback: types.CallbackQuery, *, on_home=None):
         if not isinstance(callback.message,types.Message):
             return await self._answer(callback,'Сообщение недоступно.',alert=True)
         action=(callback.data or '').removeprefix('daily_card:')
+        if action in {'date','home','noop'} or action.startswith(('month:','day:')):
+            return await self.navigate(callback,action,on_home=on_home)
         is_page=action.startswith('page:')
         if is_page:
             try: page=int(action.removeprefix('page:'))
@@ -132,6 +135,45 @@ class DailyCardController:
                 await self._answer(callback)
             else:
                 await self._answer(callback,'Не удалось изменить сообщение. Повторите нажатие или откройте новый отчёт.',alert=True)
+
+    async def navigate(self, callback, action, *, on_home=None):
+        message=callback.message
+        key=(message.bot.id,message.chat.id,message.message_id)
+        async with self._lock(key):
+            repo=self.context.repository
+            card=repo.report_card(*key)
+            uid=callback.from_user.id
+            if card is None or not repo.can_user(uid,card['shop_id'],'view'):
+                return await self._answer(callback,'Отчёт недоступен. Откройте новый отчёт.',alert=True)
+            if action=='noop':return await self._answer(callback)
+            if key in self._refreshing:
+                return await self._answer(callback,'Дождитесь окончания обновления этого отчёта.')
+            if action=='home':
+                await self._answer(callback)
+                if on_home:await on_home(callback)
+                return
+            try:
+                ctx=self.registry.get(card['shop_id']) if self.registry else self.context
+                if ctx.shop_id!=card['shop_id']:raise ValueError('shop unavailable')
+                today=datetime.now(ZoneInfo(ctx.preferences().timezone)).date()
+                if action.startswith('day:'):
+                    selected=datetime.strptime(action.removeprefix('day:'),'%Y%m%d').date()
+                    if not date(2000,1,1)<=selected<today:raise ValueError('invalid report date')
+                    await self._answer(callback)
+                    text=await prepare_daily_card(ctx,selected)
+                    card.update(asdict(text),report_day=selected.isoformat(),section='summary',page=0,status_note='')
+                    if not await self._edit(message.bot,key,card,uid,allow_date_change=True):
+                        await self._answer(callback,'Не удалось открыть дату. Повторите нажатие.',alert=True)
+                    return
+                month=(datetime.strptime(action.removeprefix('month:'),'%Y%m').date()
+                       if action.startswith('month:') else date.fromisoformat(card['report_day']).replace(day=1))
+                if not date(2000,1,1)<=month<today:raise ValueError('invalid month')
+                await message.edit_text('🗓 <b>Выберите день отчёта</b>\n'
+                    'Покажу сохранённые данные. Для загрузки из API затем нажмите «Обновить».',
+                    parse_mode='HTML',reply_markup=daily_date_keyboard(month,today))
+                await self._answer(callback)
+            except (ValueError, TelegramAPIError):
+                await self._answer(callback,'Дата или сообщение недоступны. Откройте новый отчёт.',alert=True)
 
     async def refresh(self, message: types.Message, user_id: int, *, callback=None):
         key=(message.bot.id,message.chat.id,message.message_id)

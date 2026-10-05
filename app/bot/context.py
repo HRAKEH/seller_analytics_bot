@@ -221,6 +221,10 @@ class AppContext:
                 # A denied buyout report must not retry all lifecycle/finance APIs.
                 await self.collector.collect_ozon_buyout_prices_range(
                     connection_id=self.ozon_connection_id,start=start,end=end)
+            # Event-date sources have their own completeness/access status.
+            # Missing Premium access must not retry all lifecycle/order APIs.
+            await self.collector.collect_daily_events_range(start=start,end=end,
+                wb_connection_id=self.wb_connection_id,ozon_connection_id=self.ozon_connection_id)
             return outcomes
 
     async def collect_advertising(self, start: date, end: date):
