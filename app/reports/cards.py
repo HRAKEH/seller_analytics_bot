@@ -47,7 +47,10 @@ def _event_line(label: str, event: DayEvent) -> str:
         text += ' · ' + rubles(event.amount)
     elif not label.startswith('❌'):
         text += ' · ⏳ сумма не подтверждена'
-    return text + '</b>'
+    text += '</b>'
+    if event.load_failed:
+        text += ' · ⚠️ сохранённые данные'
+    return text
 
 
 def _event_details(label: str, event: DayEvent, *, tz: str) -> list[str]:
@@ -123,6 +126,7 @@ def format_daily_card(repo, shop_id: int, report: DailyReport) -> DailyCardText:
               'Финансовые операции и заказы относятся к разным датам.']
     sources=sorted(report.sources,key=lambda s: (s.marketplace!='ozon',s.connection_id))
     event_freshness=[]
+    event_load_failed=False
     tz=pref.timezone if pref else 'Europe/Moscow'
     for s in sources:
         label=source_name(s.marketplace)
@@ -200,6 +204,7 @@ def format_daily_card(repo, shop_id: int, report: DailyReport) -> DailyCardText:
         events=s.events or build_daily_events(repo,s.connection_id,s.marketplace,date.fromisoformat(report.day))
         for label,event in (('✅ Выкуплено',events.buyouts),('↩️ Возвращено',events.returns),
                             ('❌ Отменено',events.cancellations)):
+            event_load_failed = event_load_failed or event.load_failed
             summary.append(_event_line(label,event))
             details.extend(_event_details(label,event,tz=tz))
             if event.freshness:event_freshness.append(event.freshness)
@@ -222,7 +227,8 @@ def format_daily_card(repo, shop_id: int, report: DailyReport) -> DailyCardText:
                     'Начисления после удержаний открываются отдельно.','Данные предварительные.'])
     if event_freshness:
         summary.append('🕘 События проверены: '+display_time(min(event_freshness),tz=tz))
-    if any(s.warning for s in sources):summary.append('⚠️ Есть сбой загрузки — см. «Подробнее».')
+    if event_load_failed or any(s.warning for s in sources):
+        summary.append('⚠️ Есть сбой загрузки — см. «Подробнее».')
     details.extend(['','Общий итог — сумма показанных цен: WB до удержаний, Ozon по цене покупателя. '
         'При пересчёте валют это оценка по ЦБ. Начисления после удержаний смотрите отдельно.'])
     accruals.extend(['','Это не чистая прибыль: себестоимость и налоги здесь не вычитаются.'])

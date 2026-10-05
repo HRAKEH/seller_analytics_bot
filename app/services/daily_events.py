@@ -31,6 +31,7 @@ class DayEvent:
     warning: str | None = None
     available_units: int = 0
     price_note: str | None = None
+    load_failed: bool = False
 
 
 @dataclass(frozen=True)
@@ -290,7 +291,8 @@ def _read(repo, connection_id, day, endpoint, normalizer, *, index=None) -> DayE
                 if endpoint == OZON_REALIZATION else 'Нет доступа к источнику событий; проверьте права API.')
         else:
             warning = 'Последняя загрузка не удалась; показаны сохранённые данные.' if saved else 'Источник событий не загружен: последний запрос не удался.'
-        reading = replace(reading, warning=' '.join(filter(None, (reading.warning, warning))))
+        reading = replace(reading, warning=' '.join(filter(None, (reading.warning, warning))),
+            load_failed=True)
     return reading
 
 

@@ -35,7 +35,7 @@ from .promotions import normalize_wb_promotions, normalize_ozon_promotions, Prom
 from .ozon_dates import MOSCOW, posting_day, posting_range
 from .wb_funnel import normalize_wb_funnel
 from .daily_events import (
-    WB_CANCELS, OZON_RETURNS, OZON_REALIZATION, DailyEventError,
+    WB_SALES, WB_CANCELS, OZON_RETURNS, OZON_REALIZATION, DailyEventError,
     split_event_rows, normalize_ozon_realization_day, normalize_wb_sales_day, wb_event_day,
     normalize_wb_cancellations_day, normalize_ozon_returns_day,
 )
@@ -562,13 +562,26 @@ class CollectionService:
     async def collect_wb_sales_range(self, *, shop_id: int, connection_id: int,
                                      start: date, end: date) -> list[CollectionOutcome]:
         """Collect WB operational sales/returns for exact srid reconciliation."""
-        endpoint='statistics/sales/reconciliation'
+        if end < start:
+            raise ValueError('Дата окончания должна быть не раньше даты начала')
+        endpoint=WB_SALES
+
+        def failed_range(result: FetchResult) -> list[CollectionOutcome]:
+            return [self._failure(connection_id, endpoint,
+                (start + timedelta(days=offset)).isoformat(), 'wildberries', result)
+                for offset in range((end-start).days+1)]
+
         if self.wb is None:
-            rid=self.repo.record_failure(connection_id,endpoint,start.isoformat(),'WB client is not configured')
-            return [CollectionOutcome('wildberries',start.isoformat(),False,rid,'WB client is not configured')]
-        result=await self.wb.sales_since(start.isoformat())
+            return failed_range(FetchResult.failure('wildberries', 'WB client is not configured', None, 0))
+        try:
+            result=await self.wb.sales_since(start.isoformat())
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception('WB operational sales/returns source failed')
+            result=FetchResult.failure('wildberries', 'Не удалось загрузить продажи и возвраты WB.', None, 1)
         if not result.ok:
-            return [self._failure(connection_id,endpoint,start.isoformat(),'wildberries',result)]
+            return failed_range(result)
         try:
             observations=normalize_wb_sales_events(result.data,start_date=start.isoformat(),end_date=end.isoformat())
             normalize_wb_sales_day(result.data,start.isoformat())

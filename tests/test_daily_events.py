@@ -161,6 +161,89 @@ def test_partial_return_snapshot_hides_full_total_and_keeps_accessible_part(tmp_
     assert reading.units is None and reading.amount is None and reading.available_units==2
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize('failure_kind', ['http', 'missing_client', 'exception', 'pagination'])
+async def test_wb_sales_failed_range_keeps_snapshots_and_warns_for_every_day(tmp_path, failure_kind):
+    repo, shop, conn = setup(tmp_path)
+    days = [DAY - timedelta(days=2), DAY - timedelta(days=1), DAY]
+    previous = {}
+    for day in days:
+        rows = [] if day == DAY else [sale(day=day.isoformat()),
+            sale('R1', day=day.isoformat(), price=50)]
+        repo.record_success(conn.id, WB_SALES, day.isoformat(), rows, [])
+        previous[day] = build_daily_events(repo, conn.id, 'wildberries', day)
+    client = SimpleNamespace(sales_since=AsyncMock())
+    status, attempts = None, 0
+    if failure_kind == 'missing_client':
+        client = None
+    elif failure_kind == 'exception':
+        client.sales_since.side_effect = RuntimeError('unexpected network failure')
+        attempts = 1
+    elif failure_kind == 'pagination':
+        status, attempts = 200, 3
+        client.sales_since.return_value = FetchResult.failure('wildberries',
+            'WB sales pagination safety limit reached', status, attempts)
+    else:
+        status, attempts = 500, 3
+        client.sales_since.return_value = FetchResult.failure('wildberries',
+            'HTTP 500', status, attempts)
+    service = CollectionService(repo, wildberries=client)
+    outcomes = await service.collect_wb_sales_range(shop_id=shop.id, connection_id=conn.id,
+        start=days[0], end=days[-1])
+    assert [outcome.data_date for outcome in outcomes] == [day.isoformat() for day in days]
+    assert all(not outcome.ok for outcome in outcomes)
+    for day in days:
+        attempt = repo.latest_run(conn.id, WB_SALES, day.isoformat())
+        assert attempt.status == 'failed' and attempt.http_status == status
+        assert attempt.attempts == attempts
+        reading = build_daily_events(repo, conn.id, 'wildberries', day)
+        for key in ('buyouts', 'returns'):
+            old, new = getattr(previous[day], key), getattr(reading, key)
+            assert (new.units, new.amount, new.freshness) == (old.units, old.amount, old.freshness)
+            assert 'сохранённые данные' in new.warning
+    if client is not None:
+        client.sales_since.assert_awaited_once_with(days[0].isoformat())
+
+
+def test_daily_summary_marks_saved_events_after_failure_and_clears_after_recovery(tmp_path):
+    repo, shop, conn = setup(tmp_path)
+    repo.record_success(conn.id, WB_SALES, DAY.isoformat(), [sale(), sale('R1', price=50)], [])
+    repo.record_failure(conn.id, WB_SALES, DAY.isoformat(), 'HTTP 500', http_status=500)
+    text = format_daily_card(repo, shop.id, build_daily_report(repo, shop.id, DAY))
+    assert '✅ Выкуплено: <b>1 шт. · 100,00 ₽</b> · ⚠️ сохранённые данные' in text.summary_html
+    assert '↩️ Возвращено: <b>1 шт. · 50,00 ₽</b> · ⚠️ сохранённые данные' in text.summary_html
+    assert text.summary_html.count('Есть сбой загрузки') == 1
+    repo.record_success(conn.id, WB_SALES, DAY.isoformat(), [], [])
+    recovered = format_daily_card(repo, shop.id, build_daily_report(repo, shop.id, DAY))
+    assert '✅ Выкуплено: <b>0 шт. · 0,00 ₽</b>' in recovered.summary_html
+    assert 'сохранённые данные' not in recovered.summary_html
+    assert 'Есть сбой загрузки' not in recovered.summary_html
+
+
+@pytest.mark.asyncio
+async def test_wb_sales_cancelled_request_is_propagated_without_recording_failures(tmp_path):
+    import asyncio
+    repo, shop, conn = setup(tmp_path)
+    client = SimpleNamespace(sales_since=AsyncMock(side_effect=asyncio.CancelledError))
+    service = CollectionService(repo, wildberries=client)
+    with pytest.raises(asyncio.CancelledError):
+        await service.collect_wb_sales_range(shop_id=shop.id, connection_id=conn.id,
+            start=DAY - timedelta(days=1), end=DAY)
+    assert repo.latest_run(conn.id, WB_SALES, DAY.isoformat()) is None
+    assert repo.latest_run(conn.id, WB_SALES, (DAY - timedelta(days=1)).isoformat()) is None
+
+
+@pytest.mark.asyncio
+async def test_wb_sales_inverted_range_does_not_request_api(tmp_path):
+    repo, shop, conn = setup(tmp_path)
+    client = SimpleNamespace(sales_since=AsyncMock(return_value=success('wildberries', [])))
+    service = CollectionService(repo, wildberries=client)
+    with pytest.raises(ValueError):
+        await service.collect_wb_sales_range(shop_id=shop.id, connection_id=conn.id,
+            start=DAY, end=DAY - timedelta(days=1))
+    client.sales_since.assert_not_awaited()
+
+
 def test_order_cohort_cancellations_and_finance_net_do_not_fill_daily_events(tmp_path):
     repo,shop,conn=setup(tmp_path,'ozon')
     repo.record_success(conn.id,'analytics/orders',DAY.isoformat(),{'orders':10},[
