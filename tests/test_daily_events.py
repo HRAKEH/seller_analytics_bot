@@ -411,7 +411,7 @@ async def test_manual_update_attempts_new_daily_sources(ui):
     stages=await refresh_reports(ui.ctx,DAY,DAY,include_finance=False)
     assert [stage.key for stage in stages]==['events'] and stages[0].ok
     ui.ctx.collector.collect_daily_events_range.assert_awaited_once_with(start=DAY,end=DAY,
-        wb_connection_id=None,ozon_connection_id=None)
+        wb_connection_id=None,ozon_connection_id=None,recheck_access=True)
 
 
 @pytest.mark.asyncio

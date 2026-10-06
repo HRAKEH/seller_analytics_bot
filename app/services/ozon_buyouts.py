@@ -39,20 +39,21 @@ class BuyoutCheck:
     report_from: str | None
     report_to: str | None
     warnings: tuple[str, ...] = ()
+    report_required: bool = True
 
 
-def build_buyout_check(repo, connection_id: int, day: date) -> BuyoutCheck | None:
+def buyout_expectations(repo, connection_id: int, day: date):
+    """Prove which products Ozon itself bought, using both complete posting lists."""
     ds=day.isoformat()
-    capture=repo.latest_buyout_capture(connection_id,ds)
-    latest=repo.latest_run(connection_id,'finance/products/buyout',ds)
-    if capture is None and latest is None:
-        return None
     expected=defaultdict(int); seen={}; conflicts=set(); reliable=True
     for scheme in ('fbo','fbs'):
         source=repo.latest_raw_source(connection_id,ds,(f'postings/{scheme}',))
         if source is None or source['status']!='success':
             reliable=False
             continue
+        attempt=repo.latest_run(connection_id,f'postings/{scheme}',ds)
+        if attempt and attempt.status=='failed' and attempt.id>source['id']:
+            reliable=False
         postings=_payload(source['payload_json']).get('postings')
         if not isinstance(postings,list):
             reliable=False
@@ -89,6 +90,20 @@ def build_buyout_check(repo, connection_id: int, day: date) -> BuyoutCheck | Non
                     conflicts.add(number); reliable=False
                 flags[sku]=flag
                 if flag:expected[(number,sku)]+=qty
+    return dict(expected),reliable,conflicts
+
+
+def build_buyout_check(repo, connection_id: int, day: date) -> BuyoutCheck | None:
+    ds=day.isoformat()
+    expected,reliable,conflicts=buyout_expectations(repo,connection_id,day)
+    if reliable and not expected:
+        # This optional report is about Ozon buying goods itself, not every
+        # customer's delivery. Old failed probes are irrelevant to this cohort.
+        return BuyoutCheck((),0,0,True,True,None,None,None,report_required=False)
+    capture=repo.latest_buyout_capture(connection_id,ds)
+    latest=repo.latest_run(connection_id,'finance/products/buyout',ds)
+    if capture is None and latest is None:
+        return None
     candidates={}; duplicates=set(); invalid=set()
     payload=_payload(capture['payload_json']) if capture else {}
     reports=payload.get('reports',[])
@@ -142,13 +157,23 @@ def build_buyout_check(repo, connection_id: int, day: date) -> BuyoutCheck | Non
     expected_units=sum(expected.values())
     warnings=[]
     if not reliable:warnings.append('Списки отправлений или признаки выкупа пока неполные.')
-    if not report_complete:warnings.append('Отчёт о выкупах пока не получен полностью.')
+    failed_latest=bool(latest and latest.status=='failed' and
+                      (capture is None or latest.finished_at>=capture['finished_at']))
+    if not report_complete and not failed_latest:
+        warnings.append('Отдельный отчёт о выкупе товаров самим Ozon пока неполный.')
     if duplicates or invalid or conflicts:
         warnings.append('Неоднозначные строки и несовпадения количества исключены из сверки.')
     if matched!=expected_units:
         warnings.append('Для части товаров с признаком выкупа цена ещё не найдена; это не нулевая цена.')
-    if latest and latest.status=='failed' and (capture is None or latest.finished_at>=capture['finished_at']):
-        warnings.append('Последний запрос выкупов не удался; проверьте доступ API. Показаны сохранённые данные, если они есть.')
+    if failed_latest:
+        if latest.http_status==429:
+            warning='Последний запрос выкупов ограничен Ozon (429). Дождитесь снятия лимита и обновите отчёты; менять токен из-за этого не требуется.'
+        elif latest.http_status in {401,402,403}:
+            warning='Последний запрос выкупов отклонён Ozon; проверьте права API к этому отдельному отчёту.'
+        else:
+            warning='Последний запрос выкупов не удался; повторите обновление позже.'
+        if matches:warning+=' Ниже показаны сохранённые цены, обновить их пока не удалось.'
+        warnings.append(warning)
     return BuyoutCheck(matches,expected_units,matched,reliable,report_complete,
                        capture['finished_at'] if capture else None,
                        payload.get('report_date_from'),payload.get('report_date_to'),tuple(warnings))
@@ -156,8 +181,11 @@ def build_buyout_check(repo, connection_id: int, day: date) -> BuyoutCheck | Non
 
 def format_buyout_check(check: BuyoutCheck | None) -> list[str]:
     if check is None:
-        return ['Выкупы Ozon: ⏳ отдельный отчёт ещё не загружен.']
-    lines=['<b>Сверка выкупов Ozon</b>']
+        return ['Выкуп товаров самим Ozon: ⏳ данные для сверки ещё не загружены.']
+    lines=['<b>Выкуп товаров самим Ozon</b>']
+    if not check.report_required:
+        return lines+['В загруженных отправлениях этого дня таких товаров нет. Отдельный отчёт не требуется.']
+    lines.append('Это отдельные сделки с Ozon, а не все продажи покупателям.')
     if not check.postings_complete:
         lines.append(f'Сопоставлено: {check.matched_units} шт.; состав товаров с признаком выкупа пока неполный.')
     elif check.expected_units:

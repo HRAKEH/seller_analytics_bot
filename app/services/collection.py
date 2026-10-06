@@ -33,6 +33,7 @@ from .advertising import (
 from .inbound import normalize_wb_supply, normalize_ozon_order
 from .promotions import normalize_wb_promotions, normalize_ozon_promotions, PromotionNormalizationError, wb_promotion_finished
 from .ozon_dates import MOSCOW, posting_day, posting_range
+from .ozon_buyouts import buyout_expectations
 from .wb_funnel import normalize_wb_funnel
 from .daily_events import (
     WB_SALES, WB_CANCELS, OZON_RETURNS, OZON_REALIZATION, DailyEventError,
@@ -55,6 +56,7 @@ class CollectionOutcome:
 class CollectionService:
     _shared_wb_auto_disabled: dict[str,set[str]] = {}
     _shared_ozon_event_disabled: dict[str, set[str]] = {}
+    _shared_ozon_event_denials: dict[str, dict[str, tuple[int, str]]] = {}
 
     def __init__(self, repository: Repository, *, ozon: OzonClient | None = None,
                  wildberries: WildberriesClient | None = None, ozon_performance: OzonPerformanceClient | None = None):
@@ -70,6 +72,7 @@ class CollectionService:
             self._auto_disabled_endpoints=set()
         scope=getattr(ozon,'rate_scope',None)
         self._event_disabled=self._shared_ozon_event_disabled.setdefault(scope,set()) if scope else set()
+        self._event_denials=self._shared_ozon_event_denials.setdefault(scope,{}) if scope else {}
 
     async def _ozon_analytics_all(self, payload: dict) -> FetchResult:
         if self.ozon is None:
@@ -379,6 +382,14 @@ class CollectionService:
         if not 0 <= (end-start).days < 90 or end > today:
             raise ValueError('Buyout order range: 1–90 days, ending no later than today')
         endpoint = 'finance/products/buyout'
+        needed=False
+        for offset in range((end-start).days+1):
+            expected,reliable,_=buyout_expectations(self.repo,connection_id,start+timedelta(days=offset))
+            if expected or not reliable:
+                needed=True
+                break
+        if not needed:
+            return []  # A proven absence is not a successful API report.
         report_end = min(today,end+timedelta(days=60))
         reports=[]; errors=[]; attempts=0
         first=start
@@ -405,7 +416,7 @@ class CollectionService:
                 entry['error']=result.error or 'Ozon buyout report failed'
                 errors.append((entry['error'],result.status_code))
             reports.append(entry)
-            if not result.ok and (self.ozon is None or result.status_code in {401,403}):
+            if not result.ok and (self.ozon is None or result.status_code in {401,402,403,429}):
                 break
             first=last+timedelta(days=1)
         run_id=0
@@ -619,7 +630,8 @@ class CollectionService:
 
     async def collect_daily_events_range(self, *, start: date, end: date,
                                          wb_connection_id: int | None = None,
-                                         ozon_connection_id: int | None = None) -> list[CollectionOutcome]:
+                                         ozon_connection_id: int | None = None,
+                                         recheck_access: bool = False) -> list[CollectionOutcome]:
         """Independent event snapshots; denied optional APIs never retry orders.
 
         WB sales are already collected by collect_wb_sales_range. Here we add
@@ -629,6 +641,11 @@ class CollectionService:
             raise ValueError('События за день: период от 1 до 31 дня')
         days = [start + timedelta(days=i) for i in range((end-start).days+1)]
         outcomes = []
+        checked_sources: set[str] = set()
+
+        def denied_result(endpoint, fallback):
+            code,error=self._event_denials.get(endpoint,(403,fallback))
+            return FetchResult.failure('ozon',error,code,0)
 
         def failed_range(connection_id, endpoint, market, result):
             for day in days:
@@ -637,8 +654,8 @@ class CollectionService:
         async def collect_range(connection_id, endpoint, market, client, method, *args):
             if client is None or getattr(client, method, None) is None:
                 return  # An uninjected optional client remains visibly missing.
-            if market == 'ozon' and endpoint in self._event_disabled:
-                result = FetchResult.failure(market, 'Нет доступа к источнику событий Ozon; проверьте права API.', 403, 0)
+            if market == 'ozon' and endpoint in self._event_disabled and not recheck_access:
+                result = denied_result(endpoint,'Нет доступа к источнику событий Ozon; проверьте права API.')
             else:
                 try:
                     result = await getattr(client, method)(*args)
@@ -650,8 +667,12 @@ class CollectionService:
             if not result.ok:
                 if market == 'ozon' and result.status_code in {401, 402, 403}:
                     self._event_disabled.add(endpoint)
+                    self._event_denials[endpoint]=(result.status_code,result.error or 'Нет доступа к источнику событий Ozon.')
                 failed_range(connection_id, endpoint, market, result)
                 return
+            if market == 'ozon':
+                self._event_disabled.discard(endpoint)
+                self._event_denials.pop(endpoint,None)
             try:
                 grouped, undated = split_event_rows(result.data, endpoint, start.isoformat(), end.isoformat())
             except DailyEventError as exc:
@@ -680,9 +701,10 @@ class CollectionService:
                 for day in days:
                     if not 0 <= (today-day).days <= 31:
                         result = FetchResult.failure('ozon', 'Ozon: дневная реализация доступна только за последние 32 календарных дня.', None, 0)
-                    elif OZON_REALIZATION in self._event_disabled:
-                        result = FetchResult.failure('ozon', 'Ozon: нет доступа к дневной реализации; требуется Premium Plus/Pro и права API.', 403, 0)
+                    elif OZON_REALIZATION in self._event_disabled and (not recheck_access or OZON_REALIZATION in checked_sources):
+                        result = denied_result(OZON_REALIZATION,'Ozon: нет доступа к дневной реализации; требуется Premium Plus/Pro и права API.')
                     else:
+                        checked_sources.add(OZON_REALIZATION)
                         try:
                             result = await self.ozon.realization_day(day)
                         except asyncio.CancelledError:
@@ -694,8 +716,11 @@ class CollectionService:
                     if not result.ok:
                         if result.status_code in {401, 402, 403}:
                             self._event_disabled.add(OZON_REALIZATION)
+                            self._event_denials[OZON_REALIZATION]=(result.status_code,result.error or 'Нет доступа к дневной реализации Ozon.')
                         outcomes.append(self._failure(ozon_connection_id, OZON_REALIZATION, ds, 'ozon', result))
                         continue
+                    self._event_disabled.discard(OZON_REALIZATION)
+                    self._event_denials.pop(OZON_REALIZATION,None)
                     try:
                         reading=normalize_ozon_realization_day(result.data)[0]
                     except DailyEventError as exc:

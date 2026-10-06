@@ -32,6 +32,7 @@ class DayEvent:
     available_units: int = 0
     price_note: str | None = None
     load_failed: bool = False
+    unavailable_note: str | None = None
 
 
 @dataclass(frozen=True)
@@ -273,7 +274,8 @@ def normalize_ozon_realization_day(payload) -> tuple[DayEvent, DayEvent]:
 def _read(repo, connection_id, day, endpoint, normalizer, *, index=None) -> DayEvent:
     saved = repo.latest_raw_source(connection_id, day, (endpoint,))
     attempt = repo.latest_run(connection_id, endpoint, day)
-    reading = DayEvent(source=endpoint)
+    reading = DayEvent(source={OZON_REALIZATION:'Ozon · дневная реализация',
+                               OZON_RETURNS:'Ozon · клиентские возвраты'}.get(endpoint,endpoint))
     if saved:
         try:
             reading = normalizer(json.loads(saved['payload_json']))
@@ -287,8 +289,11 @@ def _read(repo, connection_id, day, endpoint, normalizer, *, index=None) -> DayE
             reading = DayEvent(source=endpoint, warning='Сохранённые данные не подтверждают полный итог событий.')
     if attempt and attempt.status == 'failed' and (not saved or attempt.id > saved['id']):
         if not saved and attempt.http_status in {401, 402, 403}:
-            warning = ('Дневная реализация Ozon недоступна: проверьте права API; метод требует Premium Plus/Pro.'
-                if endpoint == OZON_REALIZATION else 'Нет доступа к источнику событий; проверьте права API.')
+            premium=endpoint==OZON_REALIZATION and 'premium' in (attempt.error or '').lower()
+            warning = ('Ozon отклонил дневной отчёт: требуется подписка Premium Plus.' if premium else
+                'Нет доступа к дневной реализации: проверьте права API и подписку Premium Plus/Pro.'
+                    if endpoint==OZON_REALIZATION else 'Нет доступа к источнику событий; проверьте права API.')
+            reading=replace(reading,unavailable_note='⏳ нужна Premium Plus' if premium else '⏳ нет доступа к API')
         else:
             warning = 'Последняя загрузка не удалась; показаны сохранённые данные.' if saved else 'Источник событий не загружен: последний запрос не удался.'
         reading = replace(reading, warning=' '.join(filter(None, (reading.warning, warning))),
@@ -310,6 +315,6 @@ def build_daily_events(repo, connection_id: int, marketplace: str, day: date) ->
         # Avoid switching between a physical customer-return day and a finance
         # realization day; these are distinct report sources and can differ.
         return DailyEvents(buyouts, returns, DayEvent(source='Ozon · отмены',
-            warning='Точная дата всех отмен Ozon не подтверждена текущими источниками. '
-                'Статусы заказов выбранного дня не заменяют отмены за этот день.'))
+            unavailable_note='⏳ дата отмены не получена',
+            warning='В полученных ответах Ozon нет даты отмены. Точный итог отмен за день не подтверждён.'))
     raise ValueError('Unknown marketplace')

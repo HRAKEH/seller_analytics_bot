@@ -38,6 +38,8 @@ def _day(value: str) -> str:
 
 def _event_line(label: str, event: DayEvent) -> str:
     if event.units is None:
+        if event.unavailable_note:
+            return label+': '+_safe(event.unavailable_note,120)
         status = ('⏳ неполные данные' if event.available_units else
                   '⏳ источник недоступен' if event.warning and 'доступ' in event.warning else
                   '⏳ нет подтверждённых данных' if event.warning else '⏳ данные не загружены')
@@ -204,12 +206,13 @@ def format_daily_card(repo, shop_id: int, report: DailyReport) -> DailyCardText:
         events=s.events or build_daily_events(repo,s.connection_id,s.marketplace,date.fromisoformat(report.day))
         for label,event in (('✅ Выкуплено',events.buyouts),('↩️ Возвращено',events.returns),
                             ('❌ Отменено',events.cancellations)):
-            event_load_failed = event_load_failed or event.load_failed
+            event_load_failed = event_load_failed or (event.load_failed and
+                not (event.units is None and event.unavailable_note))
             summary.append(_event_line(label,event))
             details.extend(_event_details(label,event,tz=tz))
             if event.freshness:event_freshness.append(event.freshness)
         if s.marketplace=='ozon':
-            details.append('Выкуплено: по дневному отчёту реализации Ozon. Клиентские возвраты: '
+            details.append('Продажи покупателям: дневная реализация Ozon. Возвраты: '
                            'после вручения, по дате возврата покупателем; отказы при вручении сюда не входят.')
         if s.cancellations is not None:
             details.append('Отмены среди заказов, созданных в этот день: '+num(s.cancellations)+

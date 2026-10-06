@@ -59,7 +59,7 @@ async def refresh_reports(ctx, start: date, end: date, progress=None, *, include
         if ctx.ozon_connection_id is not None:
             await run('fulfillment','Отправления Ozon · FBO/FBS',lambda:ctx.collector.collect_ozon_fulfillment_range(
                 shop_id=ctx.shop_id,connection_id=ctx.ozon_connection_id,start=start,end=end))
-            await run('buyouts','Цены выкупа Ozon · отдельный отчёт',lambda:ctx.collector.collect_ozon_buyout_prices_range(
+            await run('buyouts','Выкуп товаров самим Ozon · цены',lambda:ctx.collector.collect_ozon_buyout_prices_range(
                 connection_id=ctx.ozon_connection_id,start=start,end=end))
         if ctx.wb_connection_id is not None:
             await run('sales','Продажи и возвраты WB',lambda:ctx.collector.collect_wb_sales_range(
@@ -68,7 +68,7 @@ async def refresh_reports(ctx, start: date, end: date, progress=None, *, include
         if events is not None:
             await run('events','Выкупы, клиентские возвраты и даты отмен',lambda:events(
                 start=start,end=end,wb_connection_id=ctx.wb_connection_id,
-                ozon_connection_id=ctx.ozon_connection_id))
+                ozon_connection_id=ctx.ozon_connection_id,recheck_access=True))
     return tuple(stages)
 
 

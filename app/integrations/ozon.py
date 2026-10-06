@@ -268,7 +268,8 @@ class OzonClient(MarketplaceClient):
             raise ValueError('Ozon buyout report: from 1 to 31 days')
         return await self.request('POST', '/v1/finance/products/buyout',
                                   json={'date_from':first.isoformat(), 'date_to':last.isoformat()},
-                                  headers=self._headers(), rate_key='finance', min_interval=1.0)
+                                  headers=self._headers(), rate_key='finance_buyouts', min_interval=1.0,
+                                  retry_on_429=False, fail_fast_rate_limit=True)
 
     async def finance_accrual_by_day(self, day: str, last_id: str = '') -> FetchResult:
         """Current Ozon Seller Finance daily accrual page."""
