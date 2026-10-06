@@ -27,6 +27,10 @@ from app.services.alerts import AlertEngine
 from app.services.imports import import_costs
 from app.services.preferences import update_validated
 from app.services.backups import BackupService
+from app.services.backup_transport import (
+    TELEGRAM_DOWNLOAD_LIMIT, backup_upload, backup_saved_message, deliver_backup,
+    run_backup_io, unpack_restore_source,
+)
 from app.services.exporting import export_xlsx, export_csv_zip
 from app.services.health import build_health, format_health
 from app.services.supply import build_supply_plan, evaluate_forecast_quality, build_supply_calibration
@@ -748,10 +752,15 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
         if not is_system_owner(message): return await system_denied(message)
         service=BackupService(ctx.repository.db,ctx.repository,ctx.repository.db.path.parent/'backups')
         try:
-            result=service.create(kind='manual')
-            await message.answer_document(FSInputFile(str(result.path)),caption=f'💾 Backup schema v{result.schema_version}\nSHA256: {result.checksum[:16]}…')
+            result=await run_backup_io(service.create,kind='manual')
         except Exception as exc:
-            await message.answer(f'⚠️ Backup не создан: {escape(str(exc)[:300])}')
+            return await message.answer(f'⚠️ Резервную копию не удалось создать: {escape(str(exc)[:300])}')
+        try:
+            async with backup_upload(result.path) as upload:
+                await deliver_backup(message.bot,message.chat.id,result,upload)
+        except Exception as exc:
+            await message.answer(backup_saved_message(
+                result,f'Отправка в Telegram не удалась: {str(exc)[:200]}'),parse_mode='HTML')
 
     @dp.message(Command('backups'))
     async def cmd_backups(message: types.Message):
@@ -771,17 +780,17 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
         if not is_system_owner(message): return await system_denied(message)
         if registry is None: return await message.answer('Restore требует multi-shop runtime.')
         await state.set_state(RestoreStates.waiting_file)
-        await navigation.show(message,'⚠️ <b>Восстановление базы</b>\nПришлите SQLite backup (.sqlite3 или .db). Перед заменой бот автоматически создаст pre-restore backup и проверит integrity/schema.\nНажмите «❌ Отмена», чтобы выйти.',parse_mode='HTML',reply_markup=input_keyboard())
+        await navigation.show(message,'⚠️ <b>Восстановление базы</b>\nПришлите файл SQLite (.sqlite3/.db/.sqlite) или ZIP с одним таким файлом. Размер загрузки — до 20 МБ; база внутри ZIP — до 200 МиБ.\nЗагрузка выбранного файла запустит замену всей базы. Перед заменой бот создаст страховочную копию и проверит целостность базы.\nНажмите «❌ Отмена», чтобы выйти.',parse_mode='HTML',reply_markup=input_keyboard())
 
     @dp.message(StateFilter(RestoreStates.waiting_file), F.document)
     async def restore_file(message: types.Message, state: FSMContext):
         if not allowed(message,'manage'): return await denied(message,'manage')
         if not is_system_owner(message): return await system_denied(message)
         doc=message.document; filename=Path(doc.file_name or 'backup.sqlite3').name
-        if Path(filename).suffix.lower() not in {'.sqlite3','.db','.sqlite'}:
-            return await message.answer('⚠️ Нужен SQLite-файл .sqlite3/.db/.sqlite')
-        if doc.file_size and doc.file_size > 200*1024*1024:
-            return await message.answer('⚠️ Backup больше 200 МБ; восстановите его через файловую систему сервера.')
+        if Path(filename).suffix.lower() not in {'.sqlite3','.db','.sqlite','.zip'}:
+            return await message.answer('⚠️ Нужен файл .sqlite3/.db/.sqlite или ZIP с одним файлом базы.')
+        if doc.file_size and doc.file_size > TELEGRAM_DOWNLOAD_LIMIT:
+            return await message.answer('⚠️ Файл больше 20 МБ: Telegram не даст боту его скачать. Пришлите ZIP с одним файлом базы до 20 МБ или восстановите копию через файловый доступ к серверу.')
         if any(x.job_lock.locked() for x in registry.contexts()):
             return await message.answer('⏳ Сейчас идёт загрузка данных. Повторите restore после её завершения.')
         await message.answer('🛠 Проверяю backup и создаю страховочную копию…')
@@ -791,9 +800,12 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
                 local=Path(tmp)/filename
                 remote=await message.bot.get_file(doc.file_id)
                 await message.bot.download_file(remote.file_path,destination=str(local))
+                if local.stat().st_size > TELEGRAM_DOWNLOAD_LIMIT:
+                    raise ValueError('Файл больше 20 МБ; восстановите его через файловый доступ к серверу.')
+                source=await run_backup_io(unpack_restore_source,local,Path(tmp)/'unpacked')
                 async with registry.maintenance_lock:
                     service=BackupService(ctx.repository.db,ctx.repository,ctx.repository.db.path.parent/'backups')
-                    result=service.restore(local)
+                    result=service.restore(source)
                     # restore() atomically installed and validated the DB. Runtime
                     # state is rebuilt only after that point.
                     if not ctx.repository.acquire_lease('singleton:telegram-poller',ctx.settings.instance_id,90,metadata={'role':'poller'}):
