@@ -232,7 +232,7 @@ async def multi_alerts_loop(bot: Bot, registry):
 
 async def automatic_backup_once(registry,bot=None,now=None):
     """Create once; retry delivery separately without making new DB copies."""
-    from app.services.backups import BackupService, BackupResult, _sha256
+    from app.services.backups import BackupService
     from app.services.backup_transport import backup_upload, deliver_backup, run_backup_io
     settings=registry.settings
     if not settings.auto_backup_enabled:return
@@ -241,23 +241,20 @@ async def automatic_backup_once(registry,bot=None,now=None):
     repo=registry.repository;lease=f'scheduler:backup:{run_key}'
     if not repo.acquire_lease(lease,settings.instance_id,3600):return
     try:
-        service=BackupService(repo.db,repo,repo.db.path.parent/'backups')
+        service=BackupService.from_settings(repo.db,repo,settings)
         if repo.get_job_state(registry.default_shop_id,'database_backup')!=run_key:
             await run_backup_io(service.create,kind='automatic')
-            service.prune(settings.backup_retention_days)
             repo.set_job_state(registry.default_shop_id,'database_backup',run_key)
         if not settings.auto_backup_send_telegram or bot is None:return
         with repo.db.connect() as c:
             row=c.execute("SELECT * FROM backup_history WHERE kind='automatic' AND status='success' AND created_at LIKE ? ORDER BY id DESC LIMIT 1",(run_key+'%',)).fetchone()
         if row is None:return
         path=service.directory/row['filename']
-        if not path.exists() or await run_backup_io(_sha256,path)!=row['checksum']:
-            raise RuntimeError('Automatic backup file missing or checksum changed; delivery stopped')
         recipients=[uid for uid in settings.owner_ids
                     if repo.get_job_state(registry.default_shop_id,f'database_backup_delivery:{uid}')!=run_key]
         if not recipients:return
-        result=BackupResult(path,row['checksum'],path.stat().st_size,row['schema_version'],'automatic')
         async with backup_upload(path) as upload:
+            result=await run_backup_io(service.result_from_history,row)
             for uid in recipients:
                 key=f'database_backup_delivery:{uid}'
                 try:
@@ -269,10 +266,41 @@ async def automatic_backup_once(registry,bot=None,now=None):
 
 
 async def automatic_backup_loop(registry,bot=None):
-    """One verified online SQLite backup per UTC day."""
+    """One verified online backup per UTC day, with optional Telegram delivery."""
     while True:
         try:
             await automatic_backup_once(registry,bot)
         except asyncio.CancelledError: raise
         except Exception: log.exception('Automatic backup failed')
         await asyncio.sleep(300)
+
+
+async def backup_storage_maintenance_once(registry):
+    """Compress/prune managed copies independently of automatic snapshot creation."""
+    from app.services.backups import BackupService
+    from app.services.backup_transport import run_backup_io
+    repo=registry.repository; settings=registry.settings
+    lease='maintenance:backup-storage'
+    if not repo.acquire_lease(lease,settings.instance_id,3600):
+        return None
+    try:
+        async with registry.maintenance_lock:
+            service=BackupService.from_settings(repo.db,repo,settings)
+            result=await run_backup_io(service.maintain)
+        log.info('Backup storage maintained: compressed=%s removed=%s files=%s bytes=%s',
+                 result.compressed,result.removed,result.files,result.size_bytes)
+        return result
+    finally:
+        repo.release_lease(lease,settings.instance_id)
+
+
+async def backup_storage_maintenance_loop(registry):
+    """Maintain storage on startup and hourly, also with AUTO_BACKUP_ENABLED=false."""
+    while True:
+        try:
+            await backup_storage_maintenance_once(registry)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception('Backup storage maintenance failed; will retry')
+        await asyncio.sleep(3600)

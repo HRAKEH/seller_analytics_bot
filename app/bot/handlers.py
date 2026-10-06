@@ -750,7 +750,7 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
     async def cmd_backup(message: types.Message):
         if not allowed(message,'manage'): return await denied(message,'manage')
         if not is_system_owner(message): return await system_denied(message)
-        service=BackupService(ctx.repository.db,ctx.repository,ctx.repository.db.path.parent/'backups')
+        service=BackupService.from_settings(ctx.repository.db,ctx.repository,ctx.settings)
         try:
             result=await run_backup_io(service.create,kind='manual')
         except Exception as exc:
@@ -767,11 +767,17 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
         if not allowed(message,'manage'): return await denied(message,'manage')
         if not is_system_owner(message): return await system_denied(message)
         rows=ctx.repository.recent_backups(10)
-        if not rows: return await message.answer('💾 История backup пока пуста.')
-        lines=['💾 <b>Последние backup/restore</b>']
+        service=BackupService.from_settings(ctx.repository.db,ctx.repository,ctx.settings)
+        count,size=await run_backup_io(service.storage_usage)
+        lines=['💾 <b>Резервные копии</b>',
+               f'Копии бота на сервере: {count} · {size/1024/1024:.1f} МиБ',
+               f'Хранение: {service.retention_days} дней · до {service.max_count} копий · до {service.max_total_bytes/1024/1024:.0f} МиБ',
+               'Хотя бы одна исправная копия сохраняется, даже если превышает лимит.\n',
+               '<b>Последние backup/restore</b>' if rows else 'История пока пуста.']
         for r in rows:
             icon='✅' if r['status']=='success' else '❌'
-            lines.append(f"{icon} {escape(r['kind'])} · {escape(r['filename'])} · schema v{r['schema_version']} · {escape(r['created_at'])}")
+            removed=' · файл уже удалён' if r['kind']!='restore' and r['status']=='success' and not (service.directory/r['filename']).is_file() else ''
+            lines.append(f"{icon} {escape(r['kind'])} · {escape(r['filename'])} · schema v{r['schema_version']} · {escape(r['created_at'])}{removed}")
         await send(message,'\n'.join(lines),permission='manage',system_owner_only=True)
 
     @dp.message(Command('restore'))
@@ -804,8 +810,8 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
                     raise ValueError('Файл больше 20 МБ; восстановите его через файловый доступ к серверу.')
                 source=await run_backup_io(unpack_restore_source,local,Path(tmp)/'unpacked')
                 async with registry.maintenance_lock:
-                    service=BackupService(ctx.repository.db,ctx.repository,ctx.repository.db.path.parent/'backups')
-                    result=service.restore(source)
+                    service=BackupService.from_settings(ctx.repository.db,ctx.repository,ctx.settings)
+                    result=await run_backup_io(service.restore,source)
                     # restore() atomically installed and validated the DB. Runtime
                     # state is rebuilt only after that point.
                     if not ctx.repository.acquire_lease('singleton:telegram-poller',ctx.settings.instance_id,90,metadata={'role':'poller'}):

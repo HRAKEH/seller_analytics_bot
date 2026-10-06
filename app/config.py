@@ -83,6 +83,9 @@ class Settings:
     log_format: str
     log_level: str
     auto_backup_send_telegram: bool = False
+    backup_compress: bool = True
+    backup_max_count: int = 10
+    backup_max_total_mb: int = 512
 
 
     def credentials_for_profile(self, profile: str = "DEFAULT") -> MarketplaceCredentials:
@@ -142,7 +145,7 @@ class Settings:
             alert_cooldown_minutes=max(30, min(int(os.getenv("ALERT_COOLDOWN_MINUTES", "1440")), 43200)),
             auto_backup_enabled=_bool("AUTO_BACKUP_ENABLED", True),
             auto_backup_hour_utc=max(0, min(int(os.getenv("AUTO_BACKUP_HOUR_UTC", "3")), 23)),
-            backup_retention_days=max(1, min(int(os.getenv("BACKUP_RETENTION_DAYS", "14")), 365)),
+            backup_retention_days=max(1, min(int(os.getenv("BACKUP_RETENTION_DAYS", "7")), 365)),
             instance_id=os.getenv("INSTANCE_ID", f"{socket.gethostname()}-{uuid.uuid4().hex[:8]}"),
             distributed_lock_ttl_seconds=max(60, min(int(os.getenv("DISTRIBUTED_LOCK_TTL_SECONDS", "7200")), 86400)),
             retry_worker_interval_seconds=max(5, min(int(os.getenv("RETRY_WORKER_INTERVAL_SECONDS", "30")), 600)),
@@ -153,6 +156,9 @@ class Settings:
             log_format=os.getenv("LOG_FORMAT", "json").strip().lower(),
             log_level=os.getenv("LOG_LEVEL", "INFO").strip().upper(),
             auto_backup_send_telegram=_bool("AUTO_BACKUP_SEND_TELEGRAM",False),
+            backup_compress=_bool("BACKUP_COMPRESS",True),
+            backup_max_count=max(1,int(os.getenv("BACKUP_MAX_COUNT","10"))),
+            backup_max_total_mb=max(1,int(os.getenv("BACKUP_MAX_TOTAL_MB","512"))),
         )
 
 settings = Settings.from_env()

@@ -14,7 +14,10 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from app.config import Settings
 from app.storage import Database, Repository
 from app.services.preferences import defaults_from_settings
-from app.services.scheduler import multi_scheduler_loop, multi_alerts_loop, automatic_backup_loop
+from app.services.scheduler import (
+    multi_scheduler_loop, multi_alerts_loop, automatic_backup_loop,
+    backup_storage_maintenance_loop,
+)
 from app.services.observability import configure_logging
 from app.services.resilience import (
     retry_worker_loop, heartbeat_loop, database_maintenance_loop, polling_lease_heartbeat,
@@ -87,6 +90,7 @@ async def main():
             asyncio.create_task(multi_scheduler_loop(bot,registry),name='multi-daily-scheduler'),
             asyncio.create_task(multi_alerts_loop(bot,registry),name='multi-alerts-scheduler'),
             asyncio.create_task(automatic_backup_loop(registry,bot),name='automatic-backup'),
+            asyncio.create_task(backup_storage_maintenance_loop(registry),name='backup-storage-maintenance'),
         ]
         if settings.health_server_enabled:
             tasks.append(asyncio.create_task(health_http_server(registry),name='health-http-server'))

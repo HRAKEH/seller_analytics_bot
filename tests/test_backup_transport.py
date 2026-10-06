@@ -212,7 +212,7 @@ async def test_manual_creation_failure_does_not_report_success_or_send_document(
 
 
 @pytest.mark.asyncio
-async def test_manual_backup_sends_valid_zip_then_removes_only_transport_file(ui, monkeypatch):
+async def test_manual_backup_sends_stored_zip_without_removing_recovery_file(ui, monkeypatch):
     monkeypatch.setattr(transport, 'TELEGRAM_DOWNLOAD_LIMIT', 1)
     original = ui.telegram.request
     sent = []
@@ -226,9 +226,11 @@ async def test_manual_backup_sends_valid_zip_then_removes_only_transport_file(ui
         return await original(bot, method, **kwargs)
     ui.bot.session.make_request = AsyncMock(side_effect=inspect_document)
     await press(ui, '/backup')
-    assert len(sent) == 1 and not sent[0].exists()
+    assert len(sent) == 1 and sent[0].exists()
     row = ui.repo.recent_backups()[0]
-    assert (ui.repo.db.path.parent / 'backups' / row['filename']).exists()
+    assert sent[0] == ui.repo.db.path.parent / 'backups' / row['filename']
+    assert sent[0].suffix == '.zip' and _sha256(sent[0]) == row['checksum']
+    assert not list(sent[0].parent.glob('.seller-bot-upload-*'))
 
 
 @pytest.mark.asyncio

@@ -396,6 +396,14 @@ class Repository:
             rows=c.execute("SELECT * FROM backup_history ORDER BY created_at DESC,id DESC LIMIT ?",(limit,)).fetchall()
         return [dict(r) for r in rows]
 
+    def replace_backup_file(self, filename: str, new_filename: str, checksum: str,
+                            size_bytes: int, *, previous_checksum: str) -> None:
+        """Keep recorded backup paths/checksums correct after lossless compression."""
+        with self.db.connect() as c:
+            c.execute("""UPDATE backup_history SET filename=?,checksum=?,size_bytes=?
+                         WHERE filename=? AND checksum=? AND status='success' AND kind!='restore'""",
+                      (new_filename,checksum,size_bytes,filename,previous_checksum))
+
     def ensure_connection(self, shop_id: int, marketplace: str, display_name: str | None = None,
                           external_account_id: str | None = None) -> MarketplaceConnection:
         if marketplace not in {"ozon", "wildberries"}:
