@@ -329,9 +329,9 @@ def test_shop_picker_keyboard_uses_one_tap_callbacks(monkeypatch):
 def test_backfill_picker_uses_marketplace_and_period_callbacks(monkeypatch):
     kb=_load_keyboard_module_with_stub(monkeypatch)
     sources=kb.backfill_source_keyboard(has_ozon=True,has_wb=True)
-    assert ('🟣 Ozon','backfill:source:ozon') in sources
-    assert ('🔵 Wildberries','backfill:source:wildberries') in sources
-    assert ('🟣🔵 Оба маркетплейса','backfill:source:all') in sources
+    assert ('🔵 Ozon','backfill:source:ozon') in sources
+    assert ('🟣 Wildberries','backfill:source:wildberries') in sources
+    assert ('🔵🟣 Оба маркетплейса','backfill:source:all') in sources
     period=kb.backfill_period_keyboard('wildberries')
     assert ('7 дней','backfill:period:wildberries:7') in period
     assert ('30 дней','backfill:period:wildberries:30') in period

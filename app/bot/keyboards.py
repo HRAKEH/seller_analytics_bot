@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import calendar
 from datetime import date
+from app.marketplaces import OZON_ICON, WB_ICON, OZON_LABEL, WB_LABEL
 from app.access import action_permission, can_role, normalize_role
 
 from aiogram.utils.keyboard import ReplyKeyboardBuilder, InlineKeyboardBuilder
@@ -386,11 +387,11 @@ def retry_jobs_keyboard(rows):
 def backfill_source_keyboard(*, has_ozon: bool, has_wb: bool):
     kb=InlineKeyboardBuilder()
     if has_ozon:
-        kb.button(text='🟣 Ozon',callback_data='backfill:source:ozon')
+        kb.button(text=OZON_LABEL,callback_data='backfill:source:ozon')
     if has_wb:
-        kb.button(text='🔵 Wildberries',callback_data='backfill:source:wildberries')
+        kb.button(text=WB_LABEL,callback_data='backfill:source:wildberries')
     if has_ozon and has_wb:
-        kb.button(text='🟣🔵 Оба маркетплейса',callback_data='backfill:source:all')
+        kb.button(text=f'{OZON_ICON}{WB_ICON} Оба маркетплейса',callback_data='backfill:source:all')
     kb.button(text='❌ Отмена',callback_data='backfill:cancel')
     kb.adjust(1)
     return kb.as_markup()

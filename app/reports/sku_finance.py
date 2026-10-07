@@ -9,6 +9,7 @@ from datetime import date, timedelta
 from html import escape
 
 from app.storage import Repository
+from app.marketplaces import OZON_ICON, WB_ICON
 from .management import EXPENSE_KEYS
 from app.services.money import money_sum
 from .dates import readable_dates
@@ -94,7 +95,7 @@ def format_sku_economics(report: SkuEconomicsReport, limit: int | None = None) -
         lines.append(f'\n{label}: товаров с данными — {len(rows)}. Показано: {shown} · по сумме заказов.')
         selected.extend(rows[:limit])
     for i,row in enumerate(selected,start=1):
-        icon='🟣' if row.marketplace=='ozon' else '🔵'
+        icon=OZON_ICON if row.marketplace=='ozon' else WB_ICON
         cov='—' if row.coverage_pct is None else f'{row.coverage_pct:.0f}%'
         market='Ozon' if row.marketplace=='ozon' else 'WB'
         lines += ['',f'{i}. {icon} {market} · <b>{escape(row.name)}</b>',

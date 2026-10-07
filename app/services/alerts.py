@@ -4,10 +4,11 @@ import hashlib
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from app.storage import Repository
+from app.marketplaces import OZON_LABEL, WB_SHORT_LABEL
 from app.reports.products import build_product_report
 
 def marketplace_label(value: str) -> str:
-    return {'wildberries':'WB','wb':'WB','ozon':'Ozon'}.get(value,value)
+    return {'wildberries':WB_SHORT_LABEL,'wb':WB_SHORT_LABEL,'ozon':OZON_LABEL}.get(value,value)
 
 
 def stock_alert_text(row) -> str:

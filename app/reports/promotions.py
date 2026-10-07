@@ -2,6 +2,7 @@ from __future__ import annotations
 from datetime import date, timedelta
 from html import escape
 from app.storage import Repository
+from app.marketplaces import OZON_LABEL, WB_SHORT_LABEL
 from .dates import readable_dates
 
 
@@ -27,7 +28,7 @@ def format_promotions(repo: Repository, shop_id: int, as_of: date, *, future_day
                   'Используйте кнопку «🔄 Обновить акции».']
         return '\n'.join(lines)
     for promo in promos:
-        market='🔵 WB' if promo['marketplace']=='wildberries' else '🟣 Ozon'
+        market=WB_SHORT_LABEL if promo['marketplace']=='wildberries' else OZON_LABEL
         start=str(promo.get('start_at') or '') or '—'; finish=str(promo.get('end_at') or '') or '—'
         key=(promo['marketplace'],str(promo['external_promotion_id']))
         linked=[x for x in by_promo.get(key,[]) if x.get('product_id') is not None]

@@ -1,6 +1,7 @@
 """Compact Telegram HTML formatter."""
 from __future__ import annotations
 from html import escape
+from app.marketplaces import OZON_LABEL, WB_LABEL
 from decimal import Decimal, ROUND_HALF_UP
 from .daily import DailyReport, MarketplaceDaily
 from .dates import readable_dates
@@ -21,7 +22,7 @@ def delta(current: float | None, previous: float | None, comparison: str = 'к �
     return f'{arrow} {abs(pct):.1f}% {comparison}'
 
 def source_name(source: str) -> str:
-    return '🟣 Ozon' if source == 'ozon' else '🔵 Wildberries'
+    return OZON_LABEL if source == 'ozon' else WB_LABEL
 
 
 def _buyer_price_lines(prices) -> list[str]:
@@ -135,7 +136,7 @@ def _product_name(name: str) -> str:
 @readable_dates
 def format_product_report(report) -> str:
     lines=[f'🏆 <b>Товары · {report.start} — {report.end}</b>','━━━━━━━━━━━━━━━━']
-    labels={'ozon':'🟣 Ozon','wildberries':'🔵 Wildberries'}
+    labels={'ozon':OZON_LABEL,'wildberries':WB_LABEL}
     if not report.top:
         lines.append('📭 Товарной истории пока нет. Откройте «📊 Отчёты» → «📥 Загрузить историю».')
     for market in ('ozon','wildberries'):
@@ -193,7 +194,7 @@ def format_product_report(report) -> str:
 
 @readable_dates
 def format_stock_report(report) -> str:
-    labels={'ozon':'🟣 Ozon','wildberries':'🔵 Wildberries'}
+    labels={'ozon':OZON_LABEL,'wildberries':WB_LABEL}
     lines=['📦 <b>Остатки и запас</b>','━━━━━━━━━━━━━━━━']
     if report.inventory_schemes:
         for row in report.inventory_schemes:

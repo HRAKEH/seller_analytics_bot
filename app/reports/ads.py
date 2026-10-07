@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 from html import escape
 from app.storage import Repository
+from app.marketplaces import OZON_ICON, WB_ICON
 from .dates import readable_dates
 
 @dataclass(frozen=True)
@@ -83,13 +84,13 @@ def format_advertising(report: AdvertisingReport, limit: int | None = None) -> s
     if report.campaigns:
         lines += ['','<b>Кампании по расходу</b>']
         for i,r in enumerate(report.campaigns[:limit],1):
-            icon='🟣' if r.marketplace=='ozon' else '🔵'
+            icon=OZON_ICON if r.marketplace=='ozon' else WB_ICON
             lines.append(f'{i}. {icon} <b>{escape(r.name)}</b> · {_money(r.spend)} · ДРР {_pct(r.drr)}')
             lines.append(f'   продажи рекламы {_money(r.attributed_sales)} · заказы {r.orders:g} · клики {r.clicks:g}')
     if report.products:
         lines += ['','<b>SKU по рекламному расходу</b>']
         for i,r in enumerate(report.products[:limit],1):
-            icon='🟣' if r.marketplace=='ozon' else '🔵'
+            icon=OZON_ICON if r.marketplace=='ozon' else WB_ICON
             market='Ozon' if r.marketplace=='ozon' else 'WB'
             lines.append(f'{i}. {icon} {market} · <b>{escape(r.name)}</b> · SKU <code>{escape(r.key)}</code>')
             lines.append(f'   расход {_money(r.spend)} · продажи {_money(r.attributed_sales)} · ДРР {_pct(r.drr)} · заказы {r.orders:g}')

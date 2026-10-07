@@ -77,7 +77,7 @@ def test_summary_uses_agreed_money_bases_and_original_currencies_in_details(ui):
     assert 'Всего заказано: <b>159 шт. · ≈ 104 580,53 ₽</b>' in text.summary_html
     assert '29 шт. · ≈ 15 077,53 ₽' in text.summary_html
     assert '130 шт. · 89 503 ₽' in text.summary_html
-    assert text.summary_html.index('🟣 Ozon')<text.summary_html.index('🔵 Wildberries')
+    assert text.summary_html.index('🔵 Ozon')<text.summary_html.index('🟣 Wildberries')
     assert '33649' not in text.summary_html and '33 649' not in text.summary_html
     assert '33 649,00 ₽' in text.details_html and '14,98 BYN' in text.details_html
     assert '1 BYN = 27,6621 ₽' in text.details_html
@@ -87,7 +87,7 @@ def test_summary_uses_agreed_money_bases_and_original_currencies_in_details(ui):
 @pytest.mark.parametrize('change',[{'complete':False},{'rates':None}])
 def test_missing_prices_or_rates_never_become_full_ruble_total(ui,change):
     text=preview(ui,replace(buyer_prices(),**change))
-    ozon=text.summary_html.split('🔵 Wildberries')[0]
+    ozon=text.summary_html.split('🟣 Wildberries')[0]
     assert '15 077' not in ozon and '33 649' not in ozon
     assert '⏳' in ozon and '14,98 BYN' in text.details_html
     assert 'Всего заказано: <b>159 шт.</b> · ⏳ сумма неполная.' in text.summary_html

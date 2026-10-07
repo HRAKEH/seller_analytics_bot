@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 from html import escape
 from app.storage import Repository
+from app.marketplaces import OZON_LABEL, WB_LABEL
 from .dates import readable_dates
 
 
@@ -62,7 +63,7 @@ def _money(v: float) -> str:
 def format_reconciliation(report: ReconciliationReport, limit: int | None=None) -> str:
     lines=[f'🔎 <b>Сверка · {report.start} — {report.end}</b>','━━━━━━━━━━━━━━━━',
            'Разница между этапами может быть нормальной задержкой: заказы, продажи/возвраты и финансы обновляются в разные даты.']
-    for market,label in (('wildberries','🔵 Wildberries'),('ozon','🟣 Ozon')):
+    for market,label in (('wildberries',WB_LABEL),('ozon',OZON_LABEL)):
         stat=report.match_stats.get(market,{})
         total=stat.get('total',0); matched=stat.get('matched',0); pct=stat.get('coverage_pct',0)
         if market=='wildberries':

@@ -1,6 +1,7 @@
 from __future__ import annotations
 from html import escape
 from app.storage import Repository
+from app.marketplaces import OZON_ICON, WB_ICON
 from app.services.actions import ActionCenter
 from app.services.supply import ForecastQualityReport
 from .text import escape_clip, page_slice
@@ -29,7 +30,7 @@ def format_inbound(repo: Repository, shop_id: int) -> str:
     for r in rows: by_supply.setdefault((r['marketplace'],r['external_supply_id']),[]).append(r)
     for (market,sid),items in by_supply.items():
         first=items[0]; qty=sum(float(x.get('remaining_units') or 0) for x in items)
-        icon='🔵' if market=='wildberries' else '🟣'
+        icon=WB_ICON if market=='wildberries' else OZON_ICON
         label='WB' if market=='wildberries' else 'Ozon'
         eta=str(first.get('planned_at') or 'ETA неизвестна')
         wh=escape(str(first.get('warehouse_name') or 'склад не указан'))

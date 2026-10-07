@@ -3,6 +3,7 @@ from datetime import date, datetime, timedelta
 import asyncio
 from dataclasses import replace
 from html import escape
+from app.marketplaces import OZON_ICON, WB_ICON, OZON_LABEL, WB_LABEL
 from pathlib import Path
 import tempfile
 from zoneinfo import ZoneInfo
@@ -225,10 +226,10 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
 
     def backfill_source_label(source: str) -> str:
         return {
-            'ozon':'🟣 Ozon',
-            'wildberries':'🔵 Wildberries',
-            'wb':'🔵 Wildberries',
-            'all':'🟣🔵 Ozon + Wildberries',
+            'ozon':OZON_LABEL,
+            'wildberries':WB_LABEL,
+            'wb':WB_LABEL,
+            'all':f'{OZON_ICON}{WB_ICON} Ozon + Wildberries',
         }.get(source,source)
 
     async def show_backfill_source_picker(message: types.Message):
@@ -318,9 +319,9 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
         if p.demo_mode:
             core += ['🧪 Demo WB: ✅', '🧪 Demo Ozon: ✅']
         else:
-            core.append('🟣 Ozon: ✅' if ctx.ozon_connection_id is not None else '🟣 Ozon: ❌ ключи не заданы')
+            core.append(f'{OZON_LABEL}: ✅' if ctx.ozon_connection_id is not None else f'{OZON_LABEL}: ❌ ключи не заданы')
         if not p.demo_mode:
-            core.append('🔵 Wildberries: ✅' if ctx.wb_connection_id is not None else '🔵 Wildberries: ❌ токен не задан')
+            core.append(f'{WB_LABEL}: ✅' if ctx.wb_connection_id is not None else f'{WB_LABEL}: ❌ токен не задан')
             core.append('📣 Ozon Performance: ✅' if ctx.collector.ozon_performance is not None else '📣 Ozon Performance: —')
         return '\n'.join([
             '⚙️ <b>Настройки магазина</b>', '━━━━━━━━━━━━━━━━',
@@ -1627,7 +1628,7 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
         lines=['⚙️ <b>Статус источников</b>','━━━━━━━━━━━━━━━━']
         for conn in ctx.repository.list_connections(ctx.shop_id):
             latest=ctx.repository.latest_run(conn.id); success=ctx.repository.last_successful_run(conn.id)
-            icon='🟣' if conn.marketplace=='ozon' else '🔵'
+            icon=OZON_ICON if conn.marketplace=='ozon' else WB_ICON
             lines.append(f'{icon} {escape(conn.display_name)}: {"✅" if conn.enabled else "⏸"}')
             lines.append(f'  последний успех: {success.finished_at if success else "—"}')
             if latest and latest.status=='failed':

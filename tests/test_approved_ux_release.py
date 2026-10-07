@@ -56,8 +56,8 @@ def test_ad_report_articles_use_inline_code_and_keep_marketplace_labels():
         AdRow('wildberries','1001','Подходит для Ozon',10,20,1,2,3),
         AdRow('ozon','WB-1002 & 01.','Название для WB',10,20,1,2,3)))
     text=format_advertising(report)
-    assert '🔵 WB · <b>Подходит для Ozon</b> · SKU <code>1001</code>' in text
-    assert '🟣 Ozon · <b>Название для WB</b> · SKU <code>WB-1002 &amp; 01.</code>' in text
+    assert '🟣 WB · <b>Подходит для Ozon</b> · SKU <code>1001</code>' in text
+    assert '🔵 Ozon · <b>Название для WB</b> · SKU <code>WB-1002 &amp; 01.</code>' in text
 
 
 def test_alert_pages_prioritize_empty_stock_and_keep_details_separate(data):

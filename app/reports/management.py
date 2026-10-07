@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import date,timedelta
 from html import escape
 from app.storage import Repository
+from app.marketplaces import OZON_ICON, WB_ICON
 from app.services.money import money_sum
 from .dates import readable_dates
 
@@ -117,7 +118,7 @@ def format_management(report: ManagementReport) -> str:
         return '\n'.join(lines+['','📭 Данных для расчёта пока нет.'])
     total=0.0; complete=not report.missing_sources
     for row in report.sources:
-        icon='🟣' if row.marketplace=='ozon' else '🔵'
+        icon=OZON_ICON if row.marketplace=='ozon' else WB_ICON
         cov='—' if row.cogs_coverage_pct is None else f'{row.cogs_coverage_pct:.0f}%'
         ad_label=('Реклама (начисления + Performance)' if row.unbilled_performance_ad_spend is not None
                   else 'Реклама по начислениям' if row.ads_from_finance else 'Реклама')
