@@ -17,7 +17,7 @@ class ManagementSource:
     estimated_cogs: float
     cogs_coverage_pct: float | None
     marketplace_expenses: float
-    ad_spend: float
+    ad_spend: float | None
     compensation: float
     estimated_result: float | None
     financial_sales: float | None
@@ -81,6 +81,13 @@ def build_management_report(repo: Repository, shop_id: int, end: date, days: int
             warnings.append('Реклама включена в финансовые расходы; обновите /finance для отдельной разбивки.')
         if unbilled_performance is not None:
             warnings.append('За дни без финансовых начислений реклама взята из Performance; расчёт предварительный.')
+        unconfirmed_unbilled=bool(ad_accounting and ad_accounting.get('unconfirmed_unbilled_days',0))
+        if ad_accounting and ad_accounting.get('unconfirmed_performance_days',0):
+            performance_ad_spend=None
+            warnings.append('Расходы Performance Ozon без исходного ответа не подтверждены; обновите рекламу.')
+        if unconfirmed_unbilled:
+            ad_spend=None
+            unbilled_performance=None
         result=None
         # A zero-unit row returned by estimated_order_cogs is a valid zero-COST
         # basis (for example, an expense-only day). But if there is no COGS row
@@ -89,7 +96,7 @@ def build_management_report(repo: Repository, shop_id: int, end: date, days: int
         has_cogs_basis=marketplace in cogs
         units_match=abs(units-expected_units)<=1e-9
         revenue_basis='ordered_revenue' in m and (units>0 or ordered_revenue==0)
-        if has_cogs_basis and c.get('basis_complete',True) and units_match and revenue_basis and (units<=0 or covered+1e-9>=units):
+        if not unconfirmed_unbilled and has_cogs_basis and c.get('basis_complete',True) and units_match and revenue_basis and (units<=0 or covered+1e-9>=units):
             result=money_sum([ordered_revenue,-estimated_cogs,-marketplace_expenses,-ad_spend,compensation])
         rows.append(ManagementSource(marketplace,ordered_revenue,estimated_cogs,coverage,
             marketplace_expenses,ad_spend,compensation,result,

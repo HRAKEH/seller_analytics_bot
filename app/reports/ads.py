@@ -12,7 +12,7 @@ class AdRow:
     marketplace: str
     key: str
     name: str
-    spend: float
+    spend: float | None
     attributed_sales: float
     orders: float
     clicks: float
@@ -20,11 +20,11 @@ class AdRow:
 
     @property
     def drr(self) -> float | None:
-        return self.spend / self.attributed_sales * 100 if self.attributed_sales > 0 else None
+        return self.spend / self.attributed_sales * 100 if self.spend is not None and self.attributed_sales > 0 else None
 
     @property
     def roas(self) -> float | None:
-        return self.attributed_sales / self.spend if self.spend > 0 else None
+        return self.attributed_sales / self.spend if self.spend is not None and self.spend > 0 else None
 
 @dataclass(frozen=True)
 class AdvertisingReport:
@@ -42,17 +42,22 @@ def build_advertising_report(repo: Repository, shop_id: int, end: date, days: in
     campaigns=[]
     for r in repo.ad_campaign_totals(shop_id,start.isoformat(),end.isoformat()):
         campaigns.append(AdRow(str(r['marketplace']),str(r['campaign_id']),str(r.get('campaign_name') or r['campaign_id']),
-            float(r.get('spend') or 0),float(r.get('attributed_sales') or 0),float(r.get('orders') or 0),
+            float(r.get('spend') or 0) if r.get('spend_confirmed',True) else None,
+            float(r.get('attributed_sales') or 0),float(r.get('orders') or 0),
             float(r.get('clicks') or 0),float(r.get('impressions') or 0)))
     products=[]
     for r in repo.ad_product_totals(shop_id,start.isoformat(),end.isoformat()):
         products.append(AdRow(str(r['marketplace']),str(r['marketplace_sku']),str(r.get('name') or r['marketplace_sku']),
-            float(r.get('spend') or 0),float(r.get('attributed_sales') or 0),float(r.get('orders') or 0),
+            float(r.get('spend') or 0) if r.get('spend_confirmed',True) else None,
+            float(r.get('attributed_sales') or 0),float(r.get('orders') or 0),
             float(r.get('clicks') or 0),float(r.get('impressions') or 0)))
-    campaigns.sort(key=lambda x:x.spend,reverse=True); products.sort(key=lambda x:x.spend,reverse=True)
+    campaigns.sort(key=lambda x:x.spend if x.spend is not None else -1,reverse=True)
+    products.sort(key=lambda x:x.spend if x.spend is not None else -1,reverse=True)
     from .coverage import build_source_coverage
     coverage=tuple(r for r in build_source_coverage(repo,shop_id,start.isoformat(),end.isoformat()) if r.component=='Рекламная статистика')
     warnings=[]
+    if any(r.spend is None for r in campaigns+products):
+        warnings.append('Исторические расходы Ozon без исходного ответа не подтверждены. Нажмите «Обновить рекламу».')
     for conn in repo.list_connections(shop_id):
         if conn.enabled and conn.marketplace=='ozon':
             run=repo.latest_run(conn.id,'performance/product-stats')
@@ -60,10 +65,21 @@ def build_advertising_report(repo: Repository, shop_id: int, end: date, days: in
                 warnings.append('Реклама Ozon не подключена. Владельцу нужны отдельные Client ID и Client Secret из Ozon Performance. После подключения нажмите «Обновить рекламу».')
             elif not any(r.marketplace=='ozon' and r.available_days for r in coverage):
                 warnings.append('Ozon: нет загруженной рекламной статистики за период. Проверьте отдельное подключение Ozon Performance через «Проверить API», затем нажмите «Обновить рекламу».')
+            for endpoint,label in (('performance/product-stats','Кампании Ozon'),('performance/products-sku','Реклама товаров Ozon')):
+                with repo.db.connect() as c:
+                    failures=c.execute('''WITH ranked AS (
+                        SELECT *,ROW_NUMBER() OVER(PARTITION BY data_date ORDER BY finished_at DESC,id DESC) rn
+                        FROM source_runs WHERE connection_id=? AND endpoint=? AND data_date BETWEEN ? AND ?)
+                        SELECT error FROM ranked WHERE rn=1 AND status IN ('failed','partial') ORDER BY data_date DESC LIMIT 1''',
+                        (conn.id,endpoint,start.isoformat(),end.isoformat())).fetchone()
+                if failures:
+                    warnings.append(label+': данные неполные; '+str(failures['error'] or 'есть ошибка загрузки')[:220])
     return AdvertisingReport(start.isoformat(),end.isoformat(),days,tuple(campaigns),tuple(products),coverage,tuple(warnings))
 
 
-def _money(v: float) -> str:
+def _money(v: float | None) -> str:
+    if v is None:
+        return '⏳ расход не подтверждён'
     return f'{v:,.0f}'.replace(',',' ')+' ₽'
 
 def _pct(v: float | None) -> str:

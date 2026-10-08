@@ -633,14 +633,18 @@ class Repository:
 
     def record_failure(self, connection_id: int, endpoint: str, data_date: str, error: str,
                        *, http_status: int | None = None, attempts: int = 1,
-                       started_at: str | None = None) -> int:
+                       started_at: str | None = None, raw_payload: Any = None) -> int:
         now = source_utcnow()
         with self.db.connect() as c:
             cur = c.execute("""INSERT INTO source_runs
                 (connection_id,endpoint,data_date,status,started_at,finished_at,error,http_status,attempts,created_at)
                 VALUES(?,?,?,'failed',?,?,?,?,?,?)""",
                 (connection_id, endpoint, data_date, started_at or now, now, error[:2000], http_status, attempts, now))
-            return int(cur.lastrowid)
+            run_id = int(cur.lastrowid)
+            if raw_payload is not None:
+                c.execute('INSERT INTO raw_payloads(source_run_id,payload_json,created_at) VALUES(?,?,?)',
+                          (run_id, canonical_json(raw_payload), now))
+            return run_id
 
     def record_success(self, connection_id: int, endpoint: str, data_date: str,
                        raw_payload: Any, metrics: Iterable[MetricPoint], *,
@@ -1270,21 +1274,25 @@ class Repository:
         """Deduct billed ads once; use Performance only on days without accruals."""
         with self.db.connect() as c:
             rows=c.execute("""WITH ranked AS (
-                SELECT mv.*,ROW_NUMBER() OVER(PARTITION BY mv.connection_id,mv.data_date,mv.metric_key
+                SELECT mv.*,EXISTS(SELECT 1 FROM raw_payloads rp WHERE rp.source_run_id=sr.id) raw_saved,
+                  ROW_NUMBER() OVER(PARTITION BY mv.connection_id,mv.data_date,mv.metric_key
                     ORDER BY mv.fetched_at DESC,mv.id DESC) rn
                 FROM metric_values mv JOIN source_runs sr ON sr.id=mv.source_run_id
                 JOIN marketplace_connections mc ON mc.id=mv.connection_id
                 WHERE mc.shop_id=? AND mc.marketplace='ozon' AND mv.data_date BETWEEN ? AND ?
                   AND mv.metric_key IN ('marketplace_net','services','finance_ad_spend','ad_spend')
                   AND sr.status IN ('success','partial'))
-                SELECT connection_id,data_date,metric_key,value FROM ranked WHERE rn=1""",
+                SELECT connection_id,data_date,metric_key,value,raw_saved FROM ranked WHERE rn=1""",
                 (shop_id,start_date,end_date)).fetchall()
-        daily={}
+        daily={}; unconfirmed=set()
         for row in rows:
             daily.setdefault((row['connection_id'],row['data_date']),{})[row['metric_key']]=float(row['value'])
+            if row['metric_key']=='ad_spend' and not row['raw_saved']:
+                unconfirmed.add((row['connection_id'],row['data_date']))
         result={'has_finance':False,'billed':0.0,'performance_without_finance':0.0,
-                'performance_only_days':0,'legacy_finance_days':0}
-        for metrics in daily.values():
+                'performance_only_days':0,'legacy_finance_days':0,
+                'unconfirmed_performance_days':len(unconfirmed),'unconfirmed_unbilled_days':0}
+        for key,metrics in daily.items():
             if 'marketplace_net' in metrics and 'services' in metrics:
                 result['has_finance']=True
                 result['billed'] += metrics.get('finance_ad_spend',0)
@@ -1292,6 +1300,7 @@ class Repository:
             elif 'ad_spend' in metrics:
                 result['performance_without_finance'] += metrics['ad_spend']
                 result['performance_only_days'] += 1
+                if key in unconfirmed:result['unconfirmed_unbilled_days'] += 1
         return result
 
     def estimated_order_cogs(self, shop_id: int, start_date: str, end_date: str) -> dict[str,dict[str,float]]:
@@ -1411,16 +1420,16 @@ class Repository:
                     old=c.execute('''WITH ranked AS (
                         SELECT a.*,ROW_NUMBER() OVER(PARTITION BY a.campaign_id ORDER BY a.fetched_at DESC,a.id DESC) rn
                         FROM ad_campaign_daily a JOIN source_runs sr ON sr.id=a.source_run_id
-                        WHERE a.connection_id=? AND a.data_date=? AND sr.endpoint=? AND sr.status IN ('success','partial'))
-                        SELECT * FROM ranked WHERE rn=1''',(conn_id,run['data_date'],run['endpoint'])).fetchall()
+                        WHERE a.connection_id=? AND a.data_date=? AND sr.status IN ('success','partial'))
+                        SELECT * FROM ranked WHERE rn=1''',(conn_id,run['data_date'])).fetchall()
                     campaign_rows += [AdCampaignPoint(conn_id,run['data_date'],r['campaign_id'],r['campaign_name']) for r in old if r['campaign_id'] not in current]
                 if replace_product_snapshot:
                     current={(str(p.marketplace_sku),str(p.campaign_id)) for p in product_rows}
                     old=c.execute('''WITH ranked AS (
                         SELECT a.*,ROW_NUMBER() OVER(PARTITION BY a.marketplace_sku,a.campaign_id ORDER BY a.fetched_at DESC,a.id DESC) rn
                         FROM ad_product_daily a JOIN source_runs sr ON sr.id=a.source_run_id
-                        WHERE a.connection_id=? AND a.data_date=? AND sr.endpoint=? AND sr.status IN ('success','partial'))
-                        SELECT * FROM ranked WHERE rn=1''',(conn_id,run['data_date'],run['endpoint'])).fetchall()
+                        WHERE a.connection_id=? AND a.data_date=? AND sr.status IN ('success','partial'))
+                        SELECT * FROM ranked WHERE rn=1''',(conn_id,run['data_date'])).fetchall()
                     product_rows += [AdProductPoint(conn_id,run['data_date'],r['marketplace_sku'],r['campaign_id'],r['campaign_name'],r['listing_id'])
                         for r in old if (r['marketplace_sku'],r['campaign_id']) not in current]
             saved_campaigns=saved_products=0
@@ -1456,7 +1465,10 @@ class Repository:
                 JOIN source_runs sr ON sr.id=a.source_run_id
                 WHERE mc.shop_id=? AND a.data_date BETWEEN ? AND ? AND sr.status IN ('success','partial'))
               SELECT marketplace,campaign_id,MAX(campaign_name) campaign_name,SUM(spend) spend,
-                     SUM(attributed_sales) attributed_sales,SUM(orders) orders,SUM(clicks) clicks,SUM(impressions) impressions
+                     SUM(attributed_sales) attributed_sales,SUM(orders) orders,SUM(clicks) clicks,SUM(impressions) impressions,
+                     MIN(CASE WHEN marketplace='ozon' AND NOT EXISTS(
+                         SELECT 1 FROM raw_payloads rp WHERE rp.source_run_id=ranked.source_run_id)
+                         THEN 0 ELSE 1 END) spend_confirmed
               FROM ranked WHERE rn=1 GROUP BY marketplace,campaign_id
               ORDER BY spend DESC,campaign_id""",(shop_id,start_date,end_date)).fetchall()
         return [dict(r) for r in rows]
@@ -1473,7 +1485,10 @@ class Repository:
                 WHERE mc.shop_id=? AND a.data_date BETWEEN ? AND ? AND sr.status IN ('success','partial'))
               SELECT marketplace,marketplace_sku,COALESCE(MAX(internal_sku),marketplace_sku) internal_sku,
                      COALESCE(MAX(name),marketplace_sku) name,SUM(spend) spend,SUM(attributed_sales) attributed_sales,
-                     SUM(orders) orders,SUM(clicks) clicks,SUM(impressions) impressions
+                     SUM(orders) orders,SUM(clicks) clicks,SUM(impressions) impressions,
+                     MIN(CASE WHEN marketplace='ozon' AND NOT EXISTS(
+                         SELECT 1 FROM raw_payloads rp WHERE rp.source_run_id=ranked.source_run_id)
+                         THEN 0 ELSE 1 END) spend_confirmed
               FROM ranked WHERE rn=1 GROUP BY marketplace,marketplace_sku
               ORDER BY spend DESC,marketplace_sku""",(shop_id,start_date,end_date)).fetchall()
         return [dict(r) for r in rows]

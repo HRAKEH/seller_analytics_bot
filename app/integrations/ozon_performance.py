@@ -2,6 +2,7 @@
 from __future__ import annotations
 import hashlib
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 from .base import MarketplaceClient, FetchResult
 
 
@@ -70,8 +71,15 @@ class OzonPerformanceClient(MarketplaceClient):
 
     async def product_sku_stats(self, date_from: str, date_to: str,
                                 campaign_ids: list[str] | None = None) -> FetchResult:
-        payload = {'dateFrom': date_from, 'dateTo': date_to}
-        if campaign_ids:
-            payload['campaignIds'] = [str(x) for x in campaign_ids]
+        ids = list(dict.fromkeys(str(x).strip() for x in campaign_ids or []))
+        if not ids or any(not x.isascii() or not x.isdigit() or not 0 < int(x) < 2**64 for x in ids):
+            return FetchResult.failure(self.source,
+                'Реклама Ozon: для статистики товаров нужен список ID кампаний.', None, 0)
+        payload = {'dateFrom': date_from, 'dateTo': date_to, 'campaignIds': ids}
         return await self.request_auth('POST', '/api/client/statistics/products/sku',
                                        json=payload, rate_key='statistics_products_sku')
+
+    @staticmethod
+    def sku_history_start():
+        """The SKU method documents dateFrom no earlier than yesterday (Moscow)."""
+        return datetime.now(ZoneInfo('Europe/Moscow')).date() - timedelta(days=1)

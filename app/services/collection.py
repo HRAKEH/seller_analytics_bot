@@ -12,7 +12,7 @@ from app.integrations.wildberries import decode_wb_token
 from app.storage import Repository, MetricPoint, ProductMetricPoint, InventoryPoint, CommerceEventPoint
 from .normalization import normalize_ozon_order_analytics, normalize_wb_orders, NormalizationError
 from .finance import (
-    normalize_wb_finance_report, normalize_ozon_accruals, normalize_wb_ad_stats, normalize_ozon_ad_stats,
+    normalize_wb_finance_report, normalize_ozon_accruals, normalize_wb_ad_stats,
     normalize_wb_product_finance, normalize_ozon_product_finance, ProductFinanceObservation,
     FinanceNormalizationError,
 )
@@ -28,7 +28,7 @@ from .reconciliation import (
 )
 from .advertising import (
     normalize_wb_ad_detail, normalize_ozon_ad_campaign_detail, normalize_ozon_ad_product_detail,
-    AdvertisingNormalizationError,
+    AdvertisingNormalizationError, ozon_ad_campaign_ids,
 )
 from .inbound import normalize_wb_supply, normalize_ozon_order
 from .promotions import normalize_wb_promotions, normalize_ozon_promotions, PromotionNormalizationError, wb_promotion_finished
@@ -970,29 +970,33 @@ class CollectionService:
             while current <= end:
                 ds=current.isoformat(); endpoint='performance/product-stats'
                 result=await self.ozon_performance.product_campaign_stats(ds,ds)
+                campaign_raw={'request':{'dateFrom':ds,'dateTo':ds},'response':result.data}
+                campaign_ids=None
+                campaign_id_error='Не удалось получить список рекламных кампаний Ozon.'
                 if not result.ok:
-                    outcomes.append(self._failure(ozon_connection_id,endpoint,ds,'ozon',result))
+                    campaign_raw['error']=result.error
+                    rid=self.repo.record_failure(ozon_connection_id,endpoint,ds,result.error or campaign_id_error,
+                        http_status=result.status_code,attempts=result.attempts,raw_payload=campaign_raw)
+                    outcomes.append(CollectionOutcome('ozon',ds,False,rid,result.error or campaign_id_error))
                 else:
+                    # Obtain IDs even if money normalization fails. A SKU response
+                    # may still provide valid amounts while the campaign schema changes.
+                    try:
+                        campaign_ids=ozon_ad_campaign_ids(result.data)
+                    except AdvertisingNormalizationError as exc:
+                        campaign_id_error=str(exc)
                     try:
                         campaigns=normalize_ozon_ad_campaign_detail(result.data,ozon_connection_id,ds)
-                        grouped=normalize_ozon_ad_stats(result.data,ozon_connection_id)
+                        if any(row.data_date!=ds for row in campaigns):
+                            raise AdvertisingNormalizationError('Ozon вернул рекламную статистику за другую дату.')
                     except (FinanceNormalizationError,AdvertisingNormalizationError) as exc:
-                        rid=self.repo.record_failure(ozon_connection_id,endpoint,ds,f'Normalization: {exc}',attempts=result.attempts)
+                        rid=self.repo.record_failure(ozon_connection_id,endpoint,ds,f'Normalization: {exc}',
+                            http_status=result.status_code,attempts=result.attempts,raw_payload=campaign_raw)
                         outcomes.append(CollectionOutcome('ozon',ds,False,rid,str(exc)))
                     else:
-                        # Campaign endpoint can be period-shaped without a date. For one-day requests, force the requested date.
-                        points=grouped.get(ds,[])
-                        if not points and campaigns:
-                            spend=sum(x.spend for x in campaigns); sales=sum(x.attributed_sales for x in campaigns)
-                            now=campaigns[0].data_date
-                            points=[MetricPoint(ozon_connection_id,ds,'ad_spend',spend,'RUB',False,now),
-                                    MetricPoint(ozon_connection_id,ds,'ad_attributed_sales',sales,'RUB',False,now)]
-                        if not points:
-                            points=[MetricPoint(ozon_connection_id,ds,'ad_spend',0,'RUB'),
-                                    MetricPoint(ozon_connection_id,ds,'ad_attributed_sales',0,'RUB')]
-                        payload={'day':ds,'campaigns':[vars(x) for x in campaigns]}
-                        rid=self.repo.record_success(ozon_connection_id,endpoint,ds,payload,points,
-                            attempts=result.attempts,store_raw=False)
+                        points=[MetricPoint(ozon_connection_id,ds,'ad_spend',sum(x.spend for x in campaigns),'RUB'),
+                                MetricPoint(ozon_connection_id,ds,'ad_attributed_sales',sum(x.attributed_sales for x in campaigns),'RUB')]
+                        rid=self.repo.record_success(ozon_connection_id,endpoint,ds,campaign_raw,points,attempts=result.attempts)
                         self.repo.save_ad_details(rid,campaigns=campaigns,replace_campaign_snapshot=True)
                         outcomes.append(CollectionOutcome('ozon',ds,True,rid,'campaign ads loaded'))
 
@@ -1001,20 +1005,53 @@ class CollectionService:
                 product_stats=getattr(self.ozon_performance,'product_sku_stats',None)
                 if callable(product_stats):
                     product_endpoint='performance/products-sku'
-                    detail=await product_stats(ds,ds)
-                    if not detail.ok:
-                        outcomes.append(self._failure(ozon_connection_id,product_endpoint,ds,'ozon',detail))
+                    history_start=getattr(self.ozon_performance,'sku_history_start',None)
+                    historical_limit=(history_start() if callable(history_start) else None)
+                    if campaign_ids and historical_limit is not None and current<historical_limit:
+                        # Campaign totals support historical periods, but this
+                        # SKU method only accepts today/yesterday. Keep saved SKU
+                        # rows; an API retention limit is not a transient failure.
+                        note='Ozon: повторная загрузка SKU за эту дату недоступна; используется сохранённый архив. Суммы кампаний обновляются отдельно.'
+                        raw={'day':ds,'limitation':'sku_history_window','campaignIds':campaign_ids}
+                        previous=self.repo.latest_run(ozon_connection_id,product_endpoint,ds)
+                        saved=self.repo.raw_payload_for_run(previous.id) if previous else None
+                        if previous and previous.status=='partial' and saved and json.loads(saved)==raw:
+                            rid=previous.id
+                        else:
+                            rid=self.repo.record_success(ozon_connection_id,product_endpoint,ds,raw,[],
+                                attempts=0,status='partial',error=note)
+                        outcomes.append(CollectionOutcome('ozon',ds,True,rid,note))
+                    elif campaign_ids is None:
+                        rid=self.repo.record_failure(ozon_connection_id,product_endpoint,ds,campaign_id_error,
+                            raw_payload=campaign_raw)
+                        outcomes.append(CollectionOutcome('ozon',ds,False,rid,campaign_id_error))
                     else:
+                        # Never send an empty ID list. An explicitly empty campaign
+                        # report confirms an empty product snapshot without a request.
+                        raw={'dateFrom':ds,'dateTo':ds,'campaignIds':campaign_ids,'responses':[]}
+                        products=[]; attempts=0; status=200
                         try:
-                            products=normalize_ozon_ad_product_detail(detail.data,ozon_connection_id,ds)
+                            for offset in range(0,len(campaign_ids),10):
+                                batch=campaign_ids[offset:offset+10]
+                                detail=await product_stats(ds,ds,campaign_ids=batch)
+                                attempts+=detail.attempts; status=detail.status_code
+                                raw['responses'].append({'campaignIds':batch,'response':detail.data,
+                                    'http_status':detail.status_code,'error':detail.error})
+                                if not detail.ok:
+                                    raise AdvertisingNormalizationError(detail.error or 'Не удалось загрузить рекламу товаров Ozon.')
+                                batch_rows=normalize_ozon_ad_product_detail(detail.data,ozon_connection_id,ds)
+                                if any(row.data_date!=ds or row.campaign_id not in batch for row in batch_rows):
+                                    raise AdvertisingNormalizationError('Ozon вернул статистику за другую дату или кампанию.')
+                                products.extend(batch_rows)
+                            if not campaign_ids:
+                                raw['empty_campaign_response']=result.data
                             products=self._resolve_ad_product_listings(ozon_connection_id,products)
                         except AdvertisingNormalizationError as exc:
-                            rid=self.repo.record_failure(ozon_connection_id,product_endpoint,ds,f'Normalization: {exc}',attempts=detail.attempts)
+                            rid=self.repo.record_failure(ozon_connection_id,product_endpoint,ds,str(exc),
+                                http_status=status,attempts=attempts,raw_payload=raw)
                             outcomes.append(CollectionOutcome('ozon',ds,False,rid,str(exc)))
                         else:
-                            payload={'day':ds,'products':[vars(x) for x in products]}
-                            rid=self.repo.record_success(ozon_connection_id,product_endpoint,ds,payload,[],
-                                attempts=detail.attempts,store_raw=False)
+                            rid=self.repo.record_success(ozon_connection_id,product_endpoint,ds,raw,[],attempts=attempts)
                             self.repo.save_ad_details(rid,products=products,replace_product_snapshot=True)
                             outcomes.append(CollectionOutcome('ozon',ds,True,rid,'SKU ads loaded'))
                 current += timedelta(days=1)

@@ -35,6 +35,7 @@ def build_source_coverage(repo, shop_id: int, start: str, end: str) -> tuple[Sou
             if not conn.enabled:continue
             rows=c.execute('''WITH ranked AS (
                 SELECT mv.data_date,mv.metric_key,sr.finished_at,sr.endpoint,sr.status,
+                  EXISTS(SELECT 1 FROM raw_payloads rp WHERE rp.source_run_id=sr.id) raw_saved,
                   ROW_NUMBER() OVER(PARTITION BY mv.data_date,mv.metric_key ORDER BY mv.fetched_at DESC,mv.id DESC) rn
                 FROM metric_values mv JOIN source_runs sr ON sr.id=mv.source_run_id
                 WHERE mv.connection_id=? AND mv.data_date BETWEEN ? AND ? AND sr.status IN ('success','partial'))
@@ -47,6 +48,10 @@ def build_source_coverage(repo, shop_id: int, start: str, end: str) -> tuple[Sou
                 'Рекламная статистика':{'ad_spend'}}
             for label,keys in components.items():
                 selected=[r for r in rows if r['metric_key'] in keys]
+                unconfirmed_ads=(conn.marketplace=='ozon' and label=='Рекламная статистика'
+                                 and any(not r['raw_saved'] for r in selected))
+                if conn.marketplace=='ozon' and label=='Рекламная статистика':
+                    selected=[r for r in selected if r['raw_saved']]
                 present={r['data_date'] for r in selected}
                 checked=[]
                 for d in present:
@@ -64,9 +69,11 @@ def build_source_coverage(repo, shop_id: int, start: str, end: str) -> tuple[Sou
                         if primary_funnel and ep.startswith('statistics/orders'):continue
                         latest.setdefault((r['data_date'],ep),r)
                 failed=tuple(d for d in dates if any(k[0]==d and r['status']=='failed' for k,r in latest.items()))
-                partial=tuple(sorted({r['data_date'] for r in selected if r['status']=='partial'}))
+                partial=tuple(sorted({r['data_date'] for r in selected if r['status']=='partial'} |
+                                    {key[0] for key,r in latest.items() if r['status']=='partial'}))
                 result.append(SourceCoverage(conn.marketplace,label,len(present),len(dates),min(checked) if checked else None,
-                    tuple(d for d in dates if d not in present),failed,partial))
+                    tuple(d for d in dates if d not in present),failed,partial,
+                    'Исторические суммы Ozon без исходного ответа не подтверждены; обновите рекламу.' if unconfirmed_ads else None))
             snapshots=c.execute('''WITH ranked AS (
                 SELECT sr.*,rp.payload_json,
                   ROW_NUMBER() OVER(PARTITION BY sr.endpoint,sr.data_date ORDER BY sr.finished_at DESC,sr.id DESC) rn

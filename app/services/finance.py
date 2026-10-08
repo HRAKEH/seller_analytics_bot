@@ -246,15 +246,13 @@ def normalize_wb_ad_stats(payload: Any, connection_id: int) -> dict[str,list[Met
                MetricPoint(connection_id,d,'ad_attributed_sales',v[1],'RUB',False,now)] for d,v in totals.items()}
 
 def normalize_ozon_ad_stats(payload: Any, connection_id: int) -> dict[str,list[MetricPoint]]:
-    rows=payload if isinstance(payload,list) else (payload.get('rows') or payload.get('result') or payload.get('data') or []) if isinstance(payload,dict) else []
-    if isinstance(rows,dict): rows=rows.get('rows') or rows.get('data') or []
+    from .advertising import _rows, _ozon_day, ozon_ad_money, OZON_SPEND_FIELDS, OZON_SALES_FIELDS
+    rows = _rows(payload)
     totals: dict[str,list[float]]={}
-    for row in rows if isinstance(rows,list) else []:
-        if not isinstance(row,dict): continue
-        ds=str(row.get('date') or row.get('day') or '')[:10]
-        if len(ds)!=10: continue
+    for row in rows:
+        ds = _ozon_day(row, None)
         b=totals.setdefault(ds,[0.0,0.0])
-        b[0]+=_num(_pick(row,'expense','spend','sum'))
-        b[1]+=_num(_pick(row,'ordersMoney','orders_money','sales','revenue','sum_price'))
+        b[0] += ozon_ad_money(row, *OZON_SPEND_FIELDS)
+        b[1] += ozon_ad_money(row, *OZON_SALES_FIELDS)
     now=_now()
     return {d:[MetricPoint(connection_id,d,'ad_spend',v[0],'RUB',False,now), MetricPoint(connection_id,d,'ad_attributed_sales',v[1],'RUB',False,now)] for d,v in totals.items()}

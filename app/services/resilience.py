@@ -24,7 +24,7 @@ def _all_ok(outcomes) -> bool:
 
 
 def partial_error(job_type: str, outcomes) -> str:
-    if job_type != 'promotions':
+    if job_type not in {'promotions', 'advertising'}:
         return f'{job_type} retry remains partial'
     failures = []
     for outcome in outcomes:
@@ -32,7 +32,8 @@ def partial_error(job_type: str, outcomes) -> str:
             continue
         market = {'wildberries': 'WB', 'ozon': 'Ozon'}.get(outcome.marketplace, outcome.marketplace)
         failures.append(f'{market}: {outcome.message}')
-    return 'Акции обновлены не полностью. ' + ('; '.join(failures) or 'Нет результата загрузки.')
+    label = 'Акции' if job_type == 'promotions' else 'Реклама'
+    return label+' обновлены не полностью. ' + ('; '.join(failures) or 'Нет результата загрузки.')
 
 
 def queue_retry(repo, settings, shop_id: int, job_type: str, unique_key: str, payload: dict, *, error: str | None=None, delay_seconds: int=60) -> int:
@@ -64,7 +65,7 @@ async def execute_retry_job(bot, registry, job: dict) -> None:
             for kind,action in (('finance',ctx.collect_finance),('advertising',ctx.collect_advertising)):
                 try:
                     result=await action(start,day)
-                    if result and not _all_ok(result):raise RuntimeError(f'{kind} retry remains partial')
+                    if result and not _all_ok(result):raise RuntimeError(partial_error(kind,result))
                 except asyncio.CancelledError:raise
                 except Exception as exc:
                     queue_retry(ctx.repository,ctx.settings,shop_id,kind,f'{start}:{day}',
