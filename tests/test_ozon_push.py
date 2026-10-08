@@ -12,7 +12,7 @@ import pytest_asyncio
 
 from app.config import Settings
 from app.services.daily_events import build_daily_events
-from app.services.ozon_push_http import create_push_app
+from app.services.ozon_push_http import create_push_app, storage_call
 from app.services.ozon_push_payload import MAX_BODY_BYTES, PushError, base_url, digest, parse_notification
 from app.storage import Database, Repository, LATEST_SCHEMA_VERSION
 from app.storage.database import MIGRATIONS
@@ -309,6 +309,41 @@ async def test_old_url_cannot_receive_for_a_shop_outside_the_running_edition(htt
     system.registry.contexts = lambda:[]
     response = await http.post(path(system),json=cancellation())
     assert response.status==404 and system.repo.count('ozon_push_inbox')==0
+
+
+@pytest.mark.asyncio
+async def test_cancelled_request_keeps_restore_locked_until_sqlite_worker_finishes():
+    import threading
+    started = asyncio.Event()
+    finish = threading.Event()
+    lock = asyncio.Lock()
+    loop = asyncio.get_running_loop()
+    completed = []
+    def worker():
+        loop.call_soon_threadsafe(started.set)
+        assert finish.wait(2)
+        completed.append(True)
+    async def request():
+        async with lock:
+            await storage_call(worker)
+    task = asyncio.create_task(request())
+    try:
+        await asyncio.wait_for(started.wait(),1)
+        task.cancel()
+        await asyncio.sleep(0.01)
+        assert lock.locked() and not task.done() and not completed
+        task.cancel()
+        await asyncio.sleep(0.01)
+        assert lock.locked() and not task.done()
+        finish.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert not lock.locked() and completed==[True]
+    finally:
+        finish.set()
+        if not task.done():
+            task.cancel()
+            await asyncio.gather(task,return_exceptions=True)
 
 
 def enable_ui(ui):

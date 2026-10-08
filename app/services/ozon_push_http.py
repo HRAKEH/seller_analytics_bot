@@ -17,6 +17,28 @@ from app.storage.ozon_push import OzonPushStore
 log = logging.getLogger(__name__)
 
 
+async def storage_call(function, *args, **kwargs):
+    """Finish SQLite work before releasing maintenance protection on cancel.
+
+    Cancelling to_thread's await does not stop its worker. A restore must not
+    replace the database while that worker is still persisting a notification.
+    """
+    task = asyncio.create_task(asyncio.to_thread(function,*args,**kwargs))
+    try:
+        return await asyncio.shield(task)
+    except asyncio.CancelledError:
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                continue
+            except Exception:
+                break
+        if not task.cancelled():
+            task.exception()  # Retrieve a storage error while preserving cancellation.
+        raise
+
+
 def error_response(message: str, status: int):
     return web.json_response({'error':{'code':'ERROR_PARAMETER_VALUE_MISSED' if status==400 else 'ERROR_UNKNOWN',
                                      'message':message,'details':None}}, status=status)
@@ -70,7 +92,7 @@ def create_push_app(registry) -> web.Application:
             return error_response('База временно обслуживается; повторите уведомление.',503)
         try:
             async with registry.maintenance_lock:
-                connection = await asyncio.to_thread(store.connection,connection_id)
+                connection = await storage_call(store.connection,connection_id)
                 if not connection or not connection['active'] or not connection['enabled'] or connection['marketplace']!='ozon':
                     raise PushError('Адрес подключения не найден.',404)
                 if not any(ctx.shop_id==connection['shop_id'] and ctx.ozon_connection_id==connection_id
@@ -87,7 +109,7 @@ def create_push_app(registry) -> web.Application:
                     parsed = parse_notification(payload)
                 except PushError as exc:
                     validation_error = str(exc)
-                status = await asyncio.to_thread(store.receive,connection_id,request.match_info['token'],
+                status = await storage_call(store.receive,connection_id,request.match_info['token'],
                     creds.ozon_client_id,creds.profile,payload,parsed,validation_error=validation_error,payload_text=payload_text)
             if status == 'invalid':
                 return error_response(validation_error or 'Неверные поля уведомления.',400)
