@@ -9,10 +9,10 @@ from aiogram.methods import EditMessageText, SendMessage, SendDocument
 from app.reports.dates import display_timezone, readable_text
 
 _presentation = ContextVar('message_presentation', default=None)
-_TECH_COMMANDS = {'status', 'health', 'jobs', 'job_retry', 'diagnostics', 'backup', 'backups', 'restore', 'profiles', 'connect_check'}
+_TECH_COMMANDS = {'status', 'health', 'jobs', 'job_retry', 'diagnostics', 'backup', 'backups', 'restore', 'profiles', 'connect_check', 'ozon_push'}
 _TECH_BUTTONS = {'📡 Состояние данных', '❤️ Проверка бота', '🔁 Ошибки и повторы', '🔁 Повторить retry-задачу',
                  '🧪 Техническая диагностика', '💾 Создать backup', '🗂 История backup', '♻️ Восстановить backup',
-                 '🗝 Профили окружения', '🔌 Проверить API', '🧰 Техническое'}
+                 '🗝 Профили окружения', '🔌 Проверить API', '🧰 Техническое', '🔵 Подключить отмены Ozon'}
 
 
 def message_text(text: str) -> str:
@@ -45,7 +45,7 @@ class PresentationMiddleware(BaseMiddleware):
         command = raw.split(maxsplit=1)[0].split('@')[0].lstrip('/') if raw else ''
         technical = command in _TECH_COMMANDS or raw in _TECH_BUTTONS
         callback = str(getattr(event, 'data', '') or '')
-        technical = technical or callback.startswith(('retry_job:', 'job:', 'restore:', 'report_page:'))
+        technical = technical or callback.startswith(('retry_job:', 'job:', 'restore:', 'report_page:', 'ozpush:'))
         pref = self.context.repository.get_shop_preferences(self.context.shop_id)
         tz = pref.timezone if pref else 'Europe/Moscow'
         token = _presentation.set((tz, not technical))

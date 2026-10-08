@@ -52,6 +52,7 @@ from app.services.spreadsheet_format import export_filename
 from app.reports.cards import format_daily_card
 from app.access import action_permission, item_visible, normalize_role, role_label
 from .employees import EmployeeController, EmployeeStates
+from .ozon_push import OzonPushController
 from .keyboards import (
     main_keyboard, reports_keyboard, products_keyboard, money_keyboard, supply_keyboard,
     control_keyboard, shop_keyboard, service_keyboard, technical_keyboard, input_keyboard, shop_picker_keyboard,
@@ -199,6 +200,16 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
         return MessageTextProxy(message,text,actor_user)
 
     employees=EmployeeController(ctx,navigation,show_main_menu,command_copy)
+    ozon_push=OzonPushController(ctx,navigation,show_main_menu,command_copy)
+
+    @dp.message(Command('ozon_push'))
+    @dp.message(F.text == COMMAND_BUTTONS['ozon_push'])
+    async def cmd_ozon_push(message: types.Message, state: FSMContext):
+        await ozon_push.open(message,state)
+
+    @dp.callback_query(F.data.startswith('ozpush:'))
+    async def cb_ozon_push(callback: types.CallbackQuery, state: FSMContext):
+        await ozon_push.handle(callback,state)
 
     @dp.message(StateFilter(EmployeeStates.waiting_id), F.text,
                 ~F.text.startswith('/'), ~F.text.in_({HOME, CANCEL}))
@@ -2203,6 +2214,7 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
         'demo_off': (btn_menu_demo_off, False),
         'demo_on': (btn_menu_demo_on, False),
         'diagnostics': (btn_menu_diagnostics, False),
+        'ozon_push': (cmd_ozon_push, True),
         'export': (btn_export_picker, False),
         'finance': (btn_menu_finance, True),
         'finance_update': (btn_finance_refresh, True),

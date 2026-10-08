@@ -1112,11 +1112,16 @@ class Repository:
                    "alert_state","alert_events","shop_preferences","import_batches","product_cost_history",
                    "commerce_events","user_shop_selection","shop_job_state","backup_history","bot_users","user_shop_access",
                    "ad_campaign_daily","ad_product_daily","runtime_leases","retry_jobs","process_heartbeats",
+                   "ozon_push_bindings","ozon_push_inbox","ozon_push_cancellations",
                    "shop_supply_preferences","product_supply_settings","supply_recommendation_snapshots",
                    "inbound_shipments","inbound_shipment_items","forecast_quality_snapshots","supply_calibration_snapshots","promotions","promotion_products"}
         if table not in allowed: raise ValueError("unsupported table")
         with self.db.connect() as c:
             return int(c.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+
+    def ozon_cancellations_day(self, connection_id: int, day: str):
+        from .ozon_push import OzonPushStore
+        return OzonPushStore(self.db).day(connection_id,day)
 
     def latest_run(self, connection_id: int, endpoint: str | None = None, data_date: str | None = None) -> SourceRun | None:
         sql = "SELECT * FROM source_runs WHERE connection_id=?"

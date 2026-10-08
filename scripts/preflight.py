@@ -16,6 +16,7 @@ except ImportError:
 
 from app.config import Settings
 from app.storage import Database, LATEST_SCHEMA_VERSION
+from app.services.ozon_push_payload import base_url, PushError
 
 
 def main() -> int:
@@ -43,12 +44,19 @@ def main() -> int:
         checks['database_error']=str(exc)
     if not s.db_file.is_absolute():
         warnings.append('DB_FILE is relative. On Bothost use /app/data/... for persistent storage across deploys.')
-    if s.health_server_enabled:
+    checks['ozon_push_configuration']=True
+    if s.ozon_push_enabled:
+        try: base_url(s.ozon_push_base_url)
+        except PushError:
+            checks['ozon_push_configuration']=False
+            warnings.append('OZON_PUSH_BASE_URL must be an HTTPS origin without path or parameters.')
+    if s.health_server_enabled or s.ozon_push_enabled:
         checks['health_endpoint']=f'{s.health_host}:{s.health_port}'
     ok=all([
         checks['python_ok'],checks['telegram_token'],checks['owner_ids']>0,
         checks.get('db_directory_writable',False),checks.get('schema_current',False),
         checks.get('sqlite_quick_check',False),
+        checks['ozon_push_configuration'],
     ])
     print(json.dumps({'ok':ok,'checks':checks,'warnings':warnings},ensure_ascii=False,indent=2))
     return 0 if ok else 1

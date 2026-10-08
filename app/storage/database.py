@@ -779,6 +779,44 @@ def _migration_21(conn: sqlite3.Connection) -> None:
 
 
 MIGRATIONS: dict[int, Migration] = {1: _migration_1, 2: _migration_2, 3: _migration_3, 4: _migration_4, 5: _migration_5, 6: _migration_6, 7: _migration_7, 8: _migration_8, 9: _migration_9, 10: _migration_10, 11: _migration_11, 12: _migration_12, 13: _migration_13, 14: _migration_14, 15: _migration_15, 16: _migration_16, 17: _migration_17, 18: _migration_18, 19: _migration_19, 20: _migration_20, 21: _migration_21}
+def _migration_22(conn: sqlite3.Connection) -> None:
+    # Only the URL token's hash is persisted. Records are scoped to both the
+    # local connection and the credential account, including after rotation.
+    conn.execute('''CREATE TABLE ozon_push_bindings (
+        connection_id INTEGER PRIMARY KEY REFERENCES marketplace_connections(id) ON DELETE CASCADE,
+        token_hash TEXT NOT NULL, client_id_hash TEXT NOT NULL,
+        credential_profile TEXT NOT NULL, active_client INTEGER NOT NULL DEFAULT 1,
+        seller_id INTEGER, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+        last_ping_at TEXT, last_received_at TEXT, last_error TEXT
+    )''')
+    conn.execute('''CREATE TABLE ozon_push_inbox (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        connection_id INTEGER NOT NULL REFERENCES marketplace_connections(id) ON DELETE CASCADE,
+        client_id_hash TEXT NOT NULL, payload_hash TEXT NOT NULL,
+        message_type TEXT NOT NULL, event_uuid TEXT, received_at TEXT NOT NULL,
+        delivery_count INTEGER NOT NULL DEFAULT 1,
+        payload_json TEXT NOT NULL,
+        status TEXT NOT NULL CHECK(status IN ('accepted','duplicate','conflict','ignored','invalid')),
+        error TEXT, UNIQUE(connection_id,client_id_hash,payload_hash)
+    )''')
+    conn.execute('''CREATE TABLE ozon_push_cancellations (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        connection_id INTEGER NOT NULL REFERENCES marketplace_connections(id) ON DELETE CASCADE,
+        client_id_hash TEXT NOT NULL, scheme TEXT NOT NULL CHECK(scheme IN ('FBO','FBS')),
+        posting_number TEXT NOT NULL, event_uuid TEXT,
+        cancelled_at TEXT NOT NULL, event_day TEXT NOT NULL, units INTEGER NOT NULL CHECK(units>0),
+        products_json TEXT NOT NULL, semantic_hash TEXT NOT NULL,
+        conflicted INTEGER NOT NULL DEFAULT 0,
+        inbox_id INTEGER REFERENCES ozon_push_inbox(id) ON DELETE SET NULL,
+        UNIQUE(connection_id,client_id_hash,scheme,posting_number)
+    )''')
+    conn.execute('''CREATE INDEX idx_ozon_push_cancel_day
+        ON ozon_push_cancellations(connection_id,client_id_hash,event_day,conflicted)''')
+    conn.execute('''CREATE INDEX idx_ozon_push_cancel_uuid
+        ON ozon_push_cancellations(connection_id,client_id_hash,event_uuid) WHERE event_uuid IS NOT NULL''')
+
+
+MIGRATIONS[22] = _migration_22
 LATEST_SCHEMA_VERSION = max(MIGRATIONS)
 
 

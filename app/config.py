@@ -86,6 +86,8 @@ class Settings:
     backup_compress: bool = True
     backup_max_count: int = 10
     backup_max_total_mb: int = 512
+    ozon_push_enabled: bool = False
+    ozon_push_base_url: str = ""
 
 
     def credentials_for_profile(self, profile: str = "DEFAULT") -> MarketplaceCredentials:
@@ -159,6 +161,8 @@ class Settings:
             backup_compress=_bool("BACKUP_COMPRESS",True),
             backup_max_count=max(1,int(os.getenv("BACKUP_MAX_COUNT","10"))),
             backup_max_total_mb=max(1,int(os.getenv("BACKUP_MAX_TOTAL_MB","512"))),
+            ozon_push_enabled=_bool("OZON_PUSH_ENABLED",False),
+            ozon_push_base_url=os.getenv("OZON_PUSH_BASE_URL","").strip(),
         )
 
 settings = Settings.from_env()

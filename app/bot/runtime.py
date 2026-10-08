@@ -12,6 +12,7 @@ from app.services.collection import CollectionService
 from app.services.preferences import defaults_from_settings
 from app.services.observability import set_log_context, reset_log_context
 from app.storage import Repository
+from app.storage.ozon_push import OzonPushStore
 from .context import AppContext
 
 _current_context: ContextVar[AppContext | None]=ContextVar('seller_bot_current_context',default=None)
@@ -44,6 +45,10 @@ class RuntimeRegistry:
             if not shop or not shop.active: raise ValueError('shop not found or inactive')
             pref=self.repository.ensure_shop_preferences(shop.id,defaults_from_settings(self.settings))
             creds=self.settings.credentials_for_profile(shop.credential_profile)
+            for connection in self.repository.list_connections(shop.id):
+                if connection.marketplace=='ozon':
+                    OzonPushStore(self.repository.db).observe_account(connection.id,
+                        creds.ozon_client_id if creds.has_ozon else '',creds.profile)
             ozon=wb=ozon_perf=None; oz_id=wb_id=None
             if creds.has_ozon:
                 conn=self.repository.ensure_connection(shop.id,'ozon','Ozon')

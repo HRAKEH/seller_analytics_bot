@@ -39,7 +39,7 @@ FINANCE_ACTIONS = frozenset({'finance', 'finance_update', 'management', 'sku_fin
                             'reconcile', 'accruals', 'wb_accruals', 'sources', 'readiness'})
 SHOP_LIFECYCLE_ACTIONS = frozenset({'shop_archive', 'shop_archived', 'shop_restore', 'shop_delete'})
 TECHNICAL_ACTIONS = frozenset({'shop_add', 'shop_profile', 'profiles', 'backup', 'backups', 'restore', 'connect_check',
-    'health', 'jobs', 'job_retry', 'diagnostics', 'demo_on', 'demo_off', 'help', 'technical_menu'})
+    'health', 'jobs', 'job_retry', 'diagnostics', 'ozon_push', 'demo_on', 'demo_off', 'help', 'technical_menu'})
 
 
 def action_permission(action: str) -> str:

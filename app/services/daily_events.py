@@ -314,6 +314,18 @@ def build_daily_events(repo, connection_id: int, marketplace: str, day: date) ->
         returns = _read(repo, connection_id, ds, OZON_RETURNS, lambda payload: normalize_ozon_returns_day(payload, ds))
         # Avoid switching between a physical customer-return day and a finance
         # realization day; these are distinct report sources and can differ.
+        push = repo.ozon_cancellations_day(connection_id,ds) if hasattr(repo,'ozon_cancellations_day') else None
+        if push:
+            units = int(push['units'])
+            warning = ('Учтены полученные уведомления FBO/FBS по дате отмены, время Москвы. '
+                       'Полнота за день не подтверждена: старые и пропущенные уведомления могут отсутствовать.')
+            if push['issues']:
+                warning += ' Есть уведомления с ошибками или разными версиями; спорные количества исключены.'
+            cancellations = DayEvent(source='Ozon · Push уведомления об отменах FBO/FBS',available_units=units,
+                unavailable_note=f'≥ {units} шт. · по уведомлениям' if units else '⏳ отмены за день не подтверждены',
+                freshness=push['freshness'],warning=warning,
+                price_note='Сумма отмен не приходит в уведомлениях; в рубли не подставляется.')
+            return DailyEvents(buyouts,returns,cancellations)
         return DailyEvents(buyouts, returns, DayEvent(source='Ozon · отмены',
             unavailable_note='⏳ дата отмены не получена',
             warning='В полученных ответах Ozon нет даты отмены. Точный итог отмен за день не подтверждён.'))

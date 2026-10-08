@@ -127,6 +127,7 @@ COMMAND_BUTTONS: dict[str, str] = {
     'jobs': '🔁 Ошибки и повторы',
     'job_retry': '🔁 Повторить retry-задачу',
     'diagnostics': '🧪 Техническая диагностика',
+    'ozon_push': '🔵 Подключить отмены Ozon',
 }
 
 MENU_REPORTS = '📊 Отчёты'
@@ -277,6 +278,7 @@ def technical_keyboard(role: str | None = 'owner', *, system_owner: bool = False
     buttons = [COMMAND_BUTTONS['health'], COMMAND_BUTTONS['diagnostics'], COMMAND_BUTTONS['jobs']]
     if system_owner:
         buttons += [
+            COMMAND_BUTTONS['ozon_push'],
             COMMAND_BUTTONS['backup'], COMMAND_BUTTONS['backups'], COMMAND_BUTTONS['restore'],
             COMMAND_BUTTONS['shop_add'], COMMAND_BUTTONS['shop_profile'], COMMAND_BUTTONS['profiles'],
         ]

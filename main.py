@@ -23,6 +23,8 @@ from app.services.resilience import (
     retry_worker_loop, heartbeat_loop, database_maintenance_loop, polling_lease_heartbeat,
 )
 from app.services.health import health_http_server
+from app.services.ozon_push_http import ozon_push_http_server
+from app.services.ozon_push_payload import base_url
 from app.bot import RuntimeRegistry, ContextProxy, ShopContextMiddleware, register_handlers
 from app.bot.updates import TelegramUpdateMiddleware
 
@@ -33,6 +35,8 @@ async def main():
     log=logging.getLogger('seller_bot')
     if not settings.telegram_token: raise RuntimeError('TELEGRAM_BOT_TOKEN is required')
     if not settings.owner_ids: raise RuntimeError('TELEGRAM_OWNER_ID is required')
+    if settings.ozon_push_enabled:
+        base_url(settings.ozon_push_base_url)
 
     database=Database(settings.db_file)
     version=database.initialize_safely(settings.db_file.parent/'backups')
@@ -91,7 +95,9 @@ async def main():
             asyncio.create_task(automatic_backup_loop(registry,bot),name='automatic-backup'),
             asyncio.create_task(backup_storage_maintenance_loop(registry),name='backup-storage-maintenance'),
         ]
-        if settings.health_server_enabled:
+        if settings.ozon_push_enabled:
+            tasks.append(asyncio.create_task(ozon_push_http_server(registry),name='ozon-push-http-server'))
+        elif settings.health_server_enabled:
             tasks.append(asyncio.create_task(health_http_server(registry),name='health-http-server'))
 
         # A background service is part of the bot's correctness. If one crashes,
