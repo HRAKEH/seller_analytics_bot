@@ -104,6 +104,8 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
     def allowed(message: types.Message, permission: str = 'view') -> bool:
         if not message.from_user:return False
         required=action_permission(request_action(message))
+        if required=='shop_lifecycle':
+            return ctx.repository.can_user(message.from_user.id,ctx.shop_id,required)
         return (ctx.repository.can_user(message.from_user.id,ctx.shop_id,permission) and
                 ctx.repository.can_user(message.from_user.id,ctx.shop_id,required) and
                 (required!='technical' or is_system_owner(message)))
@@ -131,7 +133,8 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
         if required!='view':permission=required
         need={'view':'просмотр','operate':'обновление данных','manage':'управление сотрудниками',
               'finance':'финансовые отчёты','costs':'себестоимость','settings':'изменение рабочих настроек',
-              'technical':'технические функции владельца всего бота'}.get(permission,permission)
+              'technical':'технические функции владельца всего бота',
+              'shop_lifecycle':'роль «Владелец» для управления магазинами'}.get(permission,permission)
         await message.answer(f'⛔ Недостаточно прав: требуется доступ «{need}».')
 
     def is_system_owner(message: types.Message) -> bool:
@@ -164,7 +167,9 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
         return ctx.repository.role_for_user(uid,ctx.shop_id) or 'viewer'
 
     async def show_main_menu(message: types.Message, *, text: str | None = None):
-        if not allowed(message): return await denied(message)
+        if not allowed(message) and not (message.from_user and ctx.repository.can_user(
+                message.from_user.id,ctx.shop_id,'shop_lifecycle')):
+            return await denied(message)
         shop=ctx.repository.get_shop(ctx.shop_id)
         title=text or (
             f'🏠 <b>{escape(shop.name if shop else "Магазин")}</b>\n'
@@ -208,13 +213,17 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
     # buttons can never be accidentally consumed as a shop name/date/etc.
     @dp.message(F.text == CANCEL)
     async def btn_cancel_any(message: types.Message, state: FSMContext):
-        if not allowed(message): return await denied(message)
+        if not allowed(message) and not (message.from_user and ctx.repository.can_user(
+                message.from_user.id,ctx.shop_id,'shop_lifecycle')):
+            return await denied(message)
         await state.clear()
         await show_main_menu(message,text='↩️ Действие отменено.\n\n🏠 <b>Главное меню</b>')
 
     @dp.message(F.text == HOME)
     async def btn_home_any(message: types.Message, state: FSMContext):
-        if not allowed(message): return await denied(message)
+        if not allowed(message) and not (message.from_user and ctx.repository.can_user(
+                message.from_user.id,ctx.shop_id,'shop_lifecycle')):
+            return await denied(message)
         await state.clear()
         await show_main_menu(message)
 
@@ -381,15 +390,15 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
             if not shops: return await message.answer('⚠️ Нет доступных магазинов.')
             return await navigation.show(message,'🔁 <b>Выберите магазин</b>',parse_mode='HTML',
                 reply_markup=shop_picker_keyboard(shops,'select',current_shop_id=ctx.shop_id))
-        if not is_system_owner(message): return await system_denied(message)
+        if not allowed(message,'shop_lifecycle'): return await denied(message,'shop_lifecycle')
         if action=='archive':
-            shops=registry.repository.list_shops(registry.seller_id)
+            shops=registry.repository.list_shops()
             if len(shops)<=1:
                 return await message.answer('⚠️ Нельзя архивировать последний активный магазин.')
             return await navigation.show(message,'🗄 <b>Какой магазин архивировать?</b>\nДанные сохранятся, API-запросы и scheduler для него остановятся.',
                 parse_mode='HTML',reply_markup=shop_picker_keyboard(shops,'archive',current_shop_id=ctx.shop_id))
         if action in {'restore','delete'}:
-            shops=registry.repository.archived_shops(registry.seller_id)
+            shops=registry.repository.archived_shops()
             if not shops:
                 return await message.answer('🗂 Архив магазинов пуст.')
             title='♻️ <b>Какой магазин вернуть?</b>' if action=='restore' else '🗑 <b>Какой магазин удалить навсегда?</b>'
@@ -452,22 +461,21 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
 
     @dp.message(Command('shop_archive'))
     async def cmd_shop_archive(message: types.Message):
-        if not allowed(message,'manage'): return await denied(message,'manage')
-        if not is_system_owner(message): return await system_denied(message)
+        if not allowed(message,'shop_lifecycle'): return await denied(message,'shop_lifecycle')
         if registry is None: return await message.answer('Multi-shop runtime не подключён.')
         parts=(message.text or '').split(maxsplit=1)
         if len(parts)<2: return await message.answer('Формат: /shop_archive ID')
         try: shop_id=int(parts[1])
         except ValueError: return await message.answer('ID магазина должен быть числом.')
         shop=registry.repository.get_shop(shop_id)
-        if not shop or shop.seller_id!=registry.seller_id:
+        if not shop:
             return await message.answer('⚠️ Магазин не найден.')
         if shop_id==ctx.shop_id:
             note='\nТекущий магазин будет переключён при следующем сообщении.'
         else:
             note=''
         try:
-            await registry.archive_shop(shop_id)
+            await registry.archive_shop(shop_id,actor_id=message.from_user.id)
         except Exception as exc:
             return await message.answer(f'⚠️ Не удалось архивировать магазин: {escape(str(exc)[:300])}')
         await message.answer(
@@ -477,31 +485,29 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
 
     @dp.message(Command('shop_archived'))
     async def cmd_shop_archived(message: types.Message):
-        if not allowed(message,'manage'): return await denied(message,'manage')
-        if not is_system_owner(message): return await system_denied(message)
+        if not allowed(message,'shop_lifecycle'): return await denied(message,'shop_lifecycle')
         if registry is None: return await message.answer('Multi-shop runtime не подключён.')
-        shops=registry.repository.archived_shops(registry.seller_id)
+        shops=registry.repository.archived_shops()
         lines=['🗂 <b>Архив магазинов</b>','━━━━━━━━━━━━━━━━']
         if not shops:
             lines.append('Архив пуст.')
         else:
             for shop in shops:
-                lines.append(f'• <b>#{shop.id} {escape(shop.name)}</b> · <code>{escape(shop.credential_profile)}</code>')
+                lines.append(f'• <b>#{shop.id} {escape(shop.name)}</b>')
             lines += ['', 'Вернуть: «♻️ Вернуть магазин».',
                       'Удалить навсегда: «🗑 Удалить магазин».']
-        await send(message,'\n'.join(lines),permission='manage',system_owner_only=True)
+        await send(message,'\n'.join(lines),permission='shop_lifecycle')
 
     @dp.message(Command('shop_restore'))
     async def cmd_shop_restore(message: types.Message):
-        if not allowed(message,'manage'): return await denied(message,'manage')
-        if not is_system_owner(message): return await system_denied(message)
+        if not allowed(message,'shop_lifecycle'): return await denied(message,'shop_lifecycle')
         if registry is None: return await message.answer('Multi-shop runtime не подключён.')
         parts=(message.text or '').split(maxsplit=1)
         if len(parts)<2: return await message.answer('Формат: /shop_restore ID')
         try: shop_id=int(parts[1])
         except ValueError: return await message.answer('ID магазина должен быть числом.')
         try:
-            ctx2=await registry.restore_shop(shop_id)
+            ctx2=await registry.restore_shop(shop_id,actor_id=message.from_user.id)
         except Exception as exc:
             return await message.answer(f'⚠️ Не удалось вернуть магазин: {escape(str(exc)[:300])}')
         shop=registry.repository.get_shop(ctx2.shop_id)
@@ -509,8 +515,7 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
 
     @dp.message(Command('shop_delete'))
     async def cmd_shop_delete(message: types.Message):
-        if not allowed(message,'manage'): return await denied(message,'manage')
-        if not is_system_owner(message): return await system_denied(message)
+        if not allowed(message,'shop_lifecycle'): return await denied(message,'shop_lifecycle')
         if registry is None: return await message.answer('Multi-shop runtime не подключён.')
         parts=(message.text or '').split()
         if len(parts)<3 or parts[2].upper()!='DELETE':
@@ -520,10 +525,10 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
         try: shop_id=int(parts[1])
         except ValueError: return await message.answer('ID магазина должен быть числом.')
         shop=registry.repository.get_shop(shop_id)
-        if not shop or shop.seller_id!=registry.seller_id:
+        if not shop:
             return await message.answer('⚠️ Магазин не найден.')
         try:
-            await registry.delete_archived_shop(shop_id)
+            await registry.delete_archived_shop(shop_id,actor_id=message.from_user.id)
         except Exception as exc:
             return await message.answer(f'⚠️ Не удалось удалить магазин: {escape(str(exc)[:300])}')
         await message.answer(
@@ -559,13 +564,13 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
     async def cb_shop_archive_pick(callback: types.CallbackQuery):
         if registry is None or callback.from_user is None:
             return await callback.answer('Runtime недоступен.',show_alert=True)
-        if callback.from_user.id not in registry.settings.owner_ids:
-            return await callback.answer('Только system owner.',show_alert=True)
+        if not registry.repository.can_user(callback.from_user.id,ctx.shop_id,'shop_lifecycle'):
+            return await callback.answer('Управлять магазинами может только владелец.',show_alert=True)
         try: shop_id=int((callback.data or '').rsplit(':',1)[1])
         except (ValueError,IndexError):
             return await callback.answer('Некорректный магазин.',show_alert=True)
         shop=registry.repository.get_shop(shop_id)
-        if not shop or not shop.active or shop.seller_id!=registry.seller_id:
+        if not shop or not shop.active:
             return await callback.answer('Магазин недоступен.',show_alert=True)
         await callback.answer()
         if callback.message:
@@ -578,8 +583,8 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
     async def cb_shop_archive_confirm(callback: types.CallbackQuery):
         if registry is None or callback.from_user is None:
             return await callback.answer('Runtime недоступен.',show_alert=True)
-        if callback.from_user.id not in registry.settings.owner_ids:
-            return await callback.answer('Только system owner.',show_alert=True)
+        if not registry.repository.can_user(callback.from_user.id,ctx.shop_id,'shop_lifecycle'):
+            return await callback.answer('Управлять магазинами может только владелец.',show_alert=True)
         try: shop_id=int((callback.data or '').rsplit(':',1)[1])
         except (ValueError,IndexError):
             return await callback.answer('Некорректный магазин.',show_alert=True)
@@ -587,9 +592,10 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
         if not shop:
             return await callback.answer('Магазин не найден.',show_alert=True)
         try:
-            await registry.archive_shop(shop_id)
+            await registry.archive_shop(shop_id,actor_id=callback.from_user.id)
             fallback=registry.repository.selected_authorized_shop_for_user(callback.from_user.id,registry.default_shop_id)
             if fallback is not None:
+                await registry.context_for_user(callback.from_user.id)
                 registry.select_shop(callback.from_user.id,int(fallback))
         except Exception as exc:
             return await callback.answer(str(exc)[:180],show_alert=True)
@@ -606,13 +612,13 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
     async def cb_shop_restore(callback: types.CallbackQuery):
         if registry is None or callback.from_user is None:
             return await callback.answer('Runtime недоступен.',show_alert=True)
-        if callback.from_user.id not in registry.settings.owner_ids:
-            return await callback.answer('Только system owner.',show_alert=True)
+        if not registry.repository.can_user(callback.from_user.id,ctx.shop_id,'shop_lifecycle'):
+            return await callback.answer('Управлять магазинами может только владелец.',show_alert=True)
         try: shop_id=int((callback.data or '').rsplit(':',1)[1])
         except (ValueError,IndexError):
             return await callback.answer('Некорректный магазин.',show_alert=True)
         try:
-            ctx2=await registry.restore_shop(shop_id)
+            ctx2=await registry.restore_shop(shop_id,actor_id=callback.from_user.id)
         except Exception as exc:
             return await callback.answer(str(exc)[:180],show_alert=True)
         shop=registry.repository.get_shop(ctx2.shop_id)
@@ -627,13 +633,13 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
     async def cb_shop_delete_pick(callback: types.CallbackQuery):
         if registry is None or callback.from_user is None:
             return await callback.answer('Runtime недоступен.',show_alert=True)
-        if callback.from_user.id not in registry.settings.owner_ids:
-            return await callback.answer('Только system owner.',show_alert=True)
+        if not registry.repository.can_user(callback.from_user.id,ctx.shop_id,'shop_lifecycle'):
+            return await callback.answer('Управлять магазинами может только владелец.',show_alert=True)
         try: shop_id=int((callback.data or '').rsplit(':',1)[1])
         except (ValueError,IndexError):
             return await callback.answer('Некорректный магазин.',show_alert=True)
         shop=registry.repository.get_shop(shop_id)
-        if not shop or shop.active or shop.seller_id!=registry.seller_id:
+        if not shop or shop.active:
             return await callback.answer('Удалять можно только архивный магазин.',show_alert=True)
         await callback.answer()
         if callback.message:
@@ -646,8 +652,8 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
     async def cb_shop_delete_confirm(callback: types.CallbackQuery):
         if registry is None or callback.from_user is None:
             return await callback.answer('Runtime недоступен.',show_alert=True)
-        if callback.from_user.id not in registry.settings.owner_ids:
-            return await callback.answer('Только system owner.',show_alert=True)
+        if not registry.repository.can_user(callback.from_user.id,ctx.shop_id,'shop_lifecycle'):
+            return await callback.answer('Управлять магазинами может только владелец.',show_alert=True)
         try: shop_id=int((callback.data or '').rsplit(':',1)[1])
         except (ValueError,IndexError):
             return await callback.answer('Некорректный магазин.',show_alert=True)
@@ -655,7 +661,7 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
         if not shop:
             return await callback.answer('Магазин не найден.',show_alert=True)
         try:
-            await registry.delete_archived_shop(shop_id)
+            await registry.delete_archived_shop(shop_id,actor_id=callback.from_user.id)
         except Exception as exc:
             return await callback.answer(str(exc)[:180],show_alert=True)
         await callback.answer('Магазин удалён')
@@ -1009,7 +1015,7 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
     # --- main commands ---------------------------------------------------
     @dp.message(Command('start'))
     async def cmd_start(message: types.Message):
-        if not allowed(message): return await denied(message)
+        if not allowed(message): return await show_main_menu(message)
         p=pref(); shop=ctx.repository.get_shop(ctx.shop_id)
         setup_hint='' if p.setup_completed else '\n⚠️ Первичная настройка не завершена: откройте «🏪 Магазин и доступ» → «🧩 Мастер настройки».\n'
         readiness_hint='\n🧪 Магазин работает в DEMO-режиме.' if p.demo_mode else ''
@@ -1694,8 +1700,10 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
 
     # --- structured menu navigation --------------------------------------
     async def show_submenu(message: types.Message, title: str, keyboard):
-        if not allowed(message): return await denied(message)
         section=keyboard.__name__.removesuffix('_keyboard')
+        if not allowed(message) and not (section=='shop' and message.from_user and ctx.repository.can_user(
+                message.from_user.id,ctx.shop_id,'shop_lifecycle')):
+            return await denied(message)
         # The problems keyboard was historically called control_keyboard.
         await menu_help.show_section(message,section)
 
@@ -1810,7 +1818,7 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
     async def launch_input_action(message: types.Message, state: FSMContext, action: str):
         permission=permissions[action]
         if not allowed(message,permission): return await denied(message,permission)
-        if action in {'shop_add','shop_profile','shop_archive','shop_restore','shop_delete'} and not is_system_owner(message):
+        if action in {'shop_add','shop_profile'} and not is_system_owner(message):
             return await system_denied(message)
         await start_menu_input(message,state,action,prompts[action])
 

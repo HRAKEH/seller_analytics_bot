@@ -85,8 +85,10 @@ class PagedReportController:
             shop = repo.get_shop(saved['shop_id'])
             user = callback.from_user.id
             capability = saved['capability']
-            if (shop is None or not shop.active or user != saved['user_id'] or
-                not repo.can_user(user, saved['shop_id'], saved['permission']) or
+            global_lifecycle=capability=='shop_lifecycle'
+            if (user != saved['user_id'] or
+                (not global_lifecycle and (shop is None or not shop.active or
+                    not repo.can_user(user,saved['shop_id'],saved['permission']))) or
                 (capability == 'legacy' and user not in self.context.settings.owner_ids) or
                 (capability != 'legacy' and not repo.can_user(user, saved['shop_id'], capability)) or
                 saved['system_owner_only'] and user not in self.context.settings.owner_ids):

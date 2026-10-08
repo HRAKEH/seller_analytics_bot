@@ -144,14 +144,15 @@ def _role(role: str | None) -> str:
     except ValueError:return 'viewer'
 
 
-def _build(buttons: tuple[str, ...] | list[str], *, columns: int = 2, role=None, system_owner=False):
+def _build(buttons: tuple[str, ...] | list[str], *, columns: int = 2, role=None, system_owner=False, shop_owner=None):
     kb = ReplyKeyboardBuilder()
     actions={v:k for k,v in COMMAND_BUTTONS.items()} | {
         '🔄 Обновить финансы':'finance_update', '🔄 Обновить рекламу':'ads_update',
         MENU_TECH:'technical_menu'}
     for text in buttons:
         permission=action_permission(actions.get(text,''))
-        if role is not None and (not can_role(role,permission) or permission=='technical' and not system_owner):
+        permitted=shop_owner if permission=='shop_lifecycle' and shop_owner is not None else can_role(role,permission)
+        if role is not None and (not permitted or permission=='technical' and not system_owner):
             continue
         kb.button(text=text)
     kb.adjust(columns)
@@ -236,8 +237,9 @@ def control_keyboard(role: str | None = 'owner', *, system_owner: bool = False):
     return _build(buttons,role=_role(role),system_owner=system_owner)
 
 
-def shop_keyboard(role: str | None = 'owner', *, system_owner: bool = False):
+def shop_keyboard(role: str | None = 'owner', *, system_owner: bool = False, shop_owner: bool | None = None):
     role = _role(role)
+    if shop_owner is None: shop_owner=can_role(role,'shop_lifecycle')
     buttons = [
         COMMAND_BUTTONS['shops'], COMMAND_BUTTONS['shop'],
         COMMAND_BUTTONS['settings'], COMMAND_BUTTONS['readiness'],
@@ -251,13 +253,14 @@ def shop_keyboard(role: str | None = 'owner', *, system_owner: bool = False):
         buttons += [COMMAND_BUTTONS['users'],
                     COMMAND_BUTTONS['user_add'], COMMAND_BUTTONS['user_remove']]
     if system_owner:
+        buttons += [COMMAND_BUTTONS['shop_add'], COMMAND_BUTTONS['shop_profile'], COMMAND_BUTTONS['profiles']]
+    if shop_owner:
         buttons += [
-            COMMAND_BUTTONS['shop_add'], COMMAND_BUTTONS['shop_profile'], COMMAND_BUTTONS['profiles'],
             COMMAND_BUTTONS['shop_archive'], COMMAND_BUTTONS['shop_archived'],
             COMMAND_BUTTONS['shop_restore'], COMMAND_BUTTONS['shop_delete'],
         ]
     buttons += [BACK, HOME]
-    return _build(buttons,role=role,system_owner=system_owner)
+    return _build(buttons,role=role,system_owner=system_owner,shop_owner=shop_owner)
 
 
 def service_keyboard(role: str | None = 'owner', *, system_owner: bool = False):

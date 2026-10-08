@@ -386,7 +386,7 @@ async def test_shop_context_switch_replaces_menu_and_keeps_archive_result(ui):
     registry=SimpleNamespace(repository=repo,settings=ui.ctx.settings,seller_id=ui.shop.seller_id,
         default_shop_id=ui.shop.id,maintenance_lock=asyncio.Lock(),context_for_user=context_for_user,
         select_shop=repo.select_authorized_shop_for_user,
-        archive_shop=AsyncMock(side_effect=lambda sid: repo.archive_shop(ui.shop.seller_id,sid)))
+        archive_shop=AsyncMock(side_effect=lambda sid,actor_id: repo.archive_shop(actor_id,sid)))
     dp=Dispatcher()
     middleware=ShopContextMiddleware(registry)
     dp.message.middleware(middleware); dp.callback_query.middleware(middleware)

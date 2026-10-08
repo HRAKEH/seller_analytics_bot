@@ -162,7 +162,7 @@ async def test_finance_card_download_checks_current_access_and_original_user(ui,
         ui.repo.revoke_shop_access(101, ui.shop.id)
     else:
         ui.repo.ensure_shop(ui.shop.seller_id, 'Other')
-        ui.repo.archive_shop(ui.shop.seller_id, ui.shop.id)
+        ui.repo.archive_shop(101, ui.shop.id)
     await callback(ui, card, 'data_view:file:xlsx', user=user)
     assert not files
     assert 'доступ' in ui.telegram.methods[-1].text.lower()

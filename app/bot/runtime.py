@@ -25,7 +25,7 @@ class RuntimeRegistry:
         self.maintenance_lock=asyncio.Lock()
 
     async def initialize(self) -> None:
-        for shop in self.repository.list_shops(self.seller_id):
+        for shop in self.repository.list_shops():
             for uid in self.settings.owner_ids:
                 self.repository.grant_shop_access(uid,shop.id,'owner',display_name='Owner')
             await self.refresh_shop(shop.id)
@@ -69,11 +69,8 @@ class RuntimeRegistry:
         async with self._lock:
             olds=list(self._contexts.values()); self._contexts={}
             for ctx in olds: await self._close_context(ctx)
-        shops=self.repository.list_shops(self.seller_id)
-        if not shops:
-            shop=self.repository.ensure_shop(self.seller_id,'Основной магазин')
-            self.default_shop_id=shop.id; shops=[shop]
-        elif not any(s.id==self.default_shop_id for s in shops):
+        shops=self.repository.shops_for_startup(self.seller_id)
+        if not any(s.id==self.default_shop_id for s in shops):
             self.default_shop_id=shops[0].id
         for shop in shops:
             for uid in self.settings.owner_ids:
@@ -90,6 +87,9 @@ class RuntimeRegistry:
 
     async def context_for_user(self, telegram_user_id: int) -> AppContext:
         shop_id=self.repository.selected_authorized_shop_for_user(telegram_user_id,self.default_shop_id)
+        if shop_id is None and self.repository.can_user(telegram_user_id,self.default_shop_id,'shop_lifecycle'):
+            # The handlers still enforce per-shop access for ordinary reports.
+            shop_id=self.default_shop_id
         if shop_id is None:
             raise PermissionError('Для этого Telegram-пользователя не выдан доступ ни к одному магазину.')
         if shop_id not in self._contexts:
@@ -117,31 +117,29 @@ class RuntimeRegistry:
             self.repository.grant_shop_access(uid,shop.id,'owner',display_name='Owner')
         return await self.refresh_shop(shop.id)
 
-    async def archive_shop(self, shop_id: int) -> None:
-        current=self._contexts.get(shop_id)
-        if current is not None and current.job_lock.locked():
-            raise RuntimeError('Нельзя архивировать магазин во время загрузки данных.')
-        # Persist the state change first. Repository guards ensure that the last
-        # active shop cannot be archived, so a failed request leaves runtime intact.
-        self.repository.archive_shop(self.seller_id,shop_id)
+    async def archive_shop(self, shop_id: int, *, actor_id: int) -> None:
         async with self._lock:
+            current=self._contexts.get(shop_id)
+            if current is not None and current.job_lock.locked():
+                raise RuntimeError('Нельзя архивировать магазин во время загрузки данных.')
+            self.repository.archive_shop(actor_id,shop_id)
             current=self._contexts.pop(shop_id,None)
             if current is not None:
                 await self._close_context(current)
-            active=self.repository.list_shops(self.seller_id)
+            active=self.repository.list_shops()
             if self.default_shop_id==shop_id or not any(x.id==self.default_shop_id for x in active):
                 self.default_shop_id=active[0].id
 
-    async def restore_shop(self, shop_id: int) -> AppContext:
-        self.repository.restore_shop(self.seller_id,shop_id)
+    async def restore_shop(self, shop_id: int, *, actor_id: int) -> AppContext:
+        self.repository.restore_shop(actor_id,shop_id)
         for uid in self.settings.owner_ids:
             self.repository.grant_shop_access(uid,shop_id,'owner',display_name='Owner')
         return await self.refresh_shop(shop_id)
 
-    async def delete_archived_shop(self, shop_id: int) -> None:
+    async def delete_archived_shop(self, shop_id: int, *, actor_id: int) -> None:
         if shop_id in self._contexts:
             raise RuntimeError('Активный runtime магазина нельзя удалить. Сначала архивируйте магазин.')
-        self.repository.delete_archived_shop(self.seller_id,shop_id)
+        self.repository.delete_archived_shop(actor_id,shop_id)
 
     async def set_profile(self, shop_id: int, profile: str) -> AppContext:
         current=self._contexts.get(shop_id)

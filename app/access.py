@@ -5,7 +5,7 @@ from __future__ import annotations
 ROLE_LABELS = {'owner': 'Владелец', 'accountant': 'Бухгалтер', 'manager': 'Менеджер',
                'viewer': 'Наблюдатель (старый доступ)'}
 ASSIGNABLE_ROLES = ('owner', 'accountant', 'manager')
-PERMISSIONS = frozenset({'view', 'operate', 'manage', 'finance', 'costs', 'settings', 'technical'})
+PERMISSIONS = frozenset({'view', 'operate', 'manage', 'finance', 'costs', 'settings', 'technical', 'shop_lifecycle'})
 _ROLE_PERMISSIONS = {
     'owner': PERMISSIONS,
     'accountant': frozenset({'view', 'operate', 'finance', 'costs', 'settings'}),
@@ -37,12 +37,14 @@ def role_label(role: str | None) -> str:
 
 FINANCE_ACTIONS = frozenset({'finance', 'finance_update', 'management', 'sku_finance',
                             'reconcile', 'accruals', 'wb_accruals', 'sources', 'readiness'})
-TECHNICAL_ACTIONS = frozenset({'shop_add', 'shop_profile', 'shop_archive', 'shop_archived',
-    'shop_restore', 'shop_delete', 'profiles', 'backup', 'backups', 'restore', 'connect_check',
+SHOP_LIFECYCLE_ACTIONS = frozenset({'shop_archive', 'shop_archived', 'shop_restore', 'shop_delete'})
+TECHNICAL_ACTIONS = frozenset({'shop_add', 'shop_profile', 'profiles', 'backup', 'backups', 'restore', 'connect_check',
     'health', 'jobs', 'job_retry', 'diagnostics', 'demo_on', 'demo_off', 'help', 'technical_menu'})
 
 
 def action_permission(action: str) -> str:
+    if action in SHOP_LIFECYCLE_ACTIONS:
+        return 'shop_lifecycle'
     if action in TECHNICAL_ACTIONS:
         return 'technical'
     if action in FINANCE_ACTIONS:

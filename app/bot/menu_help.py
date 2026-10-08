@@ -19,10 +19,10 @@ HELP = {
     'shop': ('Переключает магазин для просмотра и обновления данных.', 'Выберите магазин кнопкой. Каждый магазин имеет свои подключения, товары и отчёты. Старая кнопка выбора периода не обновит новый магазин.'),
     'shop_add': ('Добавляет ещё один магазин.', 'Доступно владельцу экземпляра бота. Сначала задайте на хостинге ключи SELLERBOT_SHOP2_WB_API_TOKEN и/или SELLERBOT_SHOP2_OZON_CLIENT_ID + SELLERBOT_SHOP2_OZON_API_KEY. После перезапуска нажмите «Открыть» и отправьте «Второй магазин | SHOP2». SHOP2 — имя группы ключей, а не сам токен. Для рекламы нужны также SELLERBOT_SHOP2_OZON_PERF_CLIENT_ID и SELLERBOT_SHOP2_OZON_PERF_CLIENT_SECRET. Данные магазинов хранятся отдельно.'),
     'shop_profile': ('Выбирает подключение маркетплейсов для магазина.', 'Профиль — набор ключей, настроенный владельцем на сервере. Указывайте имя профиля, а не сами секретные ключи.'),
-    'shop_archive': ('Останавливает работу с магазином и сохраняет его данные.', 'Архивный магазин перестаёт автоматически загружать данные. Его можно вернуть из архива.'),
+    'shop_archive': ('Останавливает работу с магазином и сохраняет его данные.', 'Любой пользователь с ролью «Владелец» может архивировать любой магазин этого бота. Хотя бы один магазин должен оставаться активным. Архивный магазин можно вернуть.'),
     'shop_archived': ('Показывает архивные магазины.', 'Из этого списка владелец может вернуть магазин. Архивирование не удаляет историю.'),
     'shop_restore': ('Возвращает магазин из архива.', 'После восстановления магазин снова доступен для отчётов и автоматических загрузок при действующих ключах.'),
-    'shop_delete': ('Удаляет архивный магазин и его историю.', 'Это необратимое действие владельца. Перед ним сделайте резервную копию. Активный магазин сначала нужно архивировать.'),
+    'shop_delete': ('Удаляет архивный магазин и его историю.', 'Доступно всем с ролью «Владелец» независимо от того, кто создал магазин. Сначала архивируйте магазин, затем подтвердите удаление. Хотя бы один магазин должен оставаться активным. Удалённая история не восстанавливается без резервной копии.'),
     'profiles': ('Показывает доступные профили подключений.', 'Доступно владельцу экземпляра. Можно проверить, какие наборы ключей настроены для отдельных магазинов.'),
     'users': ('Показывает сотрудников и их роли в этом магазине.', 'Владелец выбирает человека кнопкой, меняет роль или отзывает доступ. Бухгалтер работает с финансами и рабочими настройками. Менеджер видит продажи, товары, остатки, рекламу и поставки; финансы ему закрыты. Права задаются отдельно для каждого магазина.'),
     'user_add': ('Даёт другому человеку доступ к магазину.', 'Отправьте числовой Telegram ID сотрудника, затем выберите роль кнопкой: Владелец, Бухгалтер или Менеджер. Сотрудник может узнать свой ID, нажав /start в этом боте.'),
@@ -119,9 +119,25 @@ class MenuHelp:
         if len(result.encode())>64:raise ValueError('Menu callback is too long')
         return result
 
+    def menu_keyboard(self,message,section):
+        owner=self.ctx.repository.can_user(message.from_user.id,self.ctx.shop_id,'shop_lifecycle')
+        if section=='root':
+            reply=self.menus[section](self.role(message))
+            if owner and not self.ctx.repository.can_user(message.from_user.id,self.ctx.shop_id,'view'):
+                rows=[[item for item in row if item.text==MENU_SHOP] for row in reply.keyboard]
+                reply=reply.model_copy(update={'keyboard':[row for row in rows if row]})
+            return reply
+        options={'system_owner':self.system_owner(message)}
+        if section=='shop': options['shop_owner']=owner
+        reply=self.menus[section](self.role(message),**options)
+        if section=='shop' and owner and not self.ctx.repository.can_user(message.from_user.id,self.ctx.shop_id,'view'):
+            rows=[[item for item in row if action_permission(self.keys.get(item.text,''))=='shop_lifecycle'
+                   or item.text in {BACK,HOME}] for row in reply.keyboard]
+            reply=reply.model_copy(update={'keyboard':[row for row in rows if row]})
+        return reply
+
     def section_markup(self,message,section,expanded=False):
-        reply=(self.menus[section](self.role(message)) if section=='root' else
-               self.menus[section](self.role(message),system_owner=self.system_owner(message)))
+        reply=self.menu_keyboard(message,section)
         kb=InlineKeyboardBuilder();user=message.from_user.id
         for row in reply.keyboard:
             buttons=[]
@@ -137,8 +153,7 @@ class MenuHelp:
         return kb.as_markup()
 
     def visible_keys(self,message,section):
-        reply=(self.menus[section](self.role(message)) if section=='root' else
-               self.menus[section](self.role(message),system_owner=self.system_owner(message)))
+        reply=self.menu_keyboard(message,section)
         return {self.keys.get(item.text) for row in reply.keyboard for item in row}
 
     def section_text(self,section,expanded=False):
@@ -174,14 +189,17 @@ class MenuHelp:
         _,shop,user,section,key,mode=parts
         if str(self.ctx.shop_id)!=shop or str(callback.from_user.id)!=user:
             return await callback.answer('Откройте меню заново для текущего магазина.',show_alert=True)
-        if not self.ctx.repository.can_user(callback.from_user.id,self.ctx.shop_id,'view'):
+        permission=action_permission(key)
+        owner=self.ctx.repository.can_user(callback.from_user.id,self.ctx.shop_id,'shop_lifecycle')
+        global_navigation=owner and (permission=='shop_lifecycle' or
+            key=='shop_menu' or section in {'root','shop'} and (key=='section' or mode=='home'))
+        if not self.ctx.repository.can_user(callback.from_user.id,self.ctx.shop_id,'view') and not global_navigation:
             return await callback.answer('Недостаточно прав.',show_alert=True)
         if section not in self.menus:return await callback.answer('Раздел недоступен.')
         message=self.copy_message(callback.message,key,'',actor_user=callback.from_user)
         if mode=='home':
             await state.clear();await callback.answer();return await self.main(message)
-        permission=action_permission(key)
-        if not self.ctx.repository.can_user(callback.from_user.id,self.ctx.shop_id,permission):
+        if not self.ctx.repository.can_user(callback.from_user.id,self.ctx.shop_id,permission) and not global_navigation:
             return await callback.answer('Функция недоступна для вашей роли.',show_alert=True)
         if (section=='technical' or permission=='technical') and not self.system_owner(message):
             return await callback.answer('Технические функции доступны владельцу всего бота.',show_alert=True)

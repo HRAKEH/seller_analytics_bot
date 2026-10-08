@@ -76,21 +76,52 @@ class Repository:
             rows=c.execute(sql,params).fetchall()
         return [self._shop_from_row(r) for r in rows]
 
-    def archived_shops(self, seller_id: int) -> list[Shop]:
+    def shops_for_startup(self, seller_id: int) -> list[Shop]:
+        """Reuse this bot's active shops even when the configured first owner changes."""
+        shops=self.list_shops()
+        if shops:
+            return shops
+        if self.list_shops(active_only=False):
+            raise ValueError('В базе нет активных магазинов. Восстановите магазин из архива.')
+        return [self.ensure_shop(seller_id,'Основной магазин',credential_profile='DEFAULT')]
+
+    def archived_shops(self, seller_id: int | None = None) -> list[Shop]:
+        sql='SELECT * FROM shops WHERE active=0'; params=[]
+        if seller_id is not None:
+            sql += ' AND seller_id=?'; params.append(int(seller_id))
         with self.db.connect() as c:
-            rows=c.execute("SELECT * FROM shops WHERE seller_id=? AND active=0 ORDER BY id",(int(seller_id),)).fetchall()
+            rows=c.execute(sql+' ORDER BY id',params).fetchall()
         return [self._shop_from_row(r) for r in rows]
 
-    def archive_shop(self, seller_id: int, shop_id: int) -> Shop:
+    @staticmethod
+    def _is_shop_owner(c, actor_id: int) -> bool:
+        # Archived access keeps its role until permanent deletion, allowing an
+        # owner to finish deleting their own archived shop or restore it.
+        return c.execute('''SELECT 1 FROM user_shop_access a JOIN bot_users u
+            ON u.telegram_user_id=a.telegram_user_id JOIN shops s ON s.id=a.shop_id
+            WHERE a.telegram_user_id=? AND a.role='owner' AND u.active=1 LIMIT 1''',
+            (int(actor_id),)).fetchone() is not None
+
+    def is_shop_owner(self, actor_id: int) -> bool:
+        with self.db.connect() as c:
+            return self._is_shop_owner(c,actor_id)
+
+    def _shop_for_owner(self, c, actor_id: int, shop_id: int) -> Shop:
+        if not self._is_shop_owner(c,actor_id):
+            raise PermissionError('Управлять магазинами может только пользователь с ролью «Владелец».')
+        row=c.execute('SELECT * FROM shops WHERE id=?',(int(shop_id),)).fetchone()
+        if not row:
+            raise ValueError('Магазин не найден.')
+        return self._shop_from_row(row)
+
+    def archive_shop(self, actor_id: int, shop_id: int) -> Shop:
         """Soft-delete a shop while preserving all business data and access rows."""
         with self.db.connect() as c:
-            row=c.execute("SELECT * FROM shops WHERE id=? AND seller_id=?",(int(shop_id),int(seller_id))).fetchone()
-            if not row:
-                raise ValueError("Магазин не найден.")
-            shop=self._shop_from_row(row)
+            c.execute('BEGIN IMMEDIATE')
+            shop=self._shop_for_owner(c,actor_id,shop_id)
             if not shop.active:
                 raise ValueError("Магазин уже находится в архиве.")
-            active_count=int(c.execute("SELECT COUNT(*) FROM shops WHERE seller_id=? AND active=1",(int(seller_id),)).fetchone()[0])
+            active_count=int(c.execute('SELECT COUNT(*) FROM shops WHERE active=1').fetchone()[0])
             if active_count <= 1:
                 raise ValueError("Нельзя архивировать последний активный магазин.")
             c.execute("UPDATE shops SET active=0 WHERE id=?",(int(shop_id),))
@@ -99,27 +130,25 @@ class Repository:
             row=c.execute("SELECT * FROM shops WHERE id=?",(int(shop_id),)).fetchone()
         return self._shop_from_row(row)
 
-    def restore_shop(self, seller_id: int, shop_id: int) -> Shop:
+    def restore_shop(self, actor_id: int, shop_id: int) -> Shop:
         with self.db.connect() as c:
-            row=c.execute("SELECT * FROM shops WHERE id=? AND seller_id=?",(int(shop_id),int(seller_id))).fetchone()
-            if not row:
-                raise ValueError("Магазин не найден.")
-            shop=self._shop_from_row(row)
+            c.execute('BEGIN IMMEDIATE')
+            shop=self._shop_for_owner(c,actor_id,shop_id)
             if shop.active:
                 raise ValueError("Магазин уже активен.")
             c.execute("UPDATE shops SET active=1 WHERE id=?",(int(shop_id),))
             row=c.execute("SELECT * FROM shops WHERE id=?",(int(shop_id),)).fetchone()
         return self._shop_from_row(row)
 
-    def delete_archived_shop(self, seller_id: int, shop_id: int) -> Shop:
+    def delete_archived_shop(self, actor_id: int, shop_id: int) -> Shop:
         """Permanently delete an archived shop; FK cascades remove its dependent data."""
         with self.db.connect() as c:
-            row=c.execute("SELECT * FROM shops WHERE id=? AND seller_id=?",(int(shop_id),int(seller_id))).fetchone()
-            if not row:
-                raise ValueError("Магазин не найден.")
-            shop=self._shop_from_row(row)
+            c.execute('BEGIN IMMEDIATE')
+            shop=self._shop_for_owner(c,actor_id,shop_id)
             if shop.active:
                 raise ValueError("Сначала архивируйте магазин. Активный магазин удалить нельзя.")
+            if not c.execute('SELECT 1 FROM shops WHERE active=1 AND id<>?',(int(shop_id),)).fetchone():
+                raise ValueError('Нельзя удалить последний магазин: должен остаться активный магазин.')
             c.execute("DELETE FROM shops WHERE id=?",(int(shop_id),))
         return shop
 
@@ -215,6 +244,8 @@ class Repository:
         return [dict(r) for r in rows]
 
     def can_user(self, telegram_user_id: int, shop_id: int, permission: str = 'view') -> bool:
+        if permission=='shop_lifecycle':
+            return can_role('owner',permission) and self.is_shop_owner(telegram_user_id)
         return can_role(self.role_for_user(telegram_user_id,shop_id),permission)
 
     def manage_employee_access(self, actor_id: int, shop_id: int, user_id: int, role: str | None,

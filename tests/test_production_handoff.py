@@ -204,7 +204,13 @@ def mock_host(request):
 @pytest.mark.asyncio
 async def test_live_audit_no_db_writes_secrets_or_unrequested_stocks(tmp_path):
     db,repo,_,shop,_=make_repo(tmp_path)
-    repo.ensure_connection(shop.id,'wildberries','WB'); before=db.path.read_bytes()
+    repo.ensure_connection(shop.id,'wildberries','WB')
+    # Compare a settled database file, not a deferred WAL checkpoint triggered
+    # when Python collects an earlier writable connection during the audit.
+    checkpoint=db.connect()
+    try:checkpoint.execute('PRAGMA wal_checkpoint(TRUNCATE)')
+    finally:checkpoint.close()
+    before=db.path.read_bytes()
     settings=replace(Settings.from_env(),db_file=db.path,telegram_token='PRIVATE_TOKEN',owner_ids=(1,),
         wb_api_token='PRIVATE_WB',ozon_client_id='PRIVATE_CLIENT',ozon_api_key='PRIVATE_OZON',
         wb_min_interval=0,ozon_min_interval=0)
@@ -239,7 +245,9 @@ async def test_live_audit_429_fails_fast_and_stops_remaining_marketplace(tmp_pat
 @pytest.mark.asyncio
 async def test_live_audit_archived_shop_never_falls_back_to_duplicate(tmp_path):
     db,repo,seller,shop,_=make_repo(tmp_path)
-    repo.ensure_shop(seller.id,'Основной магазин'); repo.archive_shop(seller.id,shop.id)
+    repo.ensure_shop(seller.id,'Основной магазин')
+    repo.grant_shop_access(seller.telegram_user_id,shop.id,'owner')
+    repo.archive_shop(seller.telegram_user_id,shop.id)
     calls=[]
     settings=replace(Settings.from_env(),db_file=db.path)
     report=await run_live_audit(settings,shop_id=shop.id,day=DAY,

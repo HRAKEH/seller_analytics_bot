@@ -51,11 +51,10 @@ async def main():
     fatal_errors: list[BaseException]=[]
     try:
         seller=repo.ensure_seller(settings.owner_ids[0],'Основной селлер',settings.timezone)
-        active_shops=repo.list_shops(seller.id)
-        shop=active_shops[0] if active_shops else repo.ensure_shop(
-            seller.id,'Основной магазин',credential_profile='DEFAULT')
+        active_shops=repo.shops_for_startup(seller.id)
+        shop=active_shops[0]
         defaults=defaults_from_settings(settings)
-        for existing in repo.list_shops(seller.id):
+        for existing in active_shops:
             preferences=repo.ensure_shop_preferences(existing.id,defaults)
             for uid in settings.owner_ids:
                 repo.grant_shop_access(uid,existing.id,'owner',display_name='Owner')

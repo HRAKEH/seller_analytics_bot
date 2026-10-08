@@ -165,15 +165,18 @@ def test_global_database_and_credential_buttons_are_system_owner_only(monkeypatc
         | set(kb.technical_keyboard('owner',system_owner=True))
         | set(kb.shop_keyboard('owner',system_owner=True))
     )
-    global_buttons={kb.COMMAND_BUTTONS[x] for x in ('backup','backups','restore','shop_add','shop_profile','shop_archive','shop_archived','shop_restore','shop_delete','profiles')}
+    global_buttons={kb.COMMAND_BUTTONS[x] for x in ('backup','backups','restore','shop_add','shop_profile','profiles')}
     assert delegated_shop_owner.isdisjoint(global_buttons)
     assert global_buttons <= system_owner
+    lifecycle_buttons={kb.COMMAND_BUTTONS[x] for x in ('shop_archive','shop_archived','shop_restore','shop_delete')}
+    assert lifecycle_buttons <= delegated_shop_owner
+    assert lifecycle_buttons <= system_owner
 
 
 def test_global_slash_handlers_enforce_system_owner():
     tree=ast.parse((ROOT/'app/bot/handlers.py').read_text(encoding='utf-8'))
     functions={n.name:n for n in ast.walk(tree) if isinstance(n,(ast.FunctionDef,ast.AsyncFunctionDef))}
-    for name in ('cmd_backup','cmd_backups','cmd_restore','restore_file','cmd_shop_add','cmd_shop_profile','cmd_shop_archive','cmd_shop_archived','cmd_shop_restore','cmd_shop_delete','cmd_profiles'):
+    for name in ('cmd_backup','cmd_backups','cmd_restore','restore_file','cmd_shop_add','cmd_shop_profile','cmd_profiles'):
         node=functions[name]
         calls=[n for n in ast.walk(node) if isinstance(n,ast.Call) and isinstance(n.func,ast.Name)]
         assert any(c.func.id=='is_system_owner' for c in calls), name
@@ -208,10 +211,12 @@ def test_action_center_retry_failures_are_shop_scoped():
     assert 'recent_retry_jobs(limit=50,shop_id=shop_id)' in src
 
 
-def test_startup_reuses_existing_active_shop_instead_of_recreating_default():
-    src=(ROOT/'main.py').read_text(encoding='utf-8')
-    assert 'active_shops=repo.list_shops(seller.id)' in src
-    assert "shop=active_shops[0] if active_shops else repo.ensure_shop(" in src
+def test_startup_reuses_existing_active_shop_instead_of_recreating_default(tmp_path):
+    db=Database(tmp_path/'startup.sqlite3');db.initialize();repo=Repository(db)
+    seller=repo.ensure_seller(1,'Owner')
+    existing=repo.ensure_shop(seller.id,'Название рабочего магазина')
+    assert repo.shops_for_startup(seller.id)==[existing]
+    assert repo.count('shops')==1
 
 
 def test_simplified_user_menus_hide_manual_and_technical_actions(monkeypatch):
