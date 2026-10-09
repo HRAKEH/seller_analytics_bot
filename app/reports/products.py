@@ -38,6 +38,23 @@ class StockRisk:
     coverage_days: int
     captured_at: str | None
     scheme_units: tuple[tuple[str,float], ...] = ()
+    required_schemes: tuple[str, ...] = ()
+    unconfirmed_schemes: tuple[str, ...] = ()
+
+    @property
+    def inventory_confirmed(self) -> bool:
+        return not self.unconfirmed_schemes
+
+    @property
+    def out_of_stock_schemes(self) -> tuple[str, ...]:
+        return tuple(scheme for scheme,quantity in self.scheme_units
+                     if quantity<=0 and scheme in self.required_schemes)
+
+
+def stock_data_warning(row: StockRisk) -> str:
+    if not row.unconfirmed_schemes:
+        return ''
+    return '⚠️ ' + ', '.join(row.unconfirmed_schemes) + ': остаток не подтверждён. Обновите остатки и проверьте склад.'
 
 
 @dataclass(frozen=True)
@@ -123,6 +140,17 @@ def build_product_report(repo: Repository, shop_id: int, end: date, *, days: int
     fulfillment_orders=repo.fulfillment_totals(shop_id,start.isoformat(),end.isoformat())
 
     inventory_rows=repo.latest_inventory_by_scheme(shop_id)
+    scheme_history=repo.inventory_scheme_history(shop_id)
+    stock_endpoints={
+        'wildberries':{'FBW':'analytics/stocks/wb-warehouses','FBS':'analytics/stocks/seller-warehouses'},
+        'ozon':{'FBO':'analytics/stocks/fbo','FBS':'product/info/stocks'},
+    }
+    unconfirmed_sources: dict[int,set[str]]={}
+    for conn in conns:
+        for scheme,endpoint in stock_endpoints.get(conn.marketplace,{}).items():
+            run=repo.latest_run(conn.id,endpoint)
+            if run and run.status!='success':
+                unconfirmed_sources.setdefault(conn.id,set()).add(scheme)
     inventory_schemes_map:dict[tuple[str,str],dict[str,Any]]={}
     listing_inventory:dict[int,dict[str,Any]]={}
     for row in inventory_rows:
@@ -151,10 +179,16 @@ def build_product_report(repo: Repository, shop_id: int, end: date, *, days: int
         avg=(sum(series.get(d,0.0) for d in completed)/coverage) if coverage else None
         available=float(row['total_available']); reserved=float(row['total_reserved'])
         days_left=(available/avg) if avg and avg>0 else None
+        required=tuple(sorted(s for s,held in scheme_history.get(lid,{}).items() if held))
+        present_schemes={s for s,_ in row['schemes']}
+        unconfirmed=tuple(sorted((set(required)-present_schemes)
+            | (unconfirmed_sources.get(connection_id,set()) & (set(required)|present_schemes))))
         stock_risks.append(StockRisk(str(row['marketplace']),str(row['name']),str(row['marketplace_sku']),
-                                     available,reserved,avg,days_left,coverage,row.get('captured_at'),tuple(row['schemes'])))
+                                     available,reserved,avg,days_left,coverage,row.get('captured_at'),tuple(row['schemes']),
+                                     required,unconfirmed))
     # Out of stock first, then the shortest calculated runway. Items with unknown demand go last.
-    stock_risks.sort(key=lambda x:(0 if x.available_units<=0 else 1, x.days_left if x.days_left is not None else 10**12, x.available_units))
+    stock_risks.sort(key=lambda x:(0 if x.available_units<=0 or x.out_of_stock_schemes else 1,
+                                 x.days_left if x.days_left is not None else 10**12, x.available_units))
 
     warnings=[]
     for conn in conns:

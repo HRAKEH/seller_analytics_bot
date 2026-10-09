@@ -768,7 +768,8 @@ class CollectionService:
                 self._auto_disabled_endpoints.discard(endpoint)
                 try:
                     observations=normalize_wb_stocks(result.data,fulfillment_scheme=scheme)
-                    rid=self.repo.record_success(wb_connection_id,endpoint,ds,result.data,[],attempts=result.attempts,store_raw=False)
+                    # Preserve the response to investigate omitted stock rows.
+                    rid=self.repo.record_success(wb_connection_id,endpoint,ds,result.data,[],attempts=result.attempts)
                     self._save_inventory_observations(shop_id=shop_id,connection_id=wb_connection_id,
                         marketplace='wildberries',source_run_id=rid,observations=observations)
                     outcomes.append(CollectionOutcome('wildberries',ds,True,rid,f'{scheme} stocks loaded'))

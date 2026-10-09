@@ -3,6 +3,7 @@ from collections import Counter
 from html import escape
 from .dates import readable_dates, readable_text
 from .text import escape_clip, page_slice, paginate_report_html, utf16_length
+from .products import stock_data_warning
 
 
 def sorted_alerts(repo, shop_id: int, report):
@@ -12,7 +13,7 @@ def sorted_alerts(repo, shop_id: int, report):
         row = risks.get(str(state.get('subject_key') or ''))
         if rule == 'api_stale':
             return (0, 0, str(state.get('subject_key')))
-        if row and row.available_units <= 0:
+        if row and row.inventory_confirmed and (row.available_units <= 0 or row.out_of_stock_schemes):
             return (0, 1, row.sku)
         if rule == 'low_stock':
             return (1, row.days_left if row and row.days_left is not None else float('inf'), str(state.get('subject_key')))
@@ -45,13 +46,18 @@ def format_active_alerts(repo, shop_id: int, report, *, page: int = 0) -> str:
     for index, state in enumerate(visible, page * 5 + 1):
         rule=str(state.get('rule_key') or ''); subject=str(state.get('subject_key') or '')
         value=state.get('last_value'); market,_,sku=subject.partition(':')
-        if rule=='low_stock':
+        if rule in {'low_stock','stock_unknown'}:
             row=risks.get(subject)
             label=f'{marketplace_label(market)} · артикул <code>{escape(sku)}</code>'
             if row:
-                icon = '🔴' if row.available_units <= 0 else '🟠'
+                icon = '🔴' if row.inventory_confirmed and (row.available_units <= 0 or row.out_of_stock_schemes) else '🟠'
+                quantity_label='Остаток' if row.inventory_confirmed else 'Получено по API (неполно)'
                 lines += [f'\n{index}. {icon} <b>{escape_clip(row.name, 150)}</b>', label,
-                          f'Остаток: <b>{row.available_units:g} шт.</b> · запас: {_cover(row)}']
+                          f'{quantity_label}: <b>{row.available_units:g} шт.</b> · запас: {_cover(row) if row.inventory_confirmed else "не подтверждён"}']
+                if row.scheme_units:
+                    lines.append(' · '.join(f'{escape(s)} {q:g} шт.' for s,q in row.scheme_units))
+                if not row.inventory_confirmed:lines.append(escape(stock_data_warning(row)))
+                if row.out_of_stock_schemes:lines.append('Нет остатка: '+escape(', '.join(row.out_of_stock_schemes)))
             else:
                 lines += [f'\n{index}. 🟠 {label}', 'Нет актуального остатка. Обновите остатки.']
         else:
@@ -69,7 +75,7 @@ def format_alert_detail(state, report) -> str:
     subject = str(state.get('subject_key') or '')
     market, _, sku = subject.partition(':')
     value = state.get('last_value')
-    if rule != 'low_stock':
+    if rule not in {'low_stock','stock_unknown'}:
         labels = {'api_stale': 'Данные заказов давно не обновлялись', 'order_drop': 'Падение заказов', 'high_drr': 'Высокий ДРР'}
         unit = 'ч.' if rule == 'api_stale' else '%'
         lines = ['🚨 <b>' + escape(labels.get(rule, rule)) + '</b>', escape(marketplace_label(subject)),
@@ -80,13 +86,17 @@ def format_alert_detail(state, report) -> str:
         lines.append(explanations.get(rule, 'Сохранённая проверка предупреждений.'))
     else:
         row = next((r for r in report.stock_risks if f'{r.marketplace}:{r.sku}' == subject), None)
-        lines = ['🚨 <b>Мало остатка</b>', f'{escape(marketplace_label(market))} · артикул <code>{escape(sku)}</code>']
+        title='Проверить остатки' if rule=='stock_unknown' else 'Мало остатка'
+        lines = [f'🚨 <b>{title}</b>', f'{escape(marketplace_label(market))} · артикул <code>{escape(sku)}</code>']
         if row is None:
             return '\n'.join(lines + ['Нет актуального снимка. Сначала обновите остатки.'])
-        lines += ['<b>' + escape_clip(row.name, 1700) + '</b>', f'Остаток: <b>{row.available_units:g} шт.</b>',
-                  f'Резерв: {row.reserved_units:g} шт.', f'Текущий запас: {_cover(row)}']
+        quantity_label='Остаток' if row.inventory_confirmed else 'Получено по API (неполно)'
+        lines += ['<b>' + escape_clip(row.name, 1700) + '</b>', f'{quantity_label}: <b>{row.available_units:g} шт.</b>',
+                  f'Резерв: {row.reserved_units:g} шт.', f'Текущий запас: {_cover(row) if row.inventory_confirmed else "не подтверждён"}']
         for scheme, quantity in row.scheme_units:
             lines.append(f'{escape(scheme)}: {quantity:g} шт.')
+        if not row.inventory_confirmed:lines.append(escape(stock_data_warning(row)))
+        if row.out_of_stock_schemes:lines.append('Нет остатка: '+escape(', '.join(row.out_of_stock_schemes)))
         if row.avg_daily_units is not None:
             lines += [f'Среднее: {row.avg_daily_units:.2f} шт./день за {row.coverage_days} загруженных дней.',
                       'Расчёт: остаток ÷ среднее количество заказанных единиц в день.']
@@ -120,12 +130,13 @@ def _digest_parts(notifications, shop_name):
     if shop_name:
         lines.append(f'🏪 <b>{escape_clip(str(shop_name), 180)}</b>')
     lines += ['🚨 <b>Сводка оповещений</b>',
-              f'Критичных: {counts["critical"]} · предупреждений: {counts["warning"]} · восстановлено: {counts["resolved"]}']
+              f'Критичных: {counts["critical"]} · предупреждений: {counts["warning"]} · снято предупреждений: {counts["resolved"]}']
     priority = {'critical': 0, 'warning': 1, 'resolved': 2}
     icons = {'critical': '🔴', 'warning': '🟠', 'resolved': '✅'}
     events = []
     for note in sorted(notes, key=lambda item: priority[severity(item)]):
         message = ' '.join(str(note.message).split())
+        if severity(note)=='resolved':message=message.removeprefix('✅ ')
         display = escape(message)
         _, _, sku = str(note.subject_key).partition(':')
         if sku:

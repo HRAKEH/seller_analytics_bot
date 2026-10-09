@@ -5,16 +5,18 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from app.storage import Repository
 from app.marketplaces import OZON_LABEL, WB_SHORT_LABEL
-from app.reports.products import build_product_report
+from app.reports.products import build_product_report, stock_data_warning
 
 def marketplace_label(value: str) -> str:
     return {'wildberries':WB_SHORT_LABEL,'wb':WB_SHORT_LABEL,'ozon':OZON_LABEL}.get(value,value)
 
 
 def stock_alert_text(row) -> str:
-    state='нет остатка' if row.available_units<=0 else (
+    state=('нет остатка: '+', '.join(row.out_of_stock_schemes)) if row.out_of_stock_schemes else 'нет остатка' if row.available_units<=0 else (
         f'хватит примерно на {row.days_left:.1f} дн.' if row.days_left is not None else 'спрос неизвестен')
-    return f'📦 {marketplace_label(row.marketplace)} · артикул {row.sku}: остаток {row.available_units:g} шт.; {state}\nТовар: {row.name}'
+    schemes='; '.join(f'{s} {q:g} шт.' for s,q in row.scheme_units)
+    detail=f'\nПо схемам: {schemes}' if schemes else ''
+    return f'📦 {marketplace_label(row.marketplace)} · артикул {row.sku}: остаток {row.available_units:g} шт.; {state}\nТовар: {row.name}'+detail
 
 @dataclass(frozen=True)
 class AlertNotification:
@@ -37,11 +39,12 @@ class AlertEngine:
         state=self.repo.get_alert_state(shop_id,n.rule_key,n.subject_key)
         fp=self._fingerprint(n.rule_key,n.subject_key,n.message)
         if state and state.get('active'):
+            escalated=(n.rule_key=='low_stock' and n.severity=='critical' and state.get('last_value')!=0)
             last=state.get('last_notified_at')
             if last:
                 try: last_dt=datetime.fromisoformat(str(last))
                 except ValueError: last_dt=None
-                if last_dt and now-last_dt < self.cooldown:
+                if last_dt and now-last_dt < self.cooldown and not escalated:
                     # Cooldown is tied to the rule+subject, not the exact message.
                     # Otherwise a slowly changing stock/runway value would create a new
                     # fingerprint and spam the owner on every evaluation cycle.
@@ -53,7 +56,8 @@ class AlertEngine:
         return n
 
     def _resolve_missing(self, shop_id: int, active_keys: set[tuple[str,str]], rules: set[str], *,
-                         subjects: dict[str,set[str]] | None = None) -> list[AlertNotification]:
+                         subjects: dict[str,set[str]] | None = None,
+                         stock_rows: dict | None = None) -> list[AlertNotification]:
         # Resolve only rules that were actually evaluated this cycle. Emit one recovery event
         # on the active -> resolved transition so owners know the situation normalised.
         now=datetime.now(timezone.utc).isoformat(timespec='seconds')
@@ -76,6 +80,16 @@ class AlertEngine:
                             product=c.execute('SELECT name FROM products WHERE id=?',(listing.product_id,)).fetchone()
                         if product:subject+=f' · {product["name"]}'
                 msg=f'✅ Восстановлено: {labels.get(key[0], key[0])} · {subject}'
+                stock=(stock_rows or {}).get(key[1])
+                if key[0]=='low_stock':
+                    msg=f'✅ Предупреждение по запасу снято · {subject}'
+                elif key[0]=='stock_unknown':
+                    msg=f'✅ Данные об остатке получены · {subject}'
+                if stock and key[0] in {'low_stock','stock_unknown'}:
+                    schemes='; '.join(f'{s} {q:g} шт.' for s,q in stock.scheme_units)
+                    msg+=f'\nОстатки: {schemes or str(stock.available_units)+" шт."}'
+                    if key[0]=='low_stock' and stock.days_left is not None:
+                        msg+=f' · прогноз {stock.days_left:.1f} дн.'
                 fp=self._fingerprint(key[0],key[1],msg)
                 self.repo.save_alert_state(shop_id,key[0],key[1],active=False,value=None,fingerprint=None,resolved_at=now)
                 self.repo.record_alert_event(shop_id,key[0],key[1],'resolved',msg,None,fp)
@@ -86,25 +100,39 @@ class AlertEngine:
                  api_stale_hours: float, drr_pct: float, stock_risk_days: int,
                  stock_velocity_days: int) -> list[AlertNotification]:
         candidates: list[AlertNotification]=[]; active:set[tuple[str,str]]=set(); evaluated:set[str]=set()
-        subjects={'low_stock':set(),'high_drr':set()}
+        subjects={'low_stock':set(),'stock_unknown':set(),'high_drr':set()}
 
         # 1) Low stock. Uses only successful operational-order days for velocity.
         end=today-timedelta(days=1)
         report=build_product_report(self.repo,shop_id,end,days=min(7,stock_velocity_days),
                                     stock_lookback_days=stock_velocity_days,stock_risk_days=stock_risk_days)
-        evaluated.add('low_stock')
+        evaluated.update({'low_stock','stock_unknown'})
+        stock_rows={f'{r.marketplace}:{r.sku}':r for r in report.stock_risks}
         for r in report.stock_risks:
             if r.captured_at:
                 try:
                     if (today-datetime.fromisoformat(r.captured_at.replace('Z','+00:00')).date()).days>2:continue
                 except ValueError:continue
-            if r.available_units<=0 or r.avg_daily_units is not None:
-                subjects['low_stock'].add(f'{r.marketplace}:{r.sku}')
-            risky=r.available_units<=0 or (r.days_left is not None and r.days_left<=stock_risk_days)
+            subject=f'{r.marketplace}:{r.sku}'
+            if not r.inventory_confirmed:
+                active.add(('stock_unknown',subject))
+                schemes='; '.join(f'{s} {q:g} шт.' for s,q in r.scheme_units)
+                candidates.append(AlertNotification('stock_unknown',subject,'warning',
+                    f'📦 {marketplace_label(r.marketplace)} · артикул {r.sku}: нужно проверить остаток\n'
+                    f'Товар: {r.name}\nПолучено по API: {schemes or str(r.available_units)+" шт."}\n'
+                    +stock_data_warning(r)))
+                # Missing or failed inventory observations cannot close an
+                # existing stock warning, even when the known subtotal is >0.
+                continue
+            subjects['stock_unknown'].add(subject)
+            if r.available_units<=0 or (r.avg_daily_units is not None and r.avg_daily_units>0):
+                subjects['low_stock'].add(subject)
+            risky=r.available_units<=0 or bool(r.out_of_stock_schemes) or (r.days_left is not None and r.days_left<=stock_risk_days)
             if not risky: continue
-            subject=f'{r.marketplace}:{r.sku}'; active.add(('low_stock',subject))
-            candidates.append(AlertNotification('low_stock',subject,'critical' if r.available_units<=0 else 'warning',
-                stock_alert_text(r),0.0 if r.available_units<=0 else r.days_left))
+            active.add(('low_stock',subject))
+            empty=r.available_units<=0 or bool(r.out_of_stock_schemes)
+            candidates.append(AlertNotification('low_stock',subject,'critical' if empty else 'warning',
+                stock_alert_text(r),0.0 if empty else r.days_left))
 
         # 2) Order drop only when yesterday is complete for all enabled marketplaces.
         start=today-timedelta(days=order_lookback_days+1)
@@ -158,7 +186,7 @@ class AlertEngine:
                     candidates.append(AlertNotification('high_drr',market,'warning',
                         f'📣 {marketplace_label(market)}: ДРР {drr:.1f}% за последние 7 дней, порог {drr_pct:.1f}%.',drr))
 
-        resolved=self._resolve_missing(shop_id,active,evaluated,subjects=subjects)
+        resolved=self._resolve_missing(shop_id,active,evaluated,subjects=subjects,stock_rows=stock_rows)
         result=list(resolved)
         for n in candidates:
             sent=self._emit(shop_id,n)

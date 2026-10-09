@@ -265,12 +265,15 @@ class WildberriesClient(MarketplaceClient):
             if not result.ok:
                 return FetchResult.failure(self.source, result.error or 'WB stocks error',
                                            result.status_code, total_attempts)
-            if result.status_code == 204 or result.data is None:
+            if result.status_code == 204:
                 return FetchResult.success(self.source, {'data': {'items': all_items}},
                                            result.status_code or 204, total_attempts)
             body = result.data if isinstance(result.data, dict) else {}
-            data = body.get('data') or {}
-            items = (data.get('items') if isinstance(data, dict) else None) or body.get('items') or []
+            data = body.get('data')
+            if isinstance(data,dict) and 'items' in data:
+                items=data['items']
+            else:
+                items=body.get('items')
             if not isinstance(items, list):
                 return FetchResult.failure(self.source, 'WB stocks items are not a list',
                                            result.status_code, total_attempts)

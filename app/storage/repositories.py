@@ -1089,6 +1089,25 @@ class Repository:
               (shop_id,)).fetchall()
         return [dict(r) for r in rows]
 
+    def inventory_scheme_history(self, shop_id: int) -> dict[int,dict[str,bool]]:
+        """Previously observed schemes; disappearing rows do not confirm zero.
+
+        Only schemes that have actually held stock require a fresh observation.
+        An unused, always-zero FBS scheme must not block a seller using only FBO.
+        """
+        with self.db.connect() as c:
+            rows=c.execute('''SELECT i.listing_id,i.fulfillment_scheme,
+                  MAX(CASE WHEN i.available_units>0 THEN 1 ELSE 0 END) held_stock
+                FROM inventory_snapshots i
+                JOIN product_listings pl ON pl.id=i.listing_id
+                JOIN marketplace_connections mc ON mc.id=pl.connection_id
+                WHERE mc.shop_id=? AND mc.enabled=1
+                GROUP BY i.listing_id,i.fulfillment_scheme''',(shop_id,)).fetchall()
+        result: dict[int,dict[str,bool]]={}
+        for row in rows:
+            result.setdefault(int(row['listing_id']),{})[str(row['fulfillment_scheme'])]=bool(row['held_stock'])
+        return result
+
     def successful_order_dates(self, connection_id: int, start_date: str, end_date: str,
                                *, prefer_wb_funnel: bool = False) -> list[str]:
         """Dates for which a complete operational-order source run succeeded.

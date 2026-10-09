@@ -167,22 +167,25 @@ def normalize_ozon_product_analytics(payload: Any, *, default_date: str | None =
 
 
 def normalize_wb_stocks(payload: Any, *, fulfillment_scheme: str) -> list[StockObservation]:
-    if payload is None:
-        return []
     if not isinstance(payload, dict):
         raise ProductNormalizationError('WB stock payload must be an object')
-    data = payload.get('data') or {}
-    items = (data.get('items') if isinstance(data, dict) else None) or payload.get('items') or []
+    data = payload.get('data')
+    if isinstance(data,dict) and 'items' in data:
+        items=data['items']
+    elif 'items' in payload:
+        items=payload['items']
+    else:
+        raise ProductNormalizationError('WB stock payload has no items list')
     if not isinstance(items, list):
         raise ProductNormalizationError('WB stock items must be a list')
     now = _now()
     grouped: dict[tuple[str, str], float] = {}
     for row in items:
         if not isinstance(row, dict):
-            continue
+            raise ProductNormalizationError('WB stock item must be an object')
         sku = str(row.get('nmId') or '').strip()
         if not sku:
-            continue
+            raise ProductNormalizationError('WB stock item has no nmId')
         warehouse = str(row.get('warehouseName') or row.get('warehouseId') or 'ALL')
         key = (sku, warehouse)
         grouped[key] = grouped.get(key, 0.0) + _num(row.get('quantity'), 'WB stock quantity')

@@ -91,13 +91,18 @@ def build_action_center(repo: Repository, shop_id: int, as_of: date, *, persist:
     for a in repo.active_alert_states(shop_id):
         rule=str(a.get('rule_key') or 'alert'); subject=str(a.get('subject_key') or '')
         if rule in {'low_stock','high_drr'}: continue
-        labels={'order_drop':'Падение заказов','api_stale':'Обновление данных'}
+        labels={'order_drop':'Падение заказов','api_stale':'Обновление данных','stock_unknown':'Проверить остатки'}
         market_label={'wildberries':'WB','ozon':'Ozon','shop':'Магазин'}.get(subject,subject)
         value=a.get('last_value')
         if rule=='api_stale':
             detail='Нет успешной загрузки заказов.' if value is None else f'Заказы не обновлялись {float(value):.1f} ч.'
         elif rule=='order_drop':
             detail='Заказов меньше обычного.' if value is None else f'Заказов на {float(value):.1f}% меньше среднего за предыдущие полные дни.'
+        elif rule=='stock_unknown':
+            from .alerts import marketplace_label
+            market,_,sku=subject.partition(':')
+            market_label=marketplace_label(market)+(f' · артикул {sku}' if sku else '')
+            detail='Часть остатков не подтверждена. Обновите остатки и сверьте склад в кабинете.'
         else:detail='Откройте активные проблемы, чтобы проверить причину.'
         p=1 if rule=='api_stale' else 2
         _merge_action(actions,ActionItem(

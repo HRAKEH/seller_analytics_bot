@@ -194,6 +194,7 @@ def format_product_report(report) -> str:
 
 @readable_dates
 def format_stock_report(report) -> str:
+    from .products import stock_data_warning
     labels={'ozon':OZON_LABEL,'wildberries':WB_LABEL}
     lines=['📦 <b>Остатки и запас</b>','━━━━━━━━━━━━━━━━']
     if report.inventory_schemes:
@@ -215,8 +216,11 @@ def format_stock_report(report) -> str:
             elif row.avg_daily_units==0: days='нет спроса за загруженные дни'
             else: days=f'{row.days_left:.1f} дн.'
             schemes=' · '.join(f'{escape(s)} {v:g} шт.' for s,v in row.scheme_units)
-            lines.append(f'• {labels.get(market,market)} · <b>{_product_name(row.name)}</b> · артикул <code>{escape(row.sku)}</code>\n   Остаток: {row.available_units:g} шт. · хватит на {days}\n   {demand} · история {row.coverage_days} дней')
+            quantity_label='Остаток' if row.inventory_confirmed else 'Получено по API (неполно)'
+            forecast=f'хватит на {days}' if row.inventory_confirmed else 'общий запас не подтверждён'
+            lines.append(f'• {labels.get(market,market)} · <b>{_product_name(row.name)}</b> · артикул <code>{escape(row.sku)}</code>\n   {quantity_label}: {row.available_units:g} шт. · {forecast}\n   {demand} · история {row.coverage_days} дней')
             if schemes:lines.append('   '+schemes)
+            if not row.inventory_confirmed:lines.append('   '+escape(stock_data_warning(row)))
             if row.reserved_units:lines.append(f'   Резерв: {row.reserved_units:g} шт.')
             if row.captured_at:lines.append('   Снимок API: '+escape(row.captured_at))
     for warning in getattr(report,'inventory_warnings',()):lines.append('\n⚠️ '+escape(warning))

@@ -24,7 +24,7 @@ def test_digest_groups_changes_prioritizes_critical_and_escapes_names():
     notes = [notification('recovered', 'resolved'), notification('warning'),
              notification('critical <script>&', 'critical')]
     text = format_alert_digest(notes, shop_name='Shop <b>&')
-    assert 'Критичных: 1 · предупреждений: 1 · восстановлено: 1' in text
+    assert 'Критичных: 1 · предупреждений: 1 · снято предупреждений: 1' in text
     assert text.index('critical') < text.index('\n🟠 warning') < text.index('recovered')
     assert 'Shop &lt;b&gt;&amp;' in text
     assert 'critical &lt;script&gt;&amp;' in text
@@ -41,7 +41,7 @@ def test_large_digest_pages_keep_every_event_and_full_escaped_names():
         assert utf16_length(displayed) <= 3900
         parsed(displayed)
         assert page.count('Сводка оповещений') == 1
-        assert 'Критичных: 1 · предупреждений: 100 · восстановлено: 0' in page
+        assert 'Критичных: 1 · предупреждений: 100 · снято предупреждений: 0' in page
         assert 'Ещё событий:' not in page and 'Подробности сокращены.' not in page
         body = page.split('\n\n', 1)[1].split('\n\nТекущие проблемы:', 1)[0]
         bodies.append(''.join(parsed(body).text))
@@ -140,7 +140,7 @@ async def test_many_stock_alerts_are_one_message_per_recipient_with_all_pages(ui
         pages = json.loads(saved['pages_json'])
         assert len(pages) > 1
         assert [code for page in pages for code in parsed(page).codes] == [str(i) for i in range(150)] + ['restored']
-        assert all('Критичных: 150' in page and 'восстановлено: 1' in page for page in pages)
+        assert all('Критичных: 150' in page and 'снято предупреждений: 1' in page for page in pages)
         assert all(utf16_length(report_page_text(pages, index)) <= 3900 for index in range(len(pages)))
         assert not any(button.copy_text for row in message.reply_markup.inline_keyboard for button in row)
 
