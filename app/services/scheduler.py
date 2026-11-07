@@ -10,6 +10,7 @@ from app.bot.paged_reports import send_report_pages
 from app.bot.report_cards import send_daily_cards
 from app.reports.alerts import format_alert_digest_pages
 from app.services.alerts import AlertEngine
+from app.services.product_status import check_product_status
 from app.services.resilience import queue_retry, partial_error
 from app.services.supply import evaluate_forecast_quality, build_supply_plan
 from app.services.actions import build_action_center
@@ -139,6 +140,7 @@ async def alerts_loop(bot: Bot, ctx: AppContext):
             engine=AlertEngine(ctx.repository,cooldown_minutes=pref.alert_cooldown_minutes)
             if not ctx.job_lock.locked():
                 await ctx.collect_inventory(datetime.now(tz).date(),automatic=True)
+            card_notes = await check_product_status(ctx) if not ctx.job_lock.locked() else []
             notes=engine.evaluate(ctx.shop_id,today=datetime.now(tz).date(),
                 order_drop_pct=pref.alert_order_drop_pct,
                 order_lookback_days=pref.alert_order_lookback_days,
@@ -146,7 +148,7 @@ async def alerts_loop(bot: Bot, ctx: AppContext):
                 drr_pct=pref.alert_drr_pct,
                 stock_risk_days=pref.stock_risk_days,
                 stock_velocity_days=pref.stock_velocity_days)
-            await send_alert_digest(bot, ctx, notes)
+            await send_alert_digest(bot, ctx, notes + card_notes)
         except asyncio.CancelledError: raise
         except Exception: log.exception('Alerts loop failed')
 
@@ -217,11 +219,12 @@ async def multi_alerts_loop(bot: Bot, registry):
                             queue_retry(ctx.repository,ctx.settings,ctx.shop_id,'inventory',today.isoformat(),
                                 {'day':today.isoformat()},error=str(exc),delay_seconds=300)
                             log.exception('Inventory refresh failed; retry queued')
+                    card_notes = await check_product_status(ctx) if not ctx.job_lock.locked() else []
                     notes=engine.evaluate(ctx.shop_id,today=today,order_drop_pct=pref.alert_order_drop_pct,
                         order_lookback_days=pref.alert_order_lookback_days,api_stale_hours=pref.alert_api_stale_hours,
                         drr_pct=pref.alert_drr_pct,stock_risk_days=pref.stock_risk_days,
                         stock_velocity_days=pref.stock_velocity_days)
-                    await send_alert_digest(bot, ctx, notes)
+                    await send_alert_digest(bot, ctx, notes + card_notes)
                 finally:
                     ctx.repository.set_job_state(ctx.shop_id,'alerts',now_utc.isoformat(timespec='seconds'))
                     ctx.repository.release_lease(lease,registry.settings.instance_id)
