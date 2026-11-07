@@ -26,7 +26,7 @@ def _button(text, data):
 def page_keyboard(kind, shop_id, page, pages, items):
     rows = []
     for index, item in enumerate(items, page * 5 + 1):
-        key = alert_key(item) if kind == 'alerts' else item.action_key
+        key = alert_key(item) if kind in {'alerts', 'card_alerts'} else item.action_key
         rows.append([_button(f'{index}. Подробнее', f'ops:{kind}:view:{shop_id}:{page}:{action_ref(key)}')])
     if pages > 1:
         rows.append([_button('◀️', f'ops:{kind}:list:{shop_id}:{max(0, page - 1)}'),
@@ -75,13 +75,17 @@ class OperationalCards:
             report = build_product_report(ctx.repository, ctx.shop_id, day,
                 stock_lookback_days=pref.stock_velocity_days, stock_risk_days=pref.stock_risk_days)
             items = sorted_alerts(ctx.repository, ctx.shop_id, report)
+            if kind == 'card_alerts':
+                items = [item for item in items if item['rule_key'].startswith('card_')]
         return report, items
 
     def _list(self, ctx, kind, report, items, page):
         visible, page, pages = page_slice(items, page)
         tz = ctx.preferences().timezone
-        text = (format_active_alerts(ctx.repository, ctx.shop_id, report, page=page, timezone=tz)
-                if kind == 'alerts' else format_action_center(report, page=page, timezone=tz))
+        text = (format_active_alerts(ctx.repository, ctx.shop_id, report, page=page,
+                    states=items if kind == 'card_alerts' else None,
+                    title='Проблемы с карточками' if kind == 'card_alerts' else 'Активные проблемы', timezone=tz)
+                if kind in {'alerts', 'card_alerts'} else format_action_center(report, page=page, timezone=tz))
         return text, page_keyboard(kind, ctx.shop_id, page, pages, visible)
 
     async def show(self, message, kind):
@@ -104,12 +108,12 @@ class OperationalCards:
 
     async def handle(self, callback):
         parts = str(callback.data or '').split(':')
-        if len(parts) not in {5, 6} or parts[1] not in {'alerts', 'actions'}:
+        if len(parts) not in {5, 6} or parts[1] not in {'alerts', 'card_alerts', 'actions'}:
             return await callback.answer('Неизвестная кнопка.', show_alert=True)
         _, kind, action, raw_shop, raw_page, *tail = parts
         if action not in {'list', 'view', 'ack', 'snooze'} or (action != 'list' and not tail):
             return await callback.answer('Неизвестная кнопка.', show_alert=True)
-        if kind == 'alerts' and action in {'ack', 'snooze'}:
+        if kind in {'alerts', 'card_alerts'} and action in {'ack', 'snooze'}:
             return await callback.answer('Неизвестная кнопка.', show_alert=True)
         try:
             ctx = self._context(int(raw_shop))
@@ -129,7 +133,7 @@ class OperationalCards:
                 await callback.answer()
                 return await self._edit(callback, text, markup)
             ref = tail[0]
-            item = next((item for item in items if action_ref(alert_key(item) if kind == 'alerts' else item.action_key) == ref), None)
+            item = next((item for item in items if action_ref(alert_key(item) if kind in {'alerts', 'card_alerts'} else item.action_key) == ref), None)
             if item is None:
                 return await callback.answer('Пункт уже изменился. Вернитесь к списку.', show_alert=True)
             if action in {'ack', 'snooze'}:
@@ -147,7 +151,7 @@ class OperationalCards:
             else:
                 await callback.answer()
             tz = ctx.preferences().timezone
-            text = format_alert_detail(item, report, timezone=tz) if kind == 'alerts' else format_action_detail(item, timezone=tz)
+            text = format_alert_detail(item, report, timezone=tz) if kind in {'alerts', 'card_alerts'} else format_action_detail(item, timezone=tz)
             markup = detail_keyboard(kind, ctx.shop_id, page, ref,
                 can_operate=ctx.repository.can_user(callback.from_user.id, ctx.shop_id, 'operate'))
             await self._edit(callback, text, markup)
