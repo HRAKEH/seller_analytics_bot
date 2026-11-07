@@ -526,3 +526,36 @@ class WildberriesClient(MarketplaceClient):
                 return FetchResult.success(self.source,{'data':{'nomenclatures':rows}},result.status_code or 200,attempts)
             offset += len(page)
         return FetchResult.failure(self.source,f'WB promotion nomenclature pagination safety limit reached ({max_pages})',200,attempts)
+
+    async def blocked_cards(self) -> FetchResult:
+        return await self.request('GET',
+            'https://seller-analytics-api.wildberries.ru/api/v1/analytics/banned-products/blocked',
+            params={'sort':'nmId','order':'asc'},headers=self._headers(),
+            rate_key='blocked_cards',min_interval=10.0,retry_on_429=False)
+
+    async def card_errors(self, *, max_pages: int = 100) -> FetchResult:
+        cursor={'limit':100}; seen=set(); rows=[]; attempts=0
+        def invalid(message):
+            return FetchResult.failure(self.source,message,None,max(1,attempts))
+        for _ in range(max_pages):
+            result=await self.request('POST','https://content-api.wildberries.ru/content/v2/cards/error/list',
+                json={'cursor':cursor,'order':{'ascending':True}},params={'locale':'ru'},
+                headers=self._headers(),rate_key='card_errors',min_interval=6.0,retry_on_429=False)
+            attempts += result.attempts
+            if not result.ok:return result
+            payload=result.data
+            if not isinstance(payload,dict) or payload.get('error'):
+                return invalid('WB card errors response invalid')
+            data=payload.get('data')
+            if not isinstance(data,dict) or not isinstance(data.get('items'),list):
+                return invalid('WB card errors items missing')
+            rows.extend(data['items']); nxt=data.get('cursor')
+            if not isinstance(nxt,dict) or type(nxt.get('next')) is not bool:
+                return invalid('WB card errors completion marker missing')
+            if nxt['next'] is False:
+                return FetchResult.success(self.source,{'items':rows},200,attempts)
+            key=(nxt.get('updatedAt'),nxt.get('batchUUID'))
+            if any(not isinstance(v,str) or not v for v in key) or key in seen or not data['items']:
+                return invalid('WB card errors cursor repeated or incomplete')
+            seen.add(key); cursor={'limit':100,'updatedAt':key[0],'batchUUID':key[1]}
+        return invalid('WB card errors page limit reached')
