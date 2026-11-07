@@ -410,3 +410,45 @@ class OzonClient(MarketplaceClient):
         if product_ids: payload['product_id']=[int(x) for x in product_ids[:1000]]
         if offer_ids: payload['offer_id']=[str(x) for x in offer_ids[:1000]]
         return await self.request('POST','/v3/product/info/list',json=payload,headers=self._headers(),rate_key='product_info',min_interval=1.0)
+
+    async def card_status_snapshot(self, *, max_pages: int = 100) -> FetchResult:
+        """Enumerate the catalogue (including items without stock/orders) then fetch statuses."""
+        ids, seen, cursor, attempts = set(), set(), '', 0
+        def invalid(message):
+            return FetchResult.failure(self.source,message,None,max(1,attempts))
+        for _ in range(max_pages):
+            result=await self.request('POST','/v3/product/list',
+                json={'filter':{'visibility':'ALL'},'last_id':cursor,'limit':1000},
+                headers=self._headers(),rate_key='card_catalog',min_interval=1.0,retry_on_429=False)
+            attempts += result.attempts
+            if not result.ok:return result
+            data=result.data.get('result') if isinstance(result.data,dict) else None
+            if not isinstance(data,dict) or not isinstance(data.get('items'),list):
+                return invalid('Ozon catalogue has no items')
+            page=data['items']; total=data.get('total')
+            for row in page:
+                if not isinstance(row,dict) or type(row.get('product_id')) is not int or row['product_id']<=0:
+                    return invalid('Ozon catalogue has invalid product_id')
+                ids.add(row['product_id'])
+            if type(total) is not int or total<0:return invalid('Ozon catalogue has no total')
+            if len(ids)==total:break
+            nxt=data.get('last_id')
+            if not page or not isinstance(nxt,str) or not nxt or nxt==cursor or nxt in seen:
+                return invalid('Ozon catalogue incomplete or cursor repeated')
+            seen.add(nxt);cursor=nxt
+        else:return invalid('Ozon catalogue page limit reached')
+        ordered=sorted(ids); items=[]
+        for offset in range(0,len(ordered),1000):
+            chunk=ordered[offset:offset+1000]
+            result=await self.request('POST','/v3/product/info/list',json={'product_id':chunk},
+                headers=self._headers(),rate_key='product_info',min_interval=1.0,retry_on_429=False)
+            attempts += result.attempts
+            if not result.ok:return result
+            page=result.data.get('items') if isinstance(result.data,dict) else None
+            if not isinstance(page,list) or any(not isinstance(r,dict) for r in page):
+                return invalid('Ozon product info has no items')
+            returned=[r.get('id') for r in page]
+            if any(type(i) is not int for i in returned) or len(returned)!=len(set(returned)) or set(returned)!=set(chunk):
+                return invalid('Ozon product info batch incomplete')
+            items.extend(page)
+        return FetchResult.success(self.source,{'items':items},200,max(1,attempts))

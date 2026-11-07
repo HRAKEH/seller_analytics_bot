@@ -1764,7 +1764,9 @@ class Repository:
 
     def active_alert_states(self, shop_id: int) -> list[dict[str,Any]]:
         with self.db.connect() as c:
-            rows=c.execute('''SELECT * FROM alert_state WHERE shop_id=? AND active=1
+            rows=c.execute('''SELECT s.*, (SELECT message FROM alert_events e WHERE e.shop_id=s.shop_id
+                              AND e.rule_key=s.rule_key AND e.subject_key=s.subject_key ORDER BY e.id DESC LIMIT 1) AS message
+                              FROM alert_state s WHERE shop_id=? AND active=1
                               ORDER BY rule_key, subject_key''',(shop_id,)).fetchall()
         return [dict(r) for r in rows]
 
