@@ -34,13 +34,13 @@ def _cover(row):
 
 
 @readable_dates
-def format_active_alerts(repo, shop_id: int, report, *, page: int = 0) -> str:
+def format_active_alerts(repo, shop_id: int, report, *, page: int = 0, states=None, title='Активные проблемы') -> str:
     """Five short problems per page; quantities and forecast days are distinct."""
     from app.services.alerts import marketplace_label
     risks={f'{r.marketplace}:{r.sku}':r for r in report.stock_risks}
-    states=sorted_alerts(repo, shop_id, report)
+    states=sorted_alerts(repo, shop_id, report) if states is None else states
     visible, page, pages = page_slice(states, page)
-    lines=['🚨 <b>Активные проблемы</b>']
+    lines=['🚨 <b>'+escape(title)+'</b>']
     if not states:return '\n'.join(lines+['🟢 Активных проблем нет.'])
     lines.append(f'Всего: {len(states)} · страница {page + 1}/{pages}')
     for index, state in enumerate(visible, page * 5 + 1):

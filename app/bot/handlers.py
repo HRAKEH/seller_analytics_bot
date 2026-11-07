@@ -1992,6 +1992,13 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
     async def btn_menu_action_history(message: types.Message): await cmd_action_history(command_copy(message,'action_history',''))
     @dp.message(F.text == COMMAND_BUTTONS['alerts'])
     async def btn_menu_alerts(message: types.Message): await cmd_alerts(message)
+
+    @dp.message(Command('card_alerts'))
+    @dp.message(F.text == COMMAND_BUTTONS['card_alerts'])
+    async def btn_menu_card_alerts(message: types.Message):
+        if not allowed(message): return await denied(message)
+        await operational_cards.show(message, 'card_alerts')
+        await navigation.dismiss(message)
     @dp.message(F.text == COMMAND_BUTTONS['supply'])
     async def btn_menu_supply_plan(message: types.Message): await cmd_supply(command_copy(message,'supply',''))
     @dp.message(F.text == COMMAND_BUTTONS['inbound'])
@@ -2203,6 +2210,7 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
         'ads': (btn_menu_ads, True),
         'ads_update': (btn_ads_refresh, True),
         'alerts': (btn_menu_alerts, False),
+        'card_alerts': (btn_menu_card_alerts, False),
         'backfill': (btn_backfill_simple, False),
         'backup': (btn_menu_backup, False),
         'backups': (btn_menu_backups, False),

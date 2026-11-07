@@ -110,3 +110,26 @@ def test_card_reports_escape_and_include_reason(setup):
     state=repo.active_alert_states(shop.id)[0]
     assert '&lt;b&gt;Danger &amp; reason' in format_active_alerts(repo,shop.id,report)
     assert '&lt;b&gt;Danger &amp; reason' in format_alert_detail(state,report)
+
+
+def test_card_button_filters_other_alerts_and_keeps_detail_navigation(setup):
+    from app.bot.keyboards import COMMAND_BUTTONS, control_keyboard
+    from app.bot.operational_cards import OperationalCards
+    from app.reports.alerts import format_active_alerts
+    repo,shop,_=setup
+    apply_snapshot(repo,shop.id,'card_blocked',{'wildberries:1':'WB · blocked'})
+    apply_snapshot(repo,shop.id,'low_stock',{'wildberries:2':'stock'})
+    ctx=SimpleNamespace(repository=repo,shop_id=shop.id,
+        preferences=lambda:SimpleNamespace(timezone='UTC',stock_velocity_days=7,stock_risk_days=7))
+    keyboard=control_keyboard('owner')
+    assert COMMAND_BUTTONS['card_alerts'] in [button.text for row in keyboard.keyboard for button in row]
+    controller=OperationalCards(ctx)
+    # The filtered list is also the list used for callbacks and pagination.
+    from unittest.mock import patch
+    report=SimpleNamespace(stock_risks=[],inventory_warnings=[])
+    with patch('app.bot.operational_cards.build_product_report',return_value=report):
+        _,items=controller._data(ctx,'card_alerts',1)
+    assert len(items)==1 and items[0]['rule_key']=='card_blocked'
+    text,markup=controller._list(ctx,'card_alerts',report,items,0)
+    assert 'Проблемы с карточками' in text and 'blocked' in text and 'stock' not in text
+    assert 'ops:card_alerts:view:' in markup.inline_keyboard[0][0].callback_data

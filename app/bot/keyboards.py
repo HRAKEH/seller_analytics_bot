@@ -105,6 +105,7 @@ COMMAND_BUTTONS: dict[str, str] = {
     'reconcile': '🔎 Проверка расхождений',
     'cost': '💲 Задать себестоимость',
     'alerts': '🚨 Активные проблемы',
+    'card_alerts': '🧾 Проблемы с карточками',
     'actions': '🎯 Что делать сегодня',
     'action_history': '📋 История действий',
     'action_ack': '✅ Принять действие',
@@ -231,7 +232,7 @@ def supply_keyboard(role: str | None = 'owner', *, system_owner: bool = False):
 
 def control_keyboard(role: str | None = 'owner', *, system_owner: bool = False):
     buttons = [
-        COMMAND_BUTTONS['actions'], COMMAND_BUTTONS['alerts'],
+        COMMAND_BUTTONS['actions'], COMMAND_BUTTONS['alerts'], COMMAND_BUTTONS['card_alerts'],
         COMMAND_BUTTONS['status'], COMMAND_BUTTONS['action_history'],
         BACK, HOME,
     ]
