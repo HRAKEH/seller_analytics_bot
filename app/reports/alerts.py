@@ -11,7 +11,7 @@ def sorted_alerts(repo, shop_id: int, report):
     def priority(state):
         rule = str(state.get('rule_key') or '')
         row = risks.get(str(state.get('subject_key') or ''))
-        if rule == 'api_stale':
+        if rule in {'api_stale','card_blocked','card_source'}:
             return (0, 0, str(state.get('subject_key')))
         if row and row.inventory_confirmed and (row.available_units <= 0 or row.out_of_stock_schemes):
             return (0, 1, row.sku)
@@ -46,7 +46,9 @@ def format_active_alerts(repo, shop_id: int, report, *, page: int = 0) -> str:
     for index, state in enumerate(visible, page * 5 + 1):
         rule=str(state.get('rule_key') or ''); subject=str(state.get('subject_key') or '')
         value=state.get('last_value'); market,_,sku=subject.partition(':')
-        if rule in {'low_stock','stock_unknown'}:
+        if rule.startswith('card_'):
+            lines.append(f'\n{index}. '+escape_clip(str(state.get('message') or 'Проверка карточки'),500))
+        elif rule in {'low_stock','stock_unknown'}:
             row=risks.get(subject)
             label=f'{marketplace_label(market)} · артикул <code>{escape(sku)}</code>'
             if row:
@@ -75,6 +77,8 @@ def format_alert_detail(state, report) -> str:
     subject = str(state.get('subject_key') or '')
     market, _, sku = subject.partition(':')
     value = state.get('last_value')
+    if rule.startswith('card_'):
+        return '🚨 <b>Состояние карточки</b>\n'+escape_clip(str(state.get('message') or 'Нет описания'),2600)+'\nПоследняя проверка: '+escape(str(state.get('updated_at') or 'неизвестно'))+'\nПроверьте карточку в кабинете площадки.'
     if rule not in {'low_stock','stock_unknown'}:
         labels = {'api_stale': 'Данные заказов давно не обновлялись', 'order_drop': 'Падение заказов', 'high_drr': 'Высокий ДРР'}
         unit = 'ч.' if rule == 'api_stale' else '%'
