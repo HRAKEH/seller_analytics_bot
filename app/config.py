@@ -28,6 +28,19 @@ class MarketplaceCredentials:
     ozon_perf_client_secret: str = field(default="",repr=False)
     wb_api_token: str = field(default="",repr=False)
 
+    yandex_market_api_key: str = field(default="", repr=False)
+    yandex_market_business_id: str = ""
+    yandex_market_campaign_id: str = ""
+
+    def __post_init__(self):
+        values = (self.yandex_market_api_key, self.yandex_market_business_id, self.yandex_market_campaign_id)
+        if any(values) and (not all(values) or any(not str(v).isdigit() or int(v) <= 0 for v in values[1:])):
+            raise ValueError('Укажите YANDEX_MARKET_API_KEY, YANDEX_MARKET_BUSINESS_ID и YANDEX_MARKET_CAMPAIGN_ID; ID — положительные числа')
+
+    @property
+    def has_yandex_market(self) -> bool:
+        return bool(self.yandex_market_api_key)
+
     @property
     def has_ozon(self) -> bool:
         return bool(self.ozon_client_id and self.ozon_api_key)
@@ -90,11 +103,16 @@ class Settings:
     ozon_push_base_url: str = ""
 
 
+    yandex_market_api_key: str = field(default="", repr=False)
+    yandex_market_business_id: str = ""
+    yandex_market_campaign_id: str = ""
+
     def credentials_for_profile(self, profile: str = "DEFAULT") -> MarketplaceCredentials:
         clean=(profile or "DEFAULT").strip().upper()
         if clean == "DEFAULT":
             return MarketplaceCredentials(clean,self.ozon_client_id,self.ozon_api_key,
-                self.ozon_perf_client_id,self.ozon_perf_client_secret,self.wb_api_token)
+                self.ozon_perf_client_id,self.ozon_perf_client_secret,self.wb_api_token,
+                self.yandex_market_api_key,self.yandex_market_business_id,self.yandex_market_campaign_id)
         if not re.fullmatch(r"[A-Z0-9_]{1,64}",clean):
             raise ValueError("Invalid credential profile")
         prefix=f"SELLERBOT_{clean}_"
@@ -105,11 +123,14 @@ class Settings:
             os.getenv(prefix+"OZON_PERF_CLIENT_ID",""),
             os.getenv(prefix+"OZON_PERF_CLIENT_SECRET",""),
             os.getenv(prefix+"WB_API_TOKEN",""),
+            os.getenv(prefix+"YANDEX_MARKET_API_KEY", ""),
+            os.getenv(prefix+"YANDEX_MARKET_BUSINESS_ID", ""),
+            os.getenv(prefix+"YANDEX_MARKET_CAMPAIGN_ID", ""),
         )
 
     def available_credential_profiles(self) -> tuple[str, ...]:
         profiles={"DEFAULT"}
-        pattern=re.compile(r"^SELLERBOT_([A-Z0-9_]{1,64})_(?:OZON_CLIENT_ID|OZON_API_KEY|OZON_PERF_CLIENT_ID|OZON_PERF_CLIENT_SECRET|WB_API_TOKEN)$")
+        pattern=re.compile(r"^SELLERBOT_([A-Z0-9_]{1,64})_(?:OZON_CLIENT_ID|OZON_API_KEY|OZON_PERF_CLIENT_ID|OZON_PERF_CLIENT_SECRET|WB_API_TOKEN|YANDEX_MARKET_API_KEY|YANDEX_MARKET_BUSINESS_ID|YANDEX_MARKET_CAMPAIGN_ID)$")
         for key in os.environ:
             m=pattern.match(key.upper())
             if m: profiles.add(m.group(1))
@@ -124,6 +145,9 @@ class Settings:
             ozon_api_key=os.getenv("OZON_API_KEY", ""),
             ozon_perf_client_id=os.getenv("OZON_PERF_CLIENT_ID", ""),
             ozon_perf_client_secret=os.getenv("OZON_PERF_CLIENT_SECRET", ""),
+            yandex_market_api_key=os.getenv("YANDEX_MARKET_API_KEY", "").strip(),
+            yandex_market_business_id=os.getenv("YANDEX_MARKET_BUSINESS_ID", "").strip(),
+            yandex_market_campaign_id=os.getenv("YANDEX_MARKET_CAMPAIGN_ID", "").strip(),
             wb_api_token=os.getenv("WB_API_TOKEN", ""),
             db_file=Path(os.getenv("DB_FILE", "./data/seller_analytics.sqlite3")),
             timezone=os.getenv("TIMEZONE", "Europe/Moscow"),

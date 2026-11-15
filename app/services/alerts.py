@@ -8,7 +8,7 @@ from app.marketplaces import OZON_LABEL, WB_SHORT_LABEL
 from app.reports.products import build_product_report, stock_data_warning
 
 def marketplace_label(value: str) -> str:
-    return {'wildberries':WB_SHORT_LABEL,'wb':WB_SHORT_LABEL,'ozon':OZON_LABEL}.get(value,value)
+    return {'wildberries':WB_SHORT_LABEL,'wb':WB_SHORT_LABEL,'ozon':OZON_LABEL,'yandex_market':'🟡 Яндекс Маркет'}.get(value,value)
 
 
 def stock_alert_text(row) -> str:

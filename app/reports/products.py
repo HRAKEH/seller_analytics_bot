@@ -109,7 +109,7 @@ def build_product_report(repo: Repository, shop_id: int, end: date, *, days: int
     # different data coverage. Top lists can still show available data, but
     # change rankings are suppressed unless both periods are complete for every
     # enabled core connection.
-    conns=[c for c in repo.list_connections(shop_id) if c.enabled and c.marketplace in {'ozon','wildberries'}]
+    conns=[c for c in repo.list_connections(shop_id) if c.enabled and c.marketplace in {'ozon','wildberries','yandex_market'}]
     comparison_complete=bool(conns) and all(
         len(repo.successful_order_dates(c.id,start.isoformat(),end.isoformat()))==days
         and len(repo.successful_order_dates(c.id,prev_start.isoformat(),prev_end.isoformat()))==days
@@ -143,6 +143,7 @@ def build_product_report(repo: Repository, shop_id: int, end: date, *, days: int
     scheme_history=repo.inventory_scheme_history(shop_id)
     stock_endpoints={
         'wildberries':{'FBW':'analytics/stocks/wb-warehouses','FBS':'analytics/stocks/seller-warehouses'},
+        'yandex_market':{s:'stocks/yandex' for s in ('FBY','FBS','DBS','EXPRESS','LAAS')},
         'ozon':{'FBO':'analytics/stocks/fbo','FBS':'product/info/stocks'},
     }
     unconfirmed_sources: dict[int,set[str]]={}
@@ -192,15 +193,15 @@ def build_product_report(repo: Repository, shop_id: int, end: date, *, days: int
 
     warnings=[]
     for conn in conns:
-        market='WB' if conn.marketplace=='wildberries' else 'Ozon'
+        market={'wildberries':'WB','ozon':'Ozon','yandex_market':'Яндекс Маркет'}.get(conn.marketplace,conn.marketplace)
         if not any(r.marketplace==conn.marketplace for r in stock_risks):
             warnings.append(f'{market}: нет товарного снимка остатков. Это не означает нулевой остаток.')
         endpoints=(('analytics/stocks/wb-warehouses','analytics/stocks/seller-warehouses')
-                   if conn.marketplace=='wildberries' else ('product/info/stocks','analytics/stocks/fbo'))
+                   if conn.marketplace=='wildberries' else ('stocks/yandex',) if conn.marketplace=='yandex_market' else ('product/info/stocks','analytics/stocks/fbo'))
         for endpoint in endpoints:
             run=repo.latest_run(conn.id,endpoint)
             if run and run.status!='success':
-                scheme=('FBW' if endpoint.endswith('wb-warehouses') else 'FBO' if endpoint.endswith('/fbo') else 'FBS')
+                scheme=('' if conn.marketplace=='yandex_market' else 'FBW' if endpoint.endswith('wb-warehouses') else 'FBO' if endpoint.endswith('/fbo') else 'FBS')
                 warnings.append(f'{market} {scheme}: последний запрос не завершён. Показаны ранее сохранённые данные, если они есть.')
     return ProductReport(
         start=start,end=end,days=days,top=top,growth=growth,decline=decline,

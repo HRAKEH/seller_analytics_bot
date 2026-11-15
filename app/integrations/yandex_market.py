@@ -99,3 +99,121 @@ class YandexMarketClient(MarketplaceClient):
             token = next_token
         return FetchResult.failure(self.source, 'Превышен лимит страниц Яндекс Маркета', None, attempts)
 
+    async def configured_campaign(self):
+        """Verify that the configured campaign belongs to the configured business."""
+        cached = getattr(self, '_campaign', None)
+        if cached is not None:
+            return FetchResult.success(self.source, cached, 200, 0)
+        result = await self.campaigns()
+        if not result.ok:
+            return result
+        matches = [x for x in result.data['campaigns'] if x['id'] == self.campaign_id]
+        if len(matches) != 1 or not isinstance(matches[0].get('business'), dict) or matches[0]['business'].get('id') != self.business_id:
+            return FetchResult.failure(self.source, 'campaignId не принадлежит businessId или недоступен ключу', None, result.attempts)
+        self._campaign = matches[0]
+        return FetchResult.success(self.source, self._campaign, 200, result.attempts)
+
+    async def campaign_offers(self):
+        return await self._pages(f'/v2/campaigns/{self.campaign_id}/offers', 'offers', body={}, limit=100)
+
+    async def card_status_snapshot(self):
+        valid = await self.configured_campaign()
+        if not valid.ok:
+            return valid
+        offers = await self.campaign_offers()
+        if not offers.ok:
+            return offers
+        catalogue = await self.catalogue(self.business_id)
+        if not catalogue.ok:
+            return catalogue
+        return FetchResult.success(self.source, {**offers.data, **catalogue.data}, 200,
+                                   valid.attempts + offers.attempts + catalogue.attempts)
+
+    async def inventory_snapshot(self):
+        valid = await self.configured_campaign()
+        if not valid.ok:
+            return valid
+        scheme = valid.data.get('placementType')
+        if scheme not in ('FBY','FBS','DBS','EXPRESS','LAAS'):
+            return FetchResult.failure(self.source, 'Неизвестная модель работы магазина', None, valid.attempts)
+        if scheme not in ('FBY','LAAS'):
+            warehouses = await self._pages(f'/v3/businesses/{self.business_id}/warehouses', 'warehouses', body={}, limit=100)
+            if warehouses.ok:
+                selected = []
+                for warehouse in warehouses.data['warehouses']:
+                    models = warehouse.get('models')
+                    if not isinstance(models, list) or any(not isinstance(m, dict) for m in models):
+                        return FetchResult.failure(self.source, 'Нет привязки складов к магазину', None, warehouses.attempts)
+                    if any(m.get('campaignId') == self.campaign_id for m in models):
+                        selected.append(warehouse)
+                if selected:
+                    result = []; attempts = warehouses.attempts
+                    for warehouse in selected:
+                        wid = warehouse.get('id')
+                        if type(wid) is not int or wid <= 0:
+                            return FetchResult.failure(self.source, 'Нет ID партнёрского склада', None, attempts)
+                        stocks = await self._pages(f'/v3/businesses/{self.business_id}/offers/stocks', 'offers',
+                                                  body={'partnerWarehouseId': wid}, limit=100)
+                        attempts += stocks.attempts
+                        if not stocks.ok:
+                            return stocks
+                        result.append({'warehouseId': wid, 'offers': stocks.data['offers']})
+                    return FetchResult.success(self.source, {'warehouses': result, 'scheme': scheme}, 200, attempts)
+            elif warehouses.status_code != 400:
+                return warehouses
+            # Grouped warehouses are served only by the campaign endpoint.
+        result = await self.campaign_stocks(self.campaign_id)
+        if result.ok:
+            return FetchResult.success(self.source, {**result.data, 'scheme': scheme}, 200, result.attempts)
+        return result
+    async def order_finance(self, day):
+        valid = await self.configured_campaign()
+        if not valid.ok:
+            return valid
+        return await self._pages(f'/v2/campaigns/{self.campaign_id}/stats/orders', 'orders',
+                                 body={'dateFrom':day.isoformat(),'dateTo':day.isoformat()}, limit=200)
+
+    async def promotions_snapshot(self):
+        valid = await self.configured_campaign()
+        if not valid.ok:
+            return valid
+        response = await self.request('POST', f'/v2/businesses/{self.business_id}/promos',
+                                      json={}, headers=self._headers(),rate_key='promos')
+        if not response.ok:
+            return response
+        payload=response.data
+        data=payload.get('result') if isinstance(payload,dict) and payload.get('status')!='ERROR' else None
+        if not isinstance(data,dict) or not isinstance(data.get('promos'),list):
+            return FetchResult.failure(self.source,'Нет списка акций',response.status_code,response.attempts)
+        details={}; attempts=response.attempts
+        for promo in data['promos']:
+            if not isinstance(promo,dict) or not isinstance(promo.get('id'),str) or not promo['id']:
+                return FetchResult.failure(self.source,'Некорректная акция',None,attempts)
+            offers=await self._pages(f'/v2/businesses/{self.business_id}/promos/offers','offers',
+                                    body={'promoId':promo['id']},limit=100)
+            attempts+=offers.attempts
+            if not offers.ok:
+                return offers
+            details[promo['id']]=offers.data['offers']
+        return FetchResult.success(self.source,{'promos':data['promos'],'products':details,'campaignId':self.campaign_id},200,attempts)
+
+    async def inbound_snapshot(self):
+        valid=await self.configured_campaign()
+        if not valid.ok:
+            return valid
+        if valid.data.get('placementType') not in ('FBY','LAAS'):
+            return FetchResult.success(self.source,{'requests':[],'items':{},'not_applicable':True},200,valid.attempts)
+        result=await self._pages(f'/v2/campaigns/{self.campaign_id}/supply-requests','requests',
+                                body={'requestTypes':['SUPPLY']},limit=100)
+        if not result.ok:
+            return result
+        items={}; attempts=result.attempts
+        for row in result.data['requests']:
+            rid=(row.get('id') or {}).get('id') if isinstance(row.get('id'),dict) else None
+            if type(rid) is not int or rid<=0:
+                return FetchResult.failure(self.source,'Нет ID заявки на поставку',None,attempts)
+            detail=await self._pages(f'/v2/campaigns/{self.campaign_id}/supply-requests/items','items',body={'requestId':rid},limit=100)
+            attempts+=detail.attempts
+            if not detail.ok:return detail
+            items[str(rid)]=detail.data['items']
+        return FetchResult.success(self.source,{'requests':result.data['requests'],'items':items},200,attempts)

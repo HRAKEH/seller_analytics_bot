@@ -91,6 +91,17 @@ async def build_readiness(ctx, *, live: bool = False, persist: bool = True) -> R
                                'покрыта' if products and missing_cost==0 else f'без себестоимости: {missing_cost}'))
 
     if live and not p.demo_mode:
+        ym=getattr(ctx.collector,'yandex_market',None)
+        if ym is not None:
+            r=await ym.configured_campaign()
+            items.append(ReadinessItem('yandex_auth','Яндекс Маркет · ключ и ID',r.ok,True,
+                'кабинет и магазин подтверждены' if r.ok else (r.error or 'API недоступен')))
+            if r.ok:
+                for key,label,fetch in [('yandex_cards','Яндекс Маркет · товары',ym.card_status_snapshot),
+                                      ('yandex_stocks','Яндекс Маркет · остатки',ym.inventory_snapshot)]:
+                    result=await fetch()
+                    items.append(ReadinessItem(key,label,result.ok,False,
+                        'доступ есть' if result.ok else (result.error or 'API недоступен')))
         if ctx.collector.wb is not None:
             wb=ctx.collector.wb
             info=await wb.seller_info(retry_on_429=False,fail_fast_rate_limit=True)

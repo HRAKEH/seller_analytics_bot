@@ -46,6 +46,8 @@ def build_source_coverage(repo, shop_id: int, start: str, end: str) -> tuple[Sou
             components={'Заказы':{'ordered_units'},
                 'Финансы':{'marketplace_net'} if conn.marketplace=='ozon' else {'bank_payment','goods_payable','financial_sales'},
                 'Рекламная статистика':{'ad_spend'}}
+            if conn.marketplace=='yandex_market':
+                components={'Заказы':{'ordered_units'},'Услуги по дате заказа':{'ym_order_services'}}
             for label,keys in components.items():
                 selected=[r for r in rows if r['metric_key'] in keys]
                 unconfirmed_ads=(conn.marketplace=='ozon' and label=='Рекламная статистика'
@@ -60,7 +62,7 @@ def build_source_coverage(repo, shop_id: int, start: str, end: str) -> tuple[Sou
                 latest={}
                 for r in attempts:
                     ep=r['endpoint']
-                    family=('Заказы' if ep.startswith(('statistics/orders','analytics/orders'))
+                    family=('Услуги по дате заказа' if ep=='finance/yandex/orders' else 'Заказы' if ep.startswith(('statistics/orders','analytics/orders'))
                             else 'Финансы' if ep.startswith('finance/') and ep not in {'finance/products/buyout',OZON_REALIZATION}
                             else 'Рекламная статистика' if ep.startswith(('promotion/','ads/','performance/')) else None)
                     if family==label:
@@ -74,6 +76,9 @@ def build_source_coverage(repo, shop_id: int, start: str, end: str) -> tuple[Sou
                 result.append(SourceCoverage(conn.marketplace,label,len(present),len(dates),min(checked) if checked else None,
                     tuple(d for d in dates if d not in present),failed,partial,
                     'Исторические суммы Ozon без исходного ответа не подтверждены; обновите рекламу.' if unconfirmed_ads else None))
+            if conn.marketplace=='yandex_market':
+                result.append(SourceCoverage(conn.marketplace,'События по точной дате / полная реклама / выплаты',0,len(dates),None,dates,note='Эти показатели не подменяются статусами заказов и стоимостью услуг.'))
+                continue
             snapshots=c.execute('''WITH ranked AS (
                 SELECT sr.*,rp.payload_json,
                   ROW_NUMBER() OVER(PARTITION BY sr.endpoint,sr.data_date ORDER BY sr.finished_at DESC,sr.id DESC) rn
@@ -120,7 +125,7 @@ def format_source_coverage(rows) -> str:
     for row in rows:
         complete=row.available_days==row.expected_days and not row.failed_dates and not row.partial_dates
         icon='✅' if complete else '⚠️'
-        market='WB' if row.marketplace=='wildberries' else 'Ozon'
+        market={'wildberries':'WB','ozon':'Ozon','yandex_market':'Яндекс Маркет'}.get(row.marketplace,row.marketplace)
         lines.append(f'{icon} {market} · {row.component}: {row.available_days}/{row.expected_days} дней')
         if row.verified_at:lines.append('  самая ранняя проверка API в периоде: '+escape(row.verified_at))
         if row.missing_dates:
