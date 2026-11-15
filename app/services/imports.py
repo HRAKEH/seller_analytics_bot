@@ -71,7 +71,7 @@ def import_costs(repo: Repository, shop_id: int, path: str | Path, *,
         row=_headers(raw)
         try:
             market=str(row.get('marketplace') or row.get('market') or '').strip().lower()
-            market={'wb':'wildberries','wildberries':'wildberries','ozon':'ozon'}.get(market,'')
+            market={'wb':'wildberries','wildberries':'wildberries','ozon':'ozon','ym':'yandex_market','yandex_market':'yandex_market'}.get(market,'')
             sku=str(row.get('sku') or row.get('marketplace_sku') or row.get('nmid') or '').strip()
             if not market or not sku: raise ValueError('нужны marketplace и sku')
             value=row.get('cost_price') if row.get('cost_price') is not None else row.get('cost')

@@ -30,7 +30,7 @@ def partial_error(job_type: str, outcomes) -> str:
     for outcome in outcomes:
         if outcome.ok:
             continue
-        market = {'wildberries': 'WB', 'ozon': 'Ozon'}.get(outcome.marketplace, outcome.marketplace)
+        market = {'wildberries': 'WB', 'ozon': 'Ozon','yandex_market':'Яндекс Маркет'}.get(outcome.marketplace, outcome.marketplace)
         failures.append(f'{market}: {outcome.message}')
     label = 'Акции' if job_type == 'promotions' else 'Реклама'
     return label+' обновлены не полностью. ' + ('; '.join(failures) or 'Нет результата загрузки.')

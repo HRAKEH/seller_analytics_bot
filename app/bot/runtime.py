@@ -7,6 +7,7 @@ from typing import Any, Awaitable, Callable
 from aiogram import BaseMiddleware, types
 
 from app.config import Settings
+from app.integrations.yandex_market import YandexMarketClient
 from app.integrations import OzonClient, WildberriesClient, OzonPerformanceClient
 from app.services.collection import CollectionService
 from app.services.preferences import defaults_from_settings
@@ -32,7 +33,7 @@ class RuntimeRegistry:
             await self.refresh_shop(shop.id)
 
     async def _close_context(self, ctx: AppContext) -> None:
-        for client in (ctx.collector.ozon,ctx.collector.wb,ctx.collector.ozon_performance):
+        for client in (ctx.collector.ozon,ctx.collector.wb,ctx.collector.ozon_performance,getattr(ctx.collector,"yandex_market",None)):
             if client is not None:
                 try: await client.close()
                 except Exception: pass
@@ -63,8 +64,14 @@ class RuntimeRegistry:
             if creds.has_ozon_performance:
                 ozon_perf=OzonPerformanceClient(creds.ozon_perf_client_id,creds.ozon_perf_client_secret,
                                                 timeout=self.settings.http_timeout)
-            collector=CollectionService(self.repository,ozon=ozon,wildberries=wb,ozon_performance=ozon_perf)
-            ctx=AppContext(self.settings,self.repository,shop.id,collector,wb_id,oz_id)
+            ym=None; ym_id=None
+            if creds.has_yandex_market:
+                ym_id=self.repository.ensure_connection(shop.id,'yandex_market','Яндекс Маркет').id
+                ym=YandexMarketClient(creds.yandex_market_api_key,timeout=self.settings.http_timeout)
+                ym.business_id=int(creds.yandex_market_business_id)
+                ym.campaign_id=int(creds.yandex_market_campaign_id)
+            collector=CollectionService(self.repository,ozon=ozon,wildberries=wb,ozon_performance=ozon_perf,yandex_market=ym)
+            ctx=AppContext(self.settings,self.repository,shop.id,collector,wb_id,oz_id,yandex_market_connection_id=ym_id)
             self._contexts[shop.id]=ctx
             return ctx
 

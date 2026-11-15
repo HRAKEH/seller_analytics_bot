@@ -209,7 +209,7 @@ def test_migration_from_21_preserves_existing_shop_and_backup_keeps_receiver_sta
             c.execute('INSERT INTO schema_migrations VALUES(?,?)',(version,'old'))
     repo = Repository(db)
     shop = repo.ensure_shop(repo.ensure_seller(101).id,'Existing shop')
-    assert db.initialize_safely(tmp_path/'backups')==LATEST_SCHEMA_VERSION==22
+    assert db.initialize_safely(tmp_path/'backups')==LATEST_SCHEMA_VERSION
     assert repo.get_shop(shop.id).name=='Existing shop'
     repo.grant_shop_access(101,shop.id,'owner')
     conn = repo.ensure_connection(shop.id,'ozon','Ozon')

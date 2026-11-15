@@ -329,4 +329,8 @@ def build_daily_events(repo, connection_id: int, marketplace: str, day: date) ->
         return DailyEvents(buyouts, returns, DayEvent(source='Ozon · отмены',
             unavailable_note='⏳ дата отмены не получена',
             warning='В полученных ответах Ozon нет даты отмены. Точный итог отмен за день не подтверждён.'))
+    if marketplace == 'yandex_market':
+        note='По заказам известны статусы, но точная дата каждого события не подтверждена.'
+        return DailyEvents(*(DayEvent(source='Яндекс Маркет · '+label,unavailable_note='дата события не подтверждена',warning=note)
+            for label in ('выкупы','возвраты','отмены')))
     raise ValueError('Unknown marketplace')

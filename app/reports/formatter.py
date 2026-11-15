@@ -22,7 +22,7 @@ def delta(current: float | None, previous: float | None, comparison: str = 'к �
     return f'{arrow} {abs(pct):.1f}% {comparison}'
 
 def source_name(source: str) -> str:
-    return OZON_LABEL if source == 'ozon' else WB_LABEL
+    return {'ozon':OZON_LABEL,'wildberries':WB_LABEL,'yandex_market':'🟡 Яндекс Маркет'}.get(source,source)
 
 
 def _buyer_price_lines(prices) -> list[str]:
@@ -136,10 +136,10 @@ def _product_name(name: str) -> str:
 @readable_dates
 def format_product_report(report) -> str:
     lines=[f'🏆 <b>Товары · {report.start} — {report.end}</b>','━━━━━━━━━━━━━━━━']
-    labels={'ozon':OZON_LABEL,'wildberries':WB_LABEL}
+    labels={'ozon':OZON_LABEL,'wildberries':WB_LABEL,'yandex_market':'🟡 Яндекс Маркет'}
     if not report.top:
         lines.append('📭 Товарной истории пока нет. Откройте «📊 Отчёты» → «📥 Загрузить историю».')
-    for market in ('ozon','wildberries'):
+    for market in ('ozon','wildberries','yandex_market'):
         rows=report.top.get(market) or []
         if not rows: continue
         basis = ' (по предельной цене)' if market == 'ozon' else ''
@@ -175,7 +175,7 @@ def format_product_report(report) -> str:
     risks=[r for r in report.stock_risks if r.available_units<=0 or (r.days_left is not None and r.days_left<=report.risk_days)]
     if risks:
         lines.append('\n🚨 <b>Риск дефицита</b>')
-        shown=[r for market in ('ozon','wildberries') for r in [x for x in risks if x.marketplace==market][:5]]
+        shown=[r for market in ('ozon','wildberries','yandex_market') for r in [x for x in risks if x.marketplace==market][:5]]
         for row in shown:
             if row.available_units<=0:
                 state='НЕТ ОСТАТКА'
@@ -195,7 +195,7 @@ def format_product_report(report) -> str:
 @readable_dates
 def format_stock_report(report) -> str:
     from .products import stock_data_warning
-    labels={'ozon':OZON_LABEL,'wildberries':WB_LABEL}
+    labels={'ozon':OZON_LABEL,'wildberries':WB_LABEL,'yandex_market':'🟡 Яндекс Маркет'}
     lines=['📦 <b>Остатки и запас</b>','━━━━━━━━━━━━━━━━']
     if report.inventory_schemes:
         for row in report.inventory_schemes:
@@ -236,6 +236,13 @@ def format_finance(report) -> str:
     for s in report.sources:
         m=s.metrics
         lines.append(f'\n{source_name(s.marketplace)}')
+        if s.marketplace=='yandex_market':
+            if 'ym_order_services' in m:
+                lines.append('  услуги по заказам, созданным за период: '+fm(m['ym_order_services']))
+                lines.append('  в том числе буст продаж: '+fm(m['ym_order_boost']))
+                lines.append('  Это детализация заказов, не банковская выплата. Буст уже входит в услуги.')
+            else:
+                lines.append('  ⏳ Детализация услуг по заказам ещё не загружена.')
         if 'financial_sales' in m: lines.append(f'  продажи по фин. отчёту: <b>{fm(m["financial_sales"])}</b>')
         if 'goods_payable' in m: lines.append(f'  к перечислению за товар: {fm(m["goods_payable"])}')
         if 'marketplace_net' in m: lines.append(f'  начисления после удержаний: <b>{fm(m["marketplace_net"])}</b>')

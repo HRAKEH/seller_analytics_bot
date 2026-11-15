@@ -25,7 +25,7 @@ def build_finance_report(repo: Repository, shop_id: int, end: date, days: int=7)
     totals=repo.financial_metric_totals(shop_id,start.isoformat(),end.isoformat())
     cogs=repo.estimated_order_cogs(shop_id,start.isoformat(),end.isoformat())
     sources=[]
-    for marketplace in ('ozon','wildberries'):
+    for marketplace in ('ozon','wildberries','yandex_market'):
         m=totals.get(marketplace,{})
         c=cogs.get(marketplace,{})
         units=float(c.get('units',0)); covered=float(c.get('covered_units',0))
