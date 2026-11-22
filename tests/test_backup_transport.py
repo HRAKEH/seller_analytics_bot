@@ -100,7 +100,7 @@ async def test_compressed_backup_restores_exact_database_and_cleans_temporary_zi
 
 
 @pytest.mark.asyncio
-async def test_uncompressible_oversize_backup_sends_saved_path_instead_of_document(tmp_path, monkeypatch):
+async def test_uncompressible_oversize_backup_sends_verified_parts(tmp_path, monkeypatch):
     source = tmp_path / 'random.sqlite3'
     source.write_bytes(os.urandom(4096))
     result = BackupResult(source, _sha256(source), source.stat().st_size, 21, 'manual')
@@ -108,10 +108,13 @@ async def test_uncompressible_oversize_backup_sends_saved_path_instead_of_docume
     monkeypatch.setattr(transport, 'TELEGRAM_UPLOAD_LIMIT', 2000)
     bot = SimpleNamespace(send_document=AsyncMock(), send_message=AsyncMock())
     async with transport.backup_upload(source) as upload:
-        assert upload.path is None
+        assert upload.path is None and len(upload.parts) == 3
+        assert b''.join(p.read_bytes() for p in upload.parts) == source.read_bytes()
+        assert all(p.stat().st_size <= 2000 for p in upload.parts)
         await transport.deliver_backup(bot, 101, result, upload)
-    bot.send_document.assert_not_awaited()
-    assert str(source.resolve()) in bot.send_message.await_args.args[1]
+    assert bot.send_document.await_count == 4
+    assert not any(p.exists() for p in upload.parts)
+    bot.send_message.assert_not_awaited()
     assert _sha256(source) == result.checksum
 
 
@@ -314,6 +317,9 @@ async def test_scheduled_oversize_keeps_one_backup_and_sends_saved_path_once(ui,
     registry = SimpleNamespace(repository=ui.repo, settings=settings, default_shop_id=ui.shop.id)
     monkeypatch.setattr(transport, 'TELEGRAM_DOWNLOAD_LIMIT', 1)
     monkeypatch.setattr(transport, 'TELEGRAM_UPLOAD_LIMIT', 1)
+    def fail_split(*args, **kwargs):
+        raise OSError('not enough disk space for parts')
+    monkeypatch.setattr(transport, '_split_upload', fail_split)
     if compression_failure:
         def fail(*args, **kwargs):
             raise OSError('not enough disk space')
@@ -358,3 +364,40 @@ async def test_cancelled_compression_finishes_worker_before_deleting_temporary_f
         await task
     assert not directories[0].exists()
     assert source.read_bytes() == b'keep source'
+
+
+@pytest.mark.asyncio
+async def test_strong_recompression_preserves_database_and_original_zip(tmp_path, monkeypatch):
+    source = tmp_path / 'old.zip'
+    raw = b'SQLite format 3\x00' + b'example database page' * 10000
+    with zipfile.ZipFile(source, 'w', compression=zipfile.ZIP_STORED) as zipped:
+        zipped.writestr('backup.sqlite3', raw)
+    original = source.read_bytes()
+    monkeypatch.setattr(transport, 'TELEGRAM_UPLOAD_LIMIT', 3000)
+    async with transport.backup_upload(source) as upload:
+        assert upload.path and upload.path != source and upload.compressed
+        assert upload.checksum == _sha256(upload.path)
+        with zipfile.ZipFile(upload.path) as zipped:
+            assert zipped.infolist()[0].compress_type == zipfile.ZIP_LZMA
+        unpacked = transport.unpack_restore_source(upload.path, tmp_path / 'restore')
+        assert unpacked.read_bytes() == raw
+    assert source.read_bytes() == original
+
+
+@pytest.mark.asyncio
+async def test_partial_delivery_network_failure_keeps_original_and_cleans_parts(tmp_path, monkeypatch):
+    source = tmp_path / 'random.zip'
+    with zipfile.ZipFile(source, 'w', compression=zipfile.ZIP_STORED) as zipped:
+        zipped.writestr('backup.sqlite3', os.urandom(5000))
+    original = source.read_bytes()
+    monkeypatch.setattr(transport, 'TELEGRAM_UPLOAD_LIMIT', 2000)
+    bot = SimpleNamespace(send_document=AsyncMock(side_effect=[None,
+        TelegramNetworkError(SendDocument(chat_id=101,document='file'),'offline')]), send_message=AsyncMock())
+    result = BackupResult(source,_sha256(source),source.stat().st_size,23,'manual')
+    with pytest.raises(TelegramNetworkError):
+        async with transport.backup_upload(source) as upload:
+            parts = upload.parts
+            assert len(parts) == 3
+            await transport.deliver_backup(bot,101,result,upload)
+    assert source.read_bytes() == original
+    assert not any(p.exists() for p in parts)
