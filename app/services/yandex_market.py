@@ -35,12 +35,14 @@ def money(value):
 
 def normalize_orders(payload, connection_id, day, campaign_id):
     products = {}; seen = set()
+    campaigns = {campaign_id} if isinstance(campaign_id, int) else set(campaign_id)
     for order in rows(payload, 'orders'):
         oid = order.get('orderId')
-        if type(oid) is not int or oid <= 0 or oid in seen:
+        order_key = (order.get('campaignId'), oid)
+        if type(oid) is not int or oid <= 0 or order_key in seen:
             raise ValueError('Нет уникального ID заказа Яндекс Маркета')
-        seen.add(oid)
-        if order.get('campaignId') != campaign_id or order.get('fake') is True:
+        seen.add(order_key)
+        if order.get('campaignId') not in campaigns or order.get('fake') is True:
             raise ValueError('В ответе заказ другого магазина или тестовый заказ')
         try:
             created = datetime.fromisoformat(order['creationDate'].replace('Z', '+00:00'))
@@ -95,6 +97,18 @@ def normalize_orders(payload, connection_id, day, campaign_id):
 
 
 def normalize_stocks(payload, scheme, names=None):
+    if 'campaignSnapshots' in payload:
+        # One physical warehouse can serve several models/campaigns. Count it once.
+        unique = {}
+        for snapshot in rows(payload, 'campaignSnapshots'):
+            data = snapshot['data']
+            for obs in normalize_stocks(data, data['scheme'], names):
+                key = (obs.warehouse_name, obs.marketplace_sku)
+                previous = unique.get(key)
+                if previous and (previous.available_units, previous.reserved_units) != (obs.available_units, obs.reserved_units):
+                    raise ValueError('Общий склад вернул разные остатки; повторите обновление')
+                unique.setdefault(key, obs)
+        return list(unique.values())
     out = []; seen = set(); names = names or {}
     for warehouse in rows(payload, 'warehouses'):
         wid = warehouse.get('warehouseId')
@@ -125,6 +139,22 @@ def normalize_stocks(payload, scheme, names=None):
 
 
 def normalize_cards(payload):
+    if 'campaignSnapshots' in payload:
+        issues = {}; candidates = None; uncertain = set()
+        for snapshot in rows(payload, 'campaignSnapshots'):
+            data = snapshot['data']; cid = snapshot['campaignId']
+            found, healthy = normalize_cards(data)
+            present = {'yandex_market:' + offer['offerId'] for offer in rows(data, 'offers')}
+            candidates = set(healthy) if candidates is None else candidates & healthy
+            uncertain.update(present - healthy)
+            for subject, (rule, message) in found.items():
+                message = f'Магазин {cid} · ' + message
+                if subject in issues:
+                    previous_rule, previous_message = issues[subject]
+                    rule = 'card_blocked' if 'card_blocked' in (rule, previous_rule) else rule
+                    message = previous_message + '\n' + message
+                issues[subject] = (rule, message)
+        return issues, (candidates or set()) - uncertain
     catalogue = {}
     for mapping in rows(payload, 'offerMappings'):
         offer = mapping.get('offer')
@@ -157,6 +187,12 @@ def normalize_cards(payload):
 
 def normalize_finance(payload, connection_id, day):
     """Costs of the cohort of orders created on day, not a payout-day ledger."""
+    if 'campaignSnapshots' in payload:
+        totals = {}
+        for snapshot in rows(payload, 'campaignSnapshots'):
+            for point in normalize_finance(snapshot['data'], connection_id, day):
+                totals[point.metric_key] = totals.get(point.metric_key, 0) + point.value
+        return [MetricPoint(connection_id, day, key, value, 'RUB', True) for key, value in totals.items()]
     from .numeric import finite_number
     totals = {'ym_order_services': 0.0, 'ym_order_boost': 0.0}
     seen = set()
@@ -179,6 +215,21 @@ def normalize_finance(payload, connection_id, day):
 
 
 def normalize_promotions(payload):
+    if 'campaignSnapshots' in payload:
+        merged = {}
+        for snapshot in rows(payload, 'campaignSnapshots'):
+            for promo in normalize_promotions(snapshot['data']):
+                pid = promo['external_promotion_id']
+                if pid not in merged:
+                    merged[pid] = promo
+                else:
+                    products = {p['marketplace_sku']: p for p in merged[pid]['products']}
+                    for product in promo['products']:
+                        sku = product['marketplace_sku']
+                        if sku not in products or product['in_action']:
+                            products[sku] = product
+                    merged[pid]['products'] = list(products.values())
+        return list(merged.values())
     out=[]; seen=set(); campaign=payload['campaignId']
     for promo in rows(payload,'promos'):
         pid=promo.get('id');period=promo.get('period')
@@ -208,6 +259,13 @@ def normalize_promotions(payload):
 
 
 def normalize_inbound(payload):
+    if 'campaignSnapshots' in payload:
+        combined = []
+        for snapshot in rows(payload, 'campaignSnapshots'):
+            for shipment in normalize_inbound(snapshot['data']):
+                shipment['external_supply_id'] = str(snapshot['campaignId']) + ':' + shipment['external_supply_id']
+                combined.append(shipment)
+        return combined
     out=[];seen=set()
     for request in rows(payload,'requests'):
         rid=str(request['id']['id'])

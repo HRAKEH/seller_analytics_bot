@@ -8,6 +8,7 @@ from aiogram import BaseMiddleware, types
 
 from app.config import Settings
 from app.integrations.yandex_market import YandexMarketClient
+from app.integrations.yandex_multi import YandexMarketMultiClient
 from app.integrations import OzonClient, WildberriesClient, OzonPerformanceClient
 from app.services.collection import CollectionService
 from app.services.preferences import defaults_from_settings
@@ -67,9 +68,14 @@ class RuntimeRegistry:
             ym=None; ym_id=None
             if creds.has_yandex_market:
                 ym_id=self.repository.ensure_connection(shop.id,'yandex_market','Яндекс Маркет').id
-                ym=YandexMarketClient(creds.yandex_market_api_key,timeout=self.settings.http_timeout)
-                ym.business_id=int(creds.yandex_market_business_id)
-                ym.campaign_id=int(creds.yandex_market_campaign_id)
+                ids=creds.yandex_market_campaign_ids
+                if len(ids) == 1:
+                    ym=YandexMarketClient(creds.yandex_market_api_key,timeout=self.settings.http_timeout)
+                    ym.business_id=int(creds.yandex_market_business_id)
+                    ym.campaign_id=ids[0]
+                else:
+                    ym=YandexMarketMultiClient(creds.yandex_market_api_key,
+                        int(creds.yandex_market_business_id),ids,timeout=self.settings.http_timeout)
             collector=CollectionService(self.repository,ozon=ozon,wildberries=wb,ozon_performance=ozon_perf,yandex_market=ym)
             ctx=AppContext(self.settings,self.repository,shop.id,collector,wb_id,oz_id,yandex_market_connection_id=ym_id)
             self._contexts[shop.id]=ctx

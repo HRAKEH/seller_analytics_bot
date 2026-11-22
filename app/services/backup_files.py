@@ -22,8 +22,8 @@ def database_member(zipped: zipfile.ZipFile) -> zipfile.ZipInfo:
         raise ValueError('В ZIP нужен один обычный файл .sqlite3/.db/.sqlite без вложенных папок.')
     if entry.flag_bits & 1:
         raise ValueError('ZIP с паролем не поддерживается.')
-    if entry.compress_type not in {zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED}:
-        raise ValueError('Нужен ZIP со стандартным сжатием Deflate или без сжатия.')
+    if entry.compress_type not in {zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED, zipfile.ZIP_LZMA}:
+        raise ValueError('Нужен ZIP со сжатием Deflate, LZMA или без сжатия.')
     return entry
 
 

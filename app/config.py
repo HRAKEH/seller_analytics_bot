@@ -34,8 +34,20 @@ class MarketplaceCredentials:
 
     def __post_init__(self):
         values = (self.yandex_market_api_key, self.yandex_market_business_id, self.yandex_market_campaign_id)
-        if any(values) and (not all(values) or any(not str(v).isdigit() or int(v) <= 0 for v in values[1:])):
-            raise ValueError('Укажите YANDEX_MARKET_API_KEY, YANDEX_MARKET_BUSINESS_ID и YANDEX_MARKET_CAMPAIGN_ID; ID — положительные числа')
+        if any(values):
+            if (not all(values) or not re.fullmatch(r"[0-9]+", self.yandex_market_business_id)
+                    or int(self.yandex_market_business_id) <= 0):
+                raise ValueError('Укажите YANDEX_MARKET_API_KEY, YANDEX_MARKET_BUSINESS_ID и YANDEX_MARKET_CAMPAIGN_ID')
+            self.yandex_market_campaign_ids
+
+    @property
+    def yandex_market_campaign_ids(self) -> tuple[int, ...]:
+        if not self.yandex_market_campaign_id:
+            return ()
+        parts = self.yandex_market_campaign_id.split(',')
+        if any(not re.fullmatch(r"[0-9]+", part.strip()) or int(part.strip()) <= 0 for part in parts):
+            raise ValueError('YANDEX_MARKET_CAMPAIGN_ID: нужны положительные ID через запятую без пустых значений')
+        return tuple(dict.fromkeys(int(part.strip()) for part in parts))
 
     @property
     def has_yandex_market(self) -> bool:

@@ -121,6 +121,8 @@ class BackupService:
             with closing(self.database.connect()) as src, closing(sqlite3.connect(path)) as dst:
                 src.execute('PRAGMA wal_checkpoint(PASSIVE)')
                 src.backup(dst)
+                # Compact the disposable snapshot only, never the live database.
+                dst.execute('VACUUM')
             version,ok=inspect_database(path)
             if not ok: raise RuntimeError('integrity_check резервной копии не пройден')
             try: path.chmod(0o600)
@@ -187,7 +189,7 @@ class BackupService:
                     raise ValueError('Backup ZIP destination is a symlink')
                 checksum,size=self._archive_database_checksum(target)
             else:
-                with zipfile.ZipFile(staged,'w',compression=zipfile.ZIP_DEFLATED,compresslevel=6) as zipped:
+                with zipfile.ZipFile(staged,'w',compression=zipfile.ZIP_DEFLATED,compresslevel=9) as zipped:
                     zipped.write(source,arcname=source.name)
                 staged.chmod(0o600)
                 with staged.open('rb') as saved:
