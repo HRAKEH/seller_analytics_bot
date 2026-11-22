@@ -38,8 +38,15 @@ def role_label(role: str | None) -> str:
 FINANCE_ACTIONS = frozenset({'finance', 'finance_update', 'management', 'sku_finance',
                             'reconcile', 'accruals', 'wb_accruals', 'sources', 'readiness'})
 SHOP_LIFECYCLE_ACTIONS = frozenset({'shop_archive', 'shop_archived', 'shop_restore', 'shop_delete'})
-TECHNICAL_ACTIONS = frozenset({'shop_add', 'shop_profile', 'profiles', 'backup', 'backups', 'restore', 'connect_check',
-    'health', 'jobs', 'job_retry', 'diagnostics', 'ozon_push', 'demo_on', 'demo_off', 'help', 'technical_menu'})
+TECHNICAL_ACTIONS = frozenset({'backup', 'backups', 'restore', 'health', 'jobs', 'job_retry',
+    'diagnostics', 'ozon_push', 'demo_on', 'demo_off', 'technical_menu', 'tech'})
+INSTALLATION_OWNER_ACTIONS = frozenset({'shop_add', 'shop_profile', 'profiles', 'connect_check'})
+
+
+def is_tech_admin(settings, user_id: int | None) -> bool:
+    """Technical support access must be granted explicitly."""
+    return bool(user_id and int(user_id) in getattr(settings, 'tech_admin_ids', ())
+                and int(user_id) in settings.owner_ids)
 
 
 def action_permission(action: str) -> str:
@@ -47,6 +54,8 @@ def action_permission(action: str) -> str:
         return 'shop_lifecycle'
     if action in TECHNICAL_ACTIONS:
         return 'technical'
+    if action in INSTALLATION_OWNER_ACTIONS:
+        return 'manage'
     if action in FINANCE_ACTIONS:
         return 'finance'
     if action in {'cost', 'import_costs', 'link'}:
