@@ -10,6 +10,7 @@ from aiogram import types
 from aiogram.exceptions import TelegramAPIError, TelegramBadRequest
 
 from app.reports.text import paginate_report_html, utf16_length
+from app.access import is_tech_admin
 from .presentation import message_text
 
 
@@ -62,7 +63,8 @@ class PagedReportController:
 
     async def show(self, message, text, *, reply_markup=None, permission='view', system_owner_only=False):
         if (not message.from_user or not self.context.repository.can_user(message.from_user.id,self.context.shop_id,permission)
-                or system_owner_only and message.from_user.id not in self.context.settings.owner_ids):
+                or system_owner_only and (message.chat.type!='private' or
+                    not is_tech_admin(self.context.settings, message.from_user.id))):
             return await message.answer('⛔ Нет доступа к этому отчёту.')
         text = message_text(text)
         pages = paginate_report_html(text)
@@ -91,7 +93,8 @@ class PagedReportController:
                     not repo.can_user(user,saved['shop_id'],saved['permission']))) or
                 (capability == 'legacy' and user not in self.context.settings.owner_ids) or
                 (capability != 'legacy' and not repo.can_user(user, saved['shop_id'], capability)) or
-                saved['system_owner_only'] and user not in self.context.settings.owner_ids):
+                saved['system_owner_only'] and (message.chat.type!='private' or
+                    not is_tech_admin(self.context.settings, user))):
                 return await callback.answer('Нет доступа к этому отчёту.', show_alert=True)
             action = str(callback.data or '').removeprefix('report_page:')
             if action == 'home' and on_home:

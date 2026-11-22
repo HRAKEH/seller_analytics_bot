@@ -118,6 +118,7 @@ class Settings:
     yandex_market_api_key: str = field(default="", repr=False)
     yandex_market_business_id: str = ""
     yandex_market_campaign_id: str = ""
+    tech_admin_ids: tuple[int, ...] = ()
 
     def credentials_for_profile(self, profile: str = "DEFAULT") -> MarketplaceCredentials:
         clean=(profile or "DEFAULT").strip().upper()
@@ -153,6 +154,7 @@ class Settings:
         return cls(
             telegram_token=os.getenv("TELEGRAM_BOT_TOKEN") or os.getenv("BOT_TOKEN", ""),
             owner_ids=_owners(os.getenv("TELEGRAM_OWNER_ID", "")),
+            tech_admin_ids=_owners(os.getenv("TECH_ADMIN_IDS", "")),
             ozon_client_id=os.getenv("OZON_CLIENT_ID", ""),
             ozon_api_key=os.getenv("OZON_API_KEY", ""),
             ozon_perf_client_id=os.getenv("OZON_PERF_CLIENT_ID", ""),

@@ -8,6 +8,7 @@ from aiogram import types
 from aiogram.fsm.state import State, StatesGroup
 
 from app.reports.dates import display_time
+from app.access import is_tech_admin
 from app.services.ozon_push_payload import PushError, base_url, digest
 from app.storage.ozon_push import OzonPushStore
 
@@ -24,7 +25,7 @@ class OzonPushController:
         self.command_copy = command_copy
 
     def allowed(self, user_id):
-        return (user_id in self.ctx.settings.owner_ids and
+        return (is_tech_admin(self.ctx.settings, user_id) and
                 self.ctx.repository.can_user(user_id,self.ctx.shop_id,'technical'))
 
     def markup(self, data, action='create', *, confirm=False):
