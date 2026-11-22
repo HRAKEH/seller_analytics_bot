@@ -63,6 +63,7 @@ def daily_date_keyboard(month: date, today: date):
 # entry, keeping the bot menu-first instead of slowly drifting back to CLI UX.
 COMMAND_BUTTONS: dict[str, str] = {
     'start': HOME,
+    'tech': '🧰 Техническое',
     'cancel': CANCEL,
     'shops': '🏪 Список магазинов',
     'shop': '🔁 Выбрать магазин',
@@ -276,12 +277,12 @@ def service_keyboard(role: str | None = 'owner', *, system_owner: bool = False):
 
 def technical_keyboard(role: str | None = 'owner', *, system_owner: bool = False):
     role = _role(role)
-    buttons = [COMMAND_BUTTONS['health'], COMMAND_BUTTONS['diagnostics'], COMMAND_BUTTONS['jobs']]
+    buttons = [COMMAND_BUTTONS['health'], COMMAND_BUTTONS['diagnostics'],
+               COMMAND_BUTTONS['connect_check'], COMMAND_BUTTONS['status'], COMMAND_BUTTONS['jobs']]
     if system_owner:
         buttons += [
             COMMAND_BUTTONS['ozon_push'],
             COMMAND_BUTTONS['backup'], COMMAND_BUTTONS['backups'], COMMAND_BUTTONS['restore'],
-            COMMAND_BUTTONS['shop_add'], COMMAND_BUTTONS['shop_profile'], COMMAND_BUTTONS['profiles'],
         ]
     buttons += [BACK, HOME]
     return _build(buttons, role=role, system_owner=system_owner)

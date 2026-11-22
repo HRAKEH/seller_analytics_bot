@@ -17,6 +17,7 @@ from app.reports.wb_accruals import build_wb_accrual_ledger, export_wb_accrual_l
 from app.reports.accrual_cards import build_accrual_card
 from app.reports.dates import display_day
 from app.services.exporting import export_xlsx, export_csv_zip
+from app.access import is_tech_admin
 from app.services.spreadsheet_format import SHEETS, export_filename
 
 log = logging.getLogger(__name__)
@@ -166,7 +167,7 @@ class DataViewController:
     async def _download(self, message, view, fmt):
         repo=self.context.repository;p=view['payload'];shop_id=view['shop_id'];user=view['user_id']
         finance=repo.can_user(user,shop_id,'finance')
-        technical=user in self.context.settings.owner_ids
+        technical=is_tech_admin(self.context.settings,user)
         with tempfile.TemporaryDirectory(prefix='sellerbot-data-') as folder:
             if view['kind']=='export':
                 days=p['days'];end=date.fromisoformat(p['end']);start=(end-timedelta(days=days-1)).isoformat()
@@ -193,7 +194,7 @@ class DataViewController:
                 await asyncio.to_thread(exporter,ledger,path,timezone=p['timezone'],shop_name=p['shop_name'])
                 caption='🧾 Начисления '+label
             if not self._allowed(view,user) or finance and not repo.can_user(user,shop_id,'finance') or (
-                    technical and user not in self.context.settings.owner_ids):
+                    technical and not is_tech_admin(self.context.settings,user)):
                 raise PermissionError('Доступ изменился. Откройте раздел заново.')
             caption+='\n🏪 '+escape(p['shop_name'])+'\n'+('Даты сохранения: ' if view['kind']=='wb' else 'Период: ')+display_day(start)+' — '+display_day(p['end'])
             if view['kind']=='wb':caption+='\nПериоды самих отчётов WB указаны в файле.'

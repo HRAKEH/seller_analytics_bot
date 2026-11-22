@@ -10,6 +10,7 @@ except ImportError:
     pass
 
 from aiogram import Bot, Dispatcher
+from aiogram.types import BotCommand, BotCommandScopeChat, BotCommandScopeDefault
 from aiogram.fsm.storage.memory import MemoryStorage
 from app.config import Settings
 from app.storage import Database, Repository
@@ -27,6 +28,29 @@ from app.services.ozon_push_http import ozon_push_http_server
 from app.services.ozon_push_payload import base_url
 from app.bot import RuntimeRegistry, ContextProxy, ShopContextMiddleware, register_handlers
 from app.bot.updates import TelegramUpdateMiddleware
+
+
+async def configure_tech_commands(bot, settings, log):
+    try:
+        default_scope=BotCommandScopeDefault()
+        published=list(await bot.get_my_commands(scope=default_scope))
+        public=[cmd for cmd in published if cmd.command!='tech']
+        if len(public)!=len(published):
+            await bot.set_my_commands(public or [BotCommand(command='start', description='Главное меню')],scope=default_scope)
+        for user_id in settings.tech_admin_ids:
+            if user_id not in settings.owner_ids:
+                log.warning('TECH_ADMIN_IDS contains an ID absent from TELEGRAM_OWNER_ID: %s',user_id)
+                continue
+            try:
+                scope=BotCommandScopeChat(chat_id=user_id)
+                existing=list(await bot.get_my_commands(scope=scope))
+                commands=[cmd for cmd in (existing or public) if cmd.command!='tech']
+                commands.append(BotCommand(command='tech',description='Техническое меню'))
+                await bot.set_my_commands(commands,scope=scope)
+            except Exception as exc:
+                log.warning('Cannot publish private /tech command for %s: %s',user_id,type(exc).__name__)
+    except Exception as exc:
+        log.warning('Cannot configure Telegram command menu: %s',type(exc).__name__)
 
 
 async def main():
@@ -69,6 +93,7 @@ async def main():
         await registry.initialize()
         proxy=ContextProxy()
         bot=Bot(settings.telegram_token)
+        await configure_tech_commands(bot,settings,log)
         dp=Dispatcher(storage=MemoryStorage())
         dp.update.outer_middleware(TelegramUpdateMiddleware(settings.instance_id))
         context_middleware=ShopContextMiddleware(registry)

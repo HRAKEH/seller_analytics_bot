@@ -253,8 +253,8 @@ async def automatic_backup_once(registry,bot=None,now=None):
             row=c.execute("SELECT * FROM backup_history WHERE kind='automatic' AND status='success' AND created_at LIKE ? ORDER BY id DESC LIMIT 1",(run_key+'%',)).fetchone()
         if row is None:return
         path=service.directory/row['filename']
-        recipients=[uid for uid in settings.owner_ids
-                    if repo.get_job_state(registry.default_shop_id,f'database_backup_delivery:{uid}')!=run_key]
+        recipients=[uid for uid in settings.tech_admin_ids if uid in settings.owner_ids
+                    and repo.get_job_state(registry.default_shop_id,f'database_backup_delivery:{uid}')!=run_key]
         if not recipients:return
         async with backup_upload(path) as upload:
             result=await run_backup_io(service.result_from_history,row)

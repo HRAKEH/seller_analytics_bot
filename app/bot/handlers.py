@@ -50,7 +50,7 @@ from .paged_reports import PagedReportController
 from .data_views import DataViewController
 from app.services.spreadsheet_format import export_filename
 from app.reports.cards import format_daily_card
-from app.access import action_permission, item_visible, normalize_role, role_label
+from app.access import action_permission, item_visible, normalize_role, role_label, is_tech_admin
 from .employees import EmployeeController, EmployeeStates
 from .ozon_push import OzonPushController
 from .keyboards import (
@@ -139,6 +139,10 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
         await message.answer(f'⛔ Недостаточно прав: требуется доступ «{need}».')
 
     def is_system_owner(message: types.Message) -> bool:
+        return bool(message.from_user and message.chat.type=='private' and
+                    is_tech_admin(ctx.settings, message.from_user.id))
+
+    def is_installation_owner(message: types.Message) -> bool:
         return bool(message.from_user and message.from_user.id in ctx.settings.owner_ids)
 
     async def system_denied(message: types.Message):
@@ -379,10 +383,10 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
             if creds.has_wb: sources.append('WB')
             if creds.has_ozon: sources.append('Ozon')
             if creds.has_yandex_market: sources.append('Яндекс Маркет')
-            profile=' · <code>'+escape(shop.credential_profile)+'</code>' if is_system_owner(message) else ''
+            profile=' · <code>'+escape(shop.credential_profile)+'</code>' if is_installation_owner(message) else ''
             lines.append(f'{mark} <b>#{shop.id} {escape(shop.name)}</b> · {role_label(row["role"])}{profile} · {" + ".join(sources) or "без API"}')
         lines += ['', 'Нажмите на магазин ниже, чтобы переключиться.']
-        if is_system_owner(message):
+        if is_installation_owner(message):
             lines += ['Для нового магазина: «➕ Добавить магазин».',
                       'Для смены профиля ключей: «🔐 Профиль ключей».']
         picker=[registry.repository.get_shop(int(row['id'])) for row in shops]
@@ -435,7 +439,7 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
     @dp.message(Command('shop_add'))
     async def cmd_shop_add(message: types.Message):
         if not allowed(message,'manage'): return await denied(message,'manage')
-        if not is_system_owner(message): return await system_denied(message)
+        if not is_installation_owner(message): return await system_denied(message)
         if registry is None: return await message.answer('Multi-shop runtime не подключён.')
         body=(message.text or '').partition(' ')[2].strip()
         if not body: return await message.answer('Формат: /shop_add Второй магазин | SHOP2')
@@ -458,7 +462,7 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
     @dp.message(Command('shop_profile'))
     async def cmd_shop_profile(message: types.Message):
         if not allowed(message,'manage'): return await denied(message,'manage')
-        if not is_system_owner(message): return await system_denied(message)
+        if not is_installation_owner(message): return await system_denied(message)
         if registry is None: return await message.answer('Multi-shop runtime не подключён.')
         parts=(message.text or '').split(maxsplit=1)
         if len(parts)<2: return await message.answer('Формат: /shop_profile SHOP2')
@@ -688,11 +692,12 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
 
     @dp.message(Command('profiles'))
     async def cmd_profiles(message: types.Message):
+        if not is_installation_owner(message): return await system_denied(message)
         if not allowed(message,'manage'): return await denied(message,'manage')
-        if not is_system_owner(message): return await system_denied(message)
+        if not is_installation_owner(message): return await system_denied(message)
         profiles=ctx.settings.available_credential_profiles()
         await send(message,'🔐 Профили ключей в окружении:\n'+'\n'.join('• <code>'+escape(p)+'</code>' for p in profiles),
-                   permission='manage',system_owner_only=True)
+                   permission='manage',system_owner_only=is_system_owner(message))
 
     @dp.message(Command('users'))
     async def cmd_users(message: types.Message, state: FSMContext):
@@ -929,6 +934,7 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
 
     @dp.message(Command('connect_check'))
     async def cmd_connect_check(message: types.Message):
+        if not is_installation_owner(message): return await system_denied(message)
         if not allowed(message,'operate'): return await denied(message,'operate')
         await message.answer('🔌 Проверяю реальные подключения и доступные категории API…')
         await send(message,format_readiness(await build_readiness(ctx,live=True,persist=True)),permission='operate')
@@ -1372,7 +1378,7 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
 
     def visible_item(user_id,item):
         return item_visible(item,finance=ctx.repository.can_user(user_id,ctx.shop_id,'finance'),
-            technical=user_id in ctx.settings.owner_ids)
+            technical=is_tech_admin(ctx.settings, user_id))
 
     def current_action_center(user_id):
         end=local_now().date()-timedelta(days=1)
@@ -1753,8 +1759,14 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
     async def menu_service(message: types.Message):
         await show_submenu(message,'🛠 <b>Ещё</b>\nСкачать данные магазина и служебные функции.',service_keyboard)
 
+    @dp.message(Command('tech'))
+    async def cmd_tech(message: types.Message):
+        if not is_system_owner(message): return
+        await show_submenu(message,'🧰 <b>Техническое</b>\nДиагностика и обслуживание бота.',technical_keyboard)
+
     @dp.message(F.text == MENU_TECH)
     async def menu_technical(message: types.Message):
+        if not is_system_owner(message): return
         await show_submenu(message,
             '🧰 <b>Техническое</b>\nЭтот раздел нужен редко: диагностика, автоматические повторы, backup и профили ключей.',
             technical_keyboard)
@@ -1836,7 +1848,7 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
     async def launch_input_action(message: types.Message, state: FSMContext, action: str):
         permission=permissions[action]
         if not allowed(message,permission): return await denied(message,permission)
-        if action in {'shop_add','shop_profile'} and not is_system_owner(message):
+        if action in {'shop_add','shop_profile'} and not is_installation_owner(message):
             return await system_denied(message)
         await start_menu_input(message,state,action,prompts[action])
 
@@ -2054,7 +2066,8 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
 
     @dp.callback_query(F.data.startswith('retry:run:'))
     async def cb_retry_job(callback: types.CallbackQuery):
-        if (callback.from_user is None or callback.from_user.id not in ctx.settings.owner_ids or
+        if (callback.from_user is None or not is_tech_admin(ctx.settings, callback.from_user.id) or
+            not isinstance(callback.message,types.Message) or callback.message.chat.type!='private' or
             not ctx.repository.can_user(callback.from_user.id,ctx.shop_id,'technical')):
             return await callback.answer('Недостаточно прав.',show_alert=True)
         try: job_id=int((callback.data or '').rsplit(':',1)[1])
@@ -2286,11 +2299,13 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
         'week': (btn_week, False),
         'yesterday': (btn_yesterday, False),
     }
+    menu_routes['tech']=(cmd_tech,False)
     menu_help=MenuHelp(ctx,navigation,{
         'root':main_keyboard,'reports':reports_keyboard,'products':products_keyboard,
         'money':money_keyboard,'supply':supply_keyboard,'control':control_keyboard,
         'shop':shop_keyboard,'service':service_keyboard,'technical':technical_keyboard,
-    },menu_routes,role_for,is_system_owner,show_main_menu,command_copy)
+    },menu_routes,role_for,is_system_owner,show_main_menu,command_copy,
+        installation_owner=is_installation_owner)
 
     @dp.callback_query(F.data.startswith('mh:'))
     async def cb_menu_help(callback: types.CallbackQuery,state: FSMContext):

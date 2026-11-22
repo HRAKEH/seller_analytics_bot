@@ -7,6 +7,7 @@ from typing import Any, Awaitable, Callable
 from aiogram import BaseMiddleware, types
 
 from app.config import Settings
+from app.access import is_tech_admin
 from app.integrations.yandex_market import YandexMarketClient
 from app.integrations.yandex_multi import YandexMarketMultiClient
 from app.integrations import OzonClient, WildberriesClient, OzonPerformanceClient
@@ -189,6 +190,12 @@ class ShopContextMiddleware(BaseMiddleware):
                        event: types.TelegramObject, data: dict[str,Any]) -> Any:
         user=getattr(event,'from_user',None)
         if user is None: return await handler(event,data)
+        if isinstance(event,types.Message):
+            parts=(event.text or '').split(maxsplit=1)
+            command=parts[0].split('@')[0].lower() if parts else ''
+            if command=='/tech' or (event.text or '')=='🧰 Техническое':
+                if event.chat.type!='private' or not is_tech_admin(self.registry.settings,user.id):
+                    return None
         if self.registry.maintenance_lock.locked():
             if isinstance(event,types.Message):
                 return await event.answer('🛠 Выполняется обслуживание базы. Повторите команду после завершения.')

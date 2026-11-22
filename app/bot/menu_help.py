@@ -13,6 +13,7 @@ from .keyboards import (COMMAND_BUTTONS, BACK, HOME, MENU_TECH, MENU_REPORTS, ME
 # A short purpose plus a detailed explanation. The catalogue is also used by
 # the period picker, so a function has the same meaning in every entry point.
 HELP = {
+    'tech': ('Открывает меню техадминистратора.', 'Доступ только назначенным TECH_ADMIN_IDS в личном чате. Диагностика, API, очередь задач, резервные копии и Ozon Push. Команда не отвечает остальным пользователям.'),
     'start': ('Главное меню бота.', 'Выберите раздел. В каждой функции можно раскрыть «Подробнее», затем свернуть пояснение в этом же сообщении.'),
     'cancel': ('Прекращает текущий ввод.', 'Незавершённый выбор сбрасывается. Уже сохранённые отчёты остаются доступными.'),
     'shops': ('Показывает магазины, к которым у вас есть доступ.', 'Здесь можно узнать номер магазина. Для работы с другим магазином нажмите «Выбрать магазин».'),
@@ -111,9 +112,10 @@ SECTIONS={
 
 
 class MenuHelp:
-    def __init__(self,ctx,navigation,menus,routes,role,system_owner,main,copy_message):
+    def __init__(self,ctx,navigation,menus,routes,role,system_owner,main,copy_message,installation_owner=None):
         self.ctx=ctx;self.navigation=navigation;self.menus=menus;self.routes=routes
-        self.role=role;self.system_owner=system_owner;self.main=main;self.copy_message=copy_message
+        self.role=role;self.system_owner=system_owner;self.installation_owner=installation_owner or system_owner
+        self.main=main;self.copy_message=copy_message
         self.keys={v:k for k,v in COMMAND_BUTTONS.items()}|ALIASES
 
     def data(self,user,section,key,mode):
@@ -129,7 +131,7 @@ class MenuHelp:
                 rows=[[item for item in row if item.text==MENU_SHOP] for row in reply.keyboard]
                 reply=reply.model_copy(update={'keyboard':[row for row in rows if row]})
             return reply
-        options={'system_owner':self.system_owner(message)}
+        options={'system_owner':self.installation_owner(message) if section=='shop' else self.system_owner(message)}
         if section=='shop': options['shop_owner']=owner
         reply=self.menus[section](self.role(message),**options)
         if section=='shop' and owner and not self.ctx.repository.can_user(message.from_user.id,self.ctx.shop_id,'view'):

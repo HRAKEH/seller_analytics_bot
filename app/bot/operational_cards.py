@@ -15,7 +15,7 @@ from app.reports.operations import format_action_center, format_action_detail
 from app.reports.products import build_product_report
 from app.reports.text import page_slice
 from app.services.actions import build_action_center
-from app.access import item_visible
+from app.access import item_visible, is_tech_admin
 from .keyboards import action_ref
 
 
@@ -69,7 +69,7 @@ class OperationalCards:
             report = build_action_center(ctx.repository, ctx.shop_id, day, persist=persist)
             report=replace(report,items=tuple(item for item in report.items if item_visible(item,
                 finance=ctx.repository.can_user(user_id,ctx.shop_id,'finance'),
-                technical=user_id in ctx.settings.owner_ids)))
+                technical=is_tech_admin(ctx.settings, user_id))))
             items = sorted(report.items, key=lambda item: (item.priority, item.category, item.title))
         else:
             report = build_product_report(ctx.repository, ctx.shop_id, day,
