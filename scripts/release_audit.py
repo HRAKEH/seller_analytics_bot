@@ -88,13 +88,18 @@ def main() -> int:
     if leaked: errors.append('.env.example contains secret values')
 
     hsrc=(ROOT/'app/bot/handlers.py').read_text(encoding='utf-8')
-    global_funcs=('cmd_backup','cmd_backups','cmd_restore','restore_file','cmd_shop_add','cmd_shop_profile','cmd_profiles')
+    guarded={
+        'cmd_backup':'is_system_owner', 'cmd_backups':'is_system_owner',
+        'cmd_restore':'is_system_owner', 'restore_file':'is_system_owner',
+        'cmd_shop_add':'is_installation_owner', 'cmd_shop_profile':'is_installation_owner',
+        'cmd_profiles':'is_installation_owner', 'cmd_tech':'is_system_owner',
+    }
     htree=ast.parse(hsrc); funcs={n.name:n for n in ast.walk(htree) if isinstance(n,(ast.FunctionDef,ast.AsyncFunctionDef))}
     unguarded=[]
-    for fn in global_funcs:
+    for fn,guard in guarded.items():
         node=funcs.get(fn)
         if node is None: unguarded.append(fn); continue
-        if not any(isinstance(n,ast.Call) and isinstance(n.func,ast.Name) and n.func.id=='is_system_owner' for n in ast.walk(node)):
+        if not any(isinstance(n,ast.Call) and isinstance(n.func,ast.Name) and n.func.id==guard for n in ast.walk(node)):
             unguarded.append(fn)
     checks['unguarded_global_handlers']=unguarded
     if unguarded: errors.append('Global administrative handlers lack system-owner guard')
