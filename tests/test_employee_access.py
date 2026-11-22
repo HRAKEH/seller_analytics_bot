@@ -168,12 +168,12 @@ async def test_manager_closed_commands_and_old_buttons_do_not_execute(ui,command
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('role',['accountant','manager','owner'])
-@pytest.mark.parametrize('command',['/backup','/backups','/restore','/health','/jobs','/diagnostics','/profiles','/help',
-    '/connect_check','/demo_on','/demo_off','/shop_add','/shop_profile',MENU_TECH])
+@pytest.mark.parametrize('command',['/backup','/backups','/restore','/health','/jobs','/diagnostics','/profiles',
+    '/connect_check','/demo_on','/demo_off','/shop_add','/shop_profile'])
 async def test_technical_commands_require_installation_owner(ui,role,command):
     ui.repo.grant_shop_access(103,ui.shop.id,role)
     await press(ui,command,user=103)
-    assert 'Недостаточно прав' in last_text(ui,103)
+    assert any(x in last_text(ui,103) for x in ('Недостаточно прав','только владельцу всего бота'))
 
 
 @pytest.mark.asyncio

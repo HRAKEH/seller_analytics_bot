@@ -44,7 +44,7 @@ def system(tmp_path):
     repo.ensure_shop_preferences(shop.id)
     repo.grant_shop_access(101,shop.id,'owner')
     connection = repo.ensure_connection(shop.id,'ozon','Ozon')
-    settings = replace(Settings.from_env(),owner_ids=(101,),ozon_client_id='123',ozon_api_key='LOCAL_TEST',
+    settings = replace(Settings.from_env(),owner_ids=(101,),tech_admin_ids=(101,),ozon_client_id='123',ozon_api_key='LOCAL_TEST',
                        ozon_push_enabled=True,ozon_push_base_url='https://bot.example.org')
     store = OzonPushStore(db)
     token = store.issue(connection.id,shop.id,'123','DEFAULT',actor_id=101,system_owners=(101,))

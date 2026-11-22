@@ -173,13 +173,15 @@ def test_global_database_and_credential_buttons_are_system_owner_only(monkeypatc
     assert lifecycle_buttons <= system_owner
 
 
-def test_global_slash_handlers_enforce_system_owner():
+def test_global_slash_handlers_enforce_separate_owner_and_support_access():
     tree=ast.parse((ROOT/'app/bot/handlers.py').read_text(encoding='utf-8'))
     functions={n.name:n for n in ast.walk(tree) if isinstance(n,(ast.FunctionDef,ast.AsyncFunctionDef))}
-    for name in ('cmd_backup','cmd_backups','cmd_restore','restore_file','cmd_shop_add','cmd_shop_profile','cmd_profiles'):
-        node=functions[name]
-        calls=[n for n in ast.walk(node) if isinstance(n,ast.Call) and isinstance(n.func,ast.Name)]
-        assert any(c.func.id=='is_system_owner' for c in calls), name
+    for guard,names in (('is_system_owner',('cmd_backup','cmd_backups','cmd_restore','restore_file')),
+                        ('is_installation_owner',('cmd_shop_add','cmd_shop_profile','cmd_profiles'))):
+        for name in names:
+            node=functions[name]
+            calls=[n for n in ast.walk(node) if isinstance(n,ast.Call) and isinstance(n.func,ast.Name)]
+            assert any(c.func.id==guard for c in calls), name
 
 
 def test_scheduler_outer_retry_uses_previous_completed_day():

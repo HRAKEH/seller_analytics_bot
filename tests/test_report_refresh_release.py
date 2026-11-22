@@ -179,7 +179,7 @@ async def test_daily_publishes_after_delayed_data_attempts_even_if_orders_raise(
 async def test_backup_delivery_retries_without_creating_duplicate_database_copy(tmp_path):
     repo,shop,_=database(tmp_path)
     settings=replace(Settings.from_env(),auto_backup_enabled=True,auto_backup_hour_utc=0,
-        auto_backup_send_telegram=True,owner_ids=(101,),instance_id='test-backup')
+        auto_backup_send_telegram=True,owner_ids=(101,),tech_admin_ids=(101,),instance_id='test-backup')
     registry=SimpleNamespace(repository=repo,settings=settings,default_shop_id=shop.id)
     bot=SimpleNamespace(send_document=AsyncMock(side_effect=[RuntimeError('Network'),None]),send_message=AsyncMock())
     now=datetime.now(timezone.utc)

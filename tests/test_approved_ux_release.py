@@ -93,7 +93,7 @@ def test_action_list_warns_once_even_with_old_saved_disclaimers():
 @pytest.fixture
 def ui(data,monkeypatch):
     repo,shop,_=data
-    settings=replace(Settings.from_env(),telegram_token='123456:LOCAL_TEST',owner_ids=(101,))
+    settings=replace(Settings.from_env(),telegram_token='123456:LOCAL_TEST',owner_ids=(101,),tech_admin_ids=(101,))
     ctx=AppContext(settings,repo,shop.id,CollectionService(repo))
     items=tuple(ActionItem('supply:'+str(index),1,'supply','Пополнить товар '+str(index),
         'WB · запас 2 дн.',evidence=('остаток 3 шт.','прогноз 1.50 шт./день'),

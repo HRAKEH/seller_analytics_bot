@@ -67,7 +67,7 @@ class TelegramMemory:
 
 @pytest.fixture
 def ui(tmp_path):
-    settings=replace(Settings.from_env(),telegram_token='123456:LOCAL_TEST',owner_ids=(101,))
+    settings=replace(Settings.from_env(),telegram_token='123456:LOCAL_TEST',owner_ids=(101,),tech_admin_ids=(101,))
     db=Database(tmp_path/'ui.sqlite3'); db.initialize()
     repo=Repository(db)
     seller=repo.ensure_seller(101,'Seller'); shop=repo.ensure_shop(seller.id,'Shop')

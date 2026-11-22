@@ -292,7 +292,7 @@ async def test_restore_invalid_upload_preserves_live_data_and_skips_reload(ui, t
 @pytest.mark.asyncio
 async def test_scheduled_size_rejection_notifies_once_and_continues_other_owners(ui):
     settings = replace(ui.ctx.settings, auto_backup_enabled=True, auto_backup_hour_utc=0,
-                       auto_backup_send_telegram=True, owner_ids=(101, 103), instance_id='test-backup')
+                       auto_backup_send_telegram=True, owner_ids=(101, 103),tech_admin_ids=(101,103),instance_id='test-backup')
     registry = SimpleNamespace(repository=ui.repo, settings=settings, default_shop_id=ui.shop.id)
     def size_rejection(uid, document, **kwargs):
         if uid == 101:
