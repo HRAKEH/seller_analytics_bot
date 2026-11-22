@@ -249,19 +249,20 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
             'ozon':OZON_LABEL,
             'wildberries':WB_LABEL,
             'wb':WB_LABEL,
-            'all':f'{OZON_ICON}{WB_ICON} Ozon + Wildberries',
+            'yandex_market':'🟡 Яндекс Маркет',
+            'all':'Все маркетплейсы',
         }.get(source,source)
 
     async def show_backfill_source_picker(message: types.Message):
         if not allowed(message,'operate'): return await denied(message,'operate')
         has_ozon=ctx.ozon_connection_id is not None
         has_wb=ctx.wb_connection_id is not None
-        if not has_ozon and not has_wb:
-            return await message.answer('⚠️ В текущем магазине не подключены Ozon или Wildberries.')
+        if not has_ozon and not has_wb and getattr(ctx,'yandex_market_connection_id',None) is None:
+            return await message.answer('⚠️ В текущем магазине не подключены маркетплейсы.')
         await navigation.show(message,
             '📥 <b>Загрузка истории</b>\nВыберите источник:',
             parse_mode='HTML',
-            reply_markup=backfill_source_keyboard(has_ozon=has_ozon,has_wb=has_wb))
+            reply_markup=backfill_source_keyboard(has_ozon=has_ozon,has_wb=has_wb,has_yandex=getattr(ctx,'yandex_market_connection_id',None) is not None))
 
     async def execute_backfill(message: types.Message, *, source: str, start: date, end: date,
                                actor_user_id: int | None = None):
@@ -377,6 +378,7 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
             sources=[]
             if creds.has_wb: sources.append('WB')
             if creds.has_ozon: sources.append('Ozon')
+            if creds.has_yandex_market: sources.append('Яндекс Маркет')
             profile=' · <code>'+escape(shop.credential_profile)+'</code>' if is_system_owner(message) else ''
             lines.append(f'{mark} <b>#{shop.id} {escape(shop.name)}</b> · {role_label(row["role"])}{profile} · {" + ".join(sources) or "без API"}')
         lines += ['', 'Нажмите на магазин ниже, чтобы переключиться.']
@@ -450,6 +452,7 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
         sources=[]
         if creds.has_wb: sources.append('WB')
         if creds.has_ozon: sources.append('Ozon')
+        if creds.has_yandex_market: sources.append('Яндекс Маркет')
         await message.answer(f'✅ Создан и выбран <b>#{shop.id} {escape(shop.name)}</b>.\nПрофиль: <code>{escape(shop.credential_profile)}</code> · API: {" + ".join(sources) or "не настроены"}\nОткройте «🧩 Мастер настройки» для параметров отчётов.',parse_mode='HTML',reply_markup=keyboard_for(message))
 
     @dp.message(Command('shop_profile'))
@@ -468,6 +471,7 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
         sources=[]
         if creds.has_wb: sources.append('WB')
         if creds.has_ozon: sources.append('Ozon')
+        if creds.has_yandex_market: sources.append('Яндекс Маркет')
         await message.answer(f'✅ Профиль магазина изменён на <code>{escape(profile)}</code>. API: {" + ".join(sources) or "не найдены в окружении"}.',parse_mode='HTML')
 
     @dp.message(Command('shop_archive'))
@@ -964,7 +968,7 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
             '📥 <b>Импорт себестоимости</b>\nПришлите CSV или XLSX файлом.\n\n'
             'Обязательные колонки: <code>marketplace, sku, cost_price</code>\n'
             'Необязательные: <code>effective_date, internal_sku, name</code>.\n'
-            'marketplace: <code>wb</code> или <code>ozon</code>.\n\n'
+            'marketplace: <code>wb</code>, <code>ozon</code> или <code>yandex_market</code>.\n\n'
             'Если WB и Ozon строки имеют одинаковый <code>internal_sku</code>, листинги будут объединены в один товар.\n'
             'Для отмены нажмите «❌ Отмена».', parse_mode='HTML', reply_markup=input_keyboard())
 
@@ -1061,14 +1065,16 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
             low=part.strip().lower()
             if low in {'wb','wildberries'}:
                 source='wildberries'
+            elif low in {'ym','yandex_market'}:
+                source='yandex_market'
             elif low in {'ozon','all','both'}:
                 source='all' if low in {'all','both'} else 'ozon'
             elif days is None:
                 try: days=int(low)
                 except ValueError:
-                    return await message.answer('Формат: /backfill [7..90] [ozon|wb|all]')
+                    return await message.answer('Формат: /backfill [7..90] [ozon|wb|ym|all]')
             else:
-                return await message.answer('Формат: /backfill [7..90] [ozon|wb|all]')
+                return await message.answer('Формат: /backfill [7..90] [ozon|wb|ym|all]')
         days=max(1,min(days if days is not None else ctx.settings.backfill_days,90))
         end=local_now().date()-timedelta(days=1)
         start=end-timedelta(days=days-1)
@@ -1107,7 +1113,8 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
                 parse_mode='HTML',
                 reply_markup=backfill_source_keyboard(
                     has_ozon=ctx.ozon_connection_id is not None,
-                    has_wb=ctx.wb_connection_id is not None))
+                    has_wb=ctx.wb_connection_id is not None,
+                    has_yandex=getattr(ctx,'yandex_market_connection_id',None) is not None))
 
     @dp.callback_query(F.data.startswith('backfill:source:'))
     async def cb_backfill_source(callback: types.CallbackQuery):
@@ -1333,7 +1340,7 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
         parts=(message.text or '').split()
         if len(parts) not in {4,5}:
             return await message.answer('Формат: /cost wb 12345678 350 [YYYY-MM-DD]')
-        market={'wb':'wildberries','wildberries':'wildberries','ozon':'ozon'}.get(parts[1].lower())
+        market={'wb':'wildberries','wildberries':'wildberries','ozon':'ozon','yandex_market':'yandex_market','ym':'yandex_market'}.get(parts[1].lower())
         if not market: return await message.answer('Маркетплейс: wb или ozon')
         try: cost=float(parts[3].replace(',','.')); day=date.fromisoformat(parts[4]).isoformat() if len(parts)==5 else local_now().date().isoformat()
         except ValueError: return await message.answer('Проверьте себестоимость и дату YYYY-MM-DD.')
@@ -1645,7 +1652,7 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
         lines=['⚙️ <b>Статус источников</b>','━━━━━━━━━━━━━━━━']
         for conn in ctx.repository.list_connections(ctx.shop_id):
             latest=ctx.repository.latest_run(conn.id); success=ctx.repository.last_successful_run(conn.id)
-            icon=OZON_ICON if conn.marketplace=='ozon' else WB_ICON
+            icon={'ozon':OZON_ICON,'wildberries':WB_ICON,'yandex_market':'🟡'}.get(conn.marketplace,'')
             lines.append(f'{icon} {escape(conn.display_name)}: {"✅" if conn.enabled else "⏸"}')
             lines.append(f'  последний успех: {success.finished_at if success else "—"}')
             if latest and latest.status=='failed':

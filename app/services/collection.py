@@ -59,7 +59,9 @@ class CollectionService:
     _shared_ozon_event_denials: dict[str, dict[str, tuple[int, str]]] = {}
 
     def __init__(self, repository: Repository, *, ozon: OzonClient | None = None,
-                 wildberries: WildberriesClient | None = None, ozon_performance: OzonPerformanceClient | None = None):
+                 wildberries: WildberriesClient | None = None, ozon_performance: OzonPerformanceClient | None = None,
+                 yandex_market=None):
+        self.yandex_market = yandex_market
         self.repo, self.ozon, self.wb, self.ozon_performance = repository, ozon, wildberries, ozon_performance
         # Authorization failures on optional WB stock endpoints are usually not
         # transient. Share suppression across shop runtimes that use the same WB
@@ -73,6 +75,85 @@ class CollectionService:
         scope=getattr(ozon,'rate_scope',None)
         self._event_disabled=self._shared_ozon_event_disabled.setdefault(scope,set()) if scope else set()
         self._event_denials=self._shared_ozon_event_denials.setdefault(scope,{}) if scope else {}
+
+    async def collect_yandex_orders_day(self, connection_id, day, *, shop_id):
+        from .yandex_market import normalize_orders
+        ds=day.isoformat(); endpoint='statistics/orders'; market='yandex_market'
+        client=self.yandex_market
+        valid=await client.configured_campaign()
+        if not valid.ok:
+            return self._failure(connection_id,endpoint,ds,market,valid)
+        result=await client.orders_day(client.business_id,client.campaign_id,day)
+        if not result.ok:
+            return self._failure(connection_id,endpoint,ds,market,result)
+        try:
+            points,observations=normalize_orders(result.data,connection_id,ds,client.campaign_id)
+            # Do not persist buyer addresses, names or phone numbers from orders.
+            rid=self.repo.record_success(connection_id,endpoint,ds,result.data,points,
+                attempts=result.attempts,store_raw=False)
+            self._save_product_observations(shop_id=shop_id,connection_id=connection_id,
+                marketplace=market,source_run_id=rid,observations=observations)
+        except ValueError as exc:
+            return self._failure(connection_id,endpoint,ds,market,
+                FetchResult.failure(market,str(exc),result.status_code,result.attempts))
+        return CollectionOutcome(market,ds,True,rid,'orders loaded')
+
+    async def collect_yandex_finance(self, connection_id, start, end):
+        from .yandex_market import normalize_finance
+        outcomes=[]; day=start
+        while day<=end:
+            ds=day.isoformat(); endpoint='finance/yandex/orders'; market='yandex_market'
+            result=await self.yandex_market.order_finance(day)
+            if result.ok:
+                try:
+                    points=normalize_finance(result.data,connection_id,ds)
+                    rid=self.repo.record_success(connection_id,endpoint,ds,result.data,points,attempts=result.attempts,store_raw=False)
+                    outcomes.append(CollectionOutcome(market,ds,True,rid,'order services loaded'))
+                except (ValueError,TypeError):
+                    outcomes.append(self._failure(connection_id,endpoint,ds,market,
+                        FetchResult.failure(market,'Неполная финансовая детализация заказов',result.status_code,result.attempts)))
+            else:
+                outcomes.append(self._failure(connection_id,endpoint,ds,market,result))
+            day+=timedelta(days=1)
+        return outcomes
+
+    async def collect_yandex_snapshot(self, connection_id, kind, day=None):
+        from .yandex_market import normalize_promotions, normalize_inbound
+        ds=(day or date.today()).isoformat();market='yandex_market'
+        if kind=='promotions':
+            endpoint='calendar/yandex/promotions'; fetch=self.yandex_market.promotions_snapshot; normalize=normalize_promotions
+        elif kind=='inbound':
+            endpoint='supply/yandex/inbound'; fetch=self.yandex_market.inbound_snapshot; normalize=normalize_inbound
+        else:raise ValueError('Unknown snapshot kind')
+        result=await fetch()
+        if not result.ok:return self._failure(connection_id,endpoint,ds,market,result)
+        try:
+            normalized=normalize(result.data)
+            rid=self.repo.record_success(connection_id,endpoint,ds,result.data,[],attempts=result.attempts)
+            if kind=='promotions':
+                self.repo.upsert_promotions(connection_id,rid,market,normalized,complete_external_ids=[x['external_promotion_id'] for x in normalized])
+            else:
+                self.repo.upsert_inbound_shipments(connection_id,rid,market,normalized,active_external_ids=[x['external_supply_id'] for x in normalized])
+        except (ValueError,KeyError,TypeError):
+            return self._failure(connection_id,endpoint,ds,market,
+                FetchResult.failure(market,'Неполные данные акций или поставок',result.status_code,result.attempts))
+        return CollectionOutcome(market,ds,True,rid,kind+' loaded')
+
+    async def collect_yandex_inventory(self, connection_id, *, shop_id, day=None):
+        from .yandex_market import normalize_stocks, rows
+        ds=(day or date.today()).isoformat(); endpoint='stocks/yandex'; market='yandex_market'
+        result=await self.yandex_market.inventory_snapshot()
+        if not result.ok:
+            return self._failure(connection_id,endpoint,ds,market,result)
+        try:
+            observations=normalize_stocks(result.data,result.data['scheme'])
+            rid=self.repo.record_success(connection_id,endpoint,ds,result.data,[],attempts=result.attempts)
+            self._save_inventory_observations(shop_id=shop_id,connection_id=connection_id,
+                marketplace=market,source_run_id=rid,observations=observations)
+        except ValueError as exc:
+            return self._failure(connection_id,endpoint,ds,market,
+                FetchResult.failure(market,str(exc),result.status_code,result.attempts))
+        return CollectionOutcome(market,ds,True,rid,'stocks loaded')
 
     async def _ozon_analytics_all(self, payload: dict) -> FetchResult:
         if self.ozon is None:

@@ -19,6 +19,7 @@ class AppContext:
     wb_connection_id: int | None = None
     ozon_connection_id: int | None = None
     job_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    yandex_market_connection_id: int | None = None
     active_backfill_task: asyncio.Task | None = field(default=None, init=False, repr=False)
 
     def backfill_running(self) -> bool:
@@ -93,6 +94,8 @@ class AppContext:
                 tasks.append(self.collector.collect_wb_orders_day(self.wb_connection_id,day,shop_id=self.shop_id))
             if self.ozon_connection_id is not None:
                 tasks.append(self.collector.collect_ozon_orders_day(self.ozon_connection_id,day,shop_id=self.shop_id))
+            if self.yandex_market_connection_id is not None:
+                tasks.append(self.collector.collect_yandex_orders_day(self.yandex_market_connection_id,day,shop_id=self.shop_id))
             if not tasks: return []
             results=await asyncio.gather(*tasks, return_exceptions=True)
             out=[]
@@ -125,7 +128,7 @@ class AppContext:
         """
         if self.demo_mode(): return []
         source=(marketplace or 'all').strip().lower()
-        if source not in {'all','ozon','wildberries','wb'}:
+        if source not in {'all','ozon','wildberries','wb','yandex_market'}:
             raise ValueError('marketplace must be all, ozon or wildberries')
         wb_id=self.wb_connection_id if source in {'all','wildberries','wb'} else None
         ozon_id=self.ozon_connection_id if source in {'all','ozon'} else None
@@ -133,7 +136,10 @@ class AppContext:
             raise ValueError('Wildberries не подключён к текущему магазину.')
         if source=='ozon' and ozon_id is None:
             raise ValueError('Ozon не подключён к текущему магазину.')
-        if source=='all' and wb_id is None and ozon_id is None:
+        ym_id=self.yandex_market_connection_id if source in {'all','yandex_market'} else None
+        if source=='yandex_market' and ym_id is None:
+            raise ValueError('Яндекс Маркет не подключён.')
+        if source=='all' and wb_id is None and ozon_id is None and ym_id is None:
             raise ValueError('К текущему магазину не подключены маркетплейсы.')
         task=asyncio.current_task()
         if task is None:
@@ -185,6 +191,15 @@ class AppContext:
                     outcomes += await one_source(wb_id,'wildberries')
                 if ozon_id is not None:
                     outcomes += await one_source(ozon_id,'ozon')
+                if ym_id is not None:
+                    current=start
+                    complete=set(self.repository.successful_order_dates(ym_id,start.isoformat(),end.isoformat()))
+                    while current<=end:
+                        if current.isoformat() not in complete:
+                            outcomes.append(await self.collector.collect_yandex_orders_day(ym_id,current,shop_id=self.shop_id))
+                        else:
+                            outcomes.append(CollectionOutcome('yandex_market',current.isoformat(),True,0,'orders already loaded'))
+                        current += timedelta(days=1)
                 return outcomes
         finally:
             if self.active_backfill_task is task:
@@ -193,15 +208,21 @@ class AppContext:
     async def collect_inventory(self, day: date | None = None, *, automatic: bool = False) -> list[CollectionOutcome]:
         if self.demo_mode(): return []
         async with self.operation_lock('inventory'):
-            return await self.collector.collect_inventory(
+            outcomes = await self.collector.collect_inventory(
                 shop_id=self.shop_id, wb_connection_id=self.wb_connection_id,
                 ozon_connection_id=self.ozon_connection_id, data_date=day, automatic=automatic)
+            if self.yandex_market_connection_id is not None:
+                outcomes.append(await self.collector.collect_yandex_inventory(self.yandex_market_connection_id,shop_id=self.shop_id,day=day))
+            return outcomes
 
     async def collect_finance(self, start: date, end: date):
         if self.demo_mode(): return []
         async with self.operation_lock('finance'):
-            return await self.collector.collect_finance(start=start,end=end,wb_connection_id=self.wb_connection_id,
+            outcomes=await self.collector.collect_finance(start=start,end=end,wb_connection_id=self.wb_connection_id,
                 ozon_connection_id=self.ozon_connection_id,shop_id=self.shop_id)
+            if self.yandex_market_connection_id is not None:
+                outcomes+=await self.collector.collect_yandex_finance(self.yandex_market_connection_id,start,end)
+            return outcomes
 
     async def collect_reconciliation(self, start: date, end: date, *, include_finance: bool=True):
         if self.demo_mode(): return []
@@ -210,6 +231,13 @@ class AppContext:
             outcomes=[]
             outcomes += await self.collector.backfill_orders(start=start,end=end,shop_id=self.shop_id,
                 wb_connection_id=self.wb_connection_id,ozon_connection_id=self.ozon_connection_id)
+            if self.yandex_market_connection_id is not None:
+                current=start
+                while current<=end:
+                    outcomes.append(await self.collector.collect_yandex_orders_day(self.yandex_market_connection_id,current,shop_id=self.shop_id))
+                    current+=timedelta(days=1)
+                if include_finance:
+                    outcomes+=await self.collector.collect_yandex_finance(self.yandex_market_connection_id,start,end)
             if self.wb_connection_id is not None:
                 outcomes += await self.collector.collect_wb_sales_range(shop_id=self.shop_id,
                     connection_id=self.wb_connection_id,start=start,end=end)
@@ -236,19 +264,25 @@ class AppContext:
     async def collect_inbound(self, day: date | None = None):
         if self.demo_mode(): return []
         async with self.operation_lock('inbound'):
-            return await self.collector.collect_inbound(shop_id=self.shop_id,wb_connection_id=self.wb_connection_id,
+            outcomes=await self.collector.collect_inbound(shop_id=self.shop_id,wb_connection_id=self.wb_connection_id,
                 ozon_connection_id=self.ozon_connection_id,data_date=day)
+            if self.yandex_market_connection_id is not None:
+                outcomes.append(await self.collector.collect_yandex_snapshot(self.yandex_market_connection_id,'inbound',day))
+            return outcomes
 
     async def collect_promotions(self, day: date | None = None):
         if self.demo_mode(): return []
         async with self.operation_lock('promotions'):
-            return await self.collector.collect_promotions(shop_id=self.shop_id,as_of=day or date.today(),
+            outcomes=await self.collector.collect_promotions(shop_id=self.shop_id,as_of=day or date.today(),
                 wb_connection_id=self.wb_connection_id,ozon_connection_id=self.ozon_connection_id)
+            if self.yandex_market_connection_id is not None:
+                outcomes.append(await self.collector.collect_yandex_snapshot(self.yandex_market_connection_id,'promotions',day))
+            return outcomes
 
     def configured_sources(self) -> int:
         if self.demo_mode():
             return 2
-        return int(self.wb_connection_id is not None)+int(self.ozon_connection_id is not None)
+        return int(self.wb_connection_id is not None)+int(self.ozon_connection_id is not None)+int(self.yandex_market_connection_id is not None)
 
     def preferences(self) -> ShopPreferences:
         return self.repository.ensure_shop_preferences(

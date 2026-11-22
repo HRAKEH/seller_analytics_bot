@@ -48,6 +48,13 @@ async def refresh_reports(ctx, start: date, end: date, progress=None, *, include
             if ctx.ozon_connection_id is not None:
                 await run('orders:ozon:'+day.isoformat(),'Заказы Ozon · '+display_day(day),
                     lambda day=day: _one(ctx.collector.collect_ozon_orders_day(ctx.ozon_connection_id,day,shop_id=ctx.shop_id)))
+            if getattr(ctx,'yandex_market_connection_id',None) is not None:
+                await run('orders:yandex:'+day.isoformat(),'Заказы Яндекс Маркета · '+display_day(day),
+                    lambda day=day: _one(ctx.collector.collect_yandex_orders_day(ctx.yandex_market_connection_id,day,shop_id=ctx.shop_id)))
+        if getattr(ctx,'yandex_market_connection_id',None) is not None:
+            if include_finance:
+                await run('finance:yandex','Услуги по заказам Яндекс Маркета',lambda:ctx.collector.collect_yandex_finance(ctx.yandex_market_connection_id,start,end))
+            await run('stocks:yandex','Остатки Яндекс Маркета',lambda:_one(ctx.collector.collect_yandex_inventory(ctx.yandex_market_connection_id,shop_id=ctx.shop_id)))
         for key,method,title in (('finance',ctx.collector.collect_finance,'Начисления и удержания'),
                                  ('advertising',ctx.collector.collect_advertising,'Рекламная статистика')):
             if key=='finance' and not include_finance:continue

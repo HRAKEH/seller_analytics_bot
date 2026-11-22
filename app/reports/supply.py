@@ -26,7 +26,7 @@ def format_supply_plan(plan: SupplyPlan, *, limit: int | None=None) -> str:
            f'XYZ: X {xyz["X"]} · Y {xyz["Y"]} · Z {xyz["Z"]} · ? {xyz["?"]}',
            f'К заказу сейчас: <b>{plan.order_now_count}</b> SKU','']
     urgent=[r for r in plan.rows if r.needs_order]
-    for market,label in (('wildberries','WB'),('ozon','Ozon')):
+    for market,label in (('wildberries','WB'),('ozon','Ozon'),('yandex_market','Яндекс Маркет')):
         market_rows=[r for r in plan.rows if market in r.marketplaces]
         if market_rows:
             missing=sum(1 for r in market_rows if market in r.missing_inventory_marketplaces)

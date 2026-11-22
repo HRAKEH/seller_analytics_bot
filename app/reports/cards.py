@@ -78,7 +78,7 @@ def _orders_total(report: DailyReport) -> tuple[Decimal | None, bool]:
             amount=prices.rub_total if prices else None
             if amount is None:return None,False
             approximate=approximate or bool(prices.foreign_currencies)
-        elif source.marketplace=='wildberries' and source.ordered_revenue is not None:
+        elif source.marketplace in {'wildberries','yandex_market'} and source.ordered_revenue is not None:
             amount=Decimal(str(source.ordered_revenue))
             if not amount.is_finite():return None,False
             amount=amount.quantize(Decimal('0.01'),rounding=ROUND_HALF_UP)
@@ -182,6 +182,12 @@ def format_daily_card(repo, shop_id: int, report: DailyReport) -> DailyCardText:
                 accruals.append('После удержаний Ozon: <b>'+rubles(finance['value'])+'</b>')
                 accruals.append('По дате начисления: '+_day(report.day)+'.')
             else:accruals.append('После удержаний Ozon: ⏳ начисления ещё не загружены.')
+        elif s.marketplace=='yandex_market':
+            finance=None
+            summary.append('🛒 Заказано: <b>'+units+'</b> · '+(rubles(s.ordered_revenue) if s.ordered_revenue is not None else '⏳ нет суммы'))
+            details.append('Источник: заказы Яндекс Маркета по дате создания (Москва).')
+            details.append('Сумма оплаты и баллов Плюса за позиции; без доставки, субсидий и удержаний.')
+            accruals.append('Выплаты и удержания не рассчитаны по сумме заказов.')
         else:
             if s.units is not None and s.ordered_revenue is not None:
                 precision=0 if float(s.ordered_revenue).is_integer() else 2
@@ -232,7 +238,7 @@ def format_daily_card(repo, shop_id: int, report: DailyReport) -> DailyCardText:
         summary.append('🕘 События проверены: '+display_time(min(event_freshness),tz=tz))
     if event_load_failed or any(s.warning for s in sources):
         summary.append('⚠️ Есть сбой загрузки — см. «Подробнее».')
-    details.extend(['','Общий итог — сумма показанных цен: WB до удержаний, Ozon по цене покупателя. '
+    details.extend(['','Общий итог — сумма показанных цен: WB до удержаний, Ozon по цене покупателя, Яндекс Маркет — оплата и баллы Плюса. '
         'При пересчёте валют это оценка по ЦБ. Начисления после удержаний смотрите отдельно.'])
     accruals.extend(['','Это не чистая прибыль: себестоимость и налоги здесь не вычитаются.'])
     return DailyCardText('\n'.join(summary),'\n'.join(details),'\n'.join(accruals))

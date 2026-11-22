@@ -437,8 +437,8 @@ class Repository:
 
     def ensure_connection(self, shop_id: int, marketplace: str, display_name: str | None = None,
                           external_account_id: str | None = None) -> MarketplaceConnection:
-        if marketplace not in {"ozon", "wildberries"}:
-            raise ValueError("marketplace must be 'ozon' or 'wildberries'")
+        if marketplace not in {"ozon", "wildberries", "yandex_market"}:
+            raise ValueError("marketplace must be ozon, wildberries or yandex_market")
         name = display_name or marketplace.title()
         now = utcnow()
         with self.db.connect() as c:
@@ -856,7 +856,7 @@ class Repository:
             raise ValueError('at least one listing is required')
         resolved=[]
         for market,sku in refs:
-            market={'wb':'wildberries','wildberries':'wildberries','ozon':'ozon'}.get(str(market).lower())
+            market={'wb':'wildberries','wildberries':'wildberries','ozon':'ozon','ym':'yandex_market','yandex_market':'yandex_market'}.get(str(market).lower())
             if market is None:
                 raise ValueError(f'unsupported marketplace: {market}')
             row=self.listing_for_shop(shop_id,market,str(sku))
@@ -1065,7 +1065,7 @@ class Repository:
                 FROM source_runs sr JOIN marketplace_connections mc ON mc.id=sr.connection_id
                 WHERE mc.shop_id=? AND mc.enabled=1 AND sr.status='success'
                   AND (sr.endpoint IN ('product/info/stocks','analytics/stocks/fbo',
-                    'analytics/stocks/wb-warehouses','analytics/stocks/seller-warehouses')
+                    'analytics/stocks/wb-warehouses','analytics/stocks/seller-warehouses','stocks/yandex')
                     OR EXISTS(SELECT 1 FROM inventory_snapshots i WHERE i.source_run_id=sr.id))),
               candidates AS (
                 SELECT DISTINCT i.listing_id,i.fulfillment_scheme,i.source_run_id,s.finished_at
@@ -1991,7 +1991,7 @@ class Repository:
     def complete_order_dates(self, shop_id: int, start_date: str, end_date: str) -> list[str]:
         """Dates with a successful core-order run for every enabled core connection."""
         conns=self.list_connections(shop_id)
-        enabled=[c for c in conns if c.enabled and c.marketplace in {'ozon','wildberries'}]
+        enabled=[c for c in conns if c.enabled and c.marketplace in {'ozon','wildberries','yandex_market'}]
         if not enabled: return []
         ids=[c.id for c in enabled]; placeholders=','.join('?' for _ in ids)
         with self.db.connect() as c:
@@ -2176,6 +2176,7 @@ class Repository:
             d=dict(row); status=str(d['status'] or '')
             if d['marketplace']=='wildberries' and status in completed_wb: continue
             if d['marketplace']=='ozon' and status in completed_ozon: continue
+            if d['marketplace']=='yandex_market' and status in {'FINISHED','CANCELLED','INVALID','NOT_ACTIVE'}: continue
             out.append(d)
         return out
 

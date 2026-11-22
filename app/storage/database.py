@@ -817,6 +817,27 @@ def _migration_22(conn: sqlite3.Connection) -> None:
 
 
 MIGRATIONS[22] = _migration_22
+def _migration_23(conn):
+    # initialize disables FK enforcement before the migration transaction.
+    # Rebuild the parent without renaming it first: child references stay intact.
+    conn.execute("""CREATE TABLE marketplace_connections_new (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      shop_id INTEGER NOT NULL REFERENCES shops(id) ON DELETE CASCADE,
+      marketplace TEXT NOT NULL CHECK(marketplace IN ('ozon','wildberries','yandex_market')),
+      display_name TEXT NOT NULL,
+      external_account_id TEXT,
+      enabled INTEGER NOT NULL DEFAULT 1 CHECK(enabled IN (0,1)),
+      metadata_json TEXT NOT NULL DEFAULT '{}',
+      created_at TEXT NOT NULL,
+      UNIQUE(shop_id, marketplace, display_name))""")
+    conn.execute('INSERT INTO marketplace_connections_new SELECT * FROM marketplace_connections')
+    conn.execute('DROP TABLE marketplace_connections')
+    conn.execute('ALTER TABLE marketplace_connections_new RENAME TO marketplace_connections')
+    if conn.execute('PRAGMA foreign_key_check').fetchone():
+        raise RuntimeError('Нарушение связей при обновлении базы')
+
+
+MIGRATIONS[23] = _migration_23
 LATEST_SCHEMA_VERSION = max(MIGRATIONS)
 
 
@@ -847,8 +868,14 @@ class Database:
             for version in sorted(MIGRATIONS):
                 if version <= current:
                     continue
+                if version == 23:
+                    conn.commit()
+                    conn.execute('PRAGMA foreign_keys=OFF')
+                    conn.execute('BEGIN IMMEDIATE')
                 MIGRATIONS[version](conn)
                 conn.execute("INSERT INTO schema_migrations(version, applied_at) VALUES(?, datetime('now'))", (version,))
+            conn.commit()
+            conn.execute('PRAGMA foreign_keys=ON')
             return conn.execute("SELECT COALESCE(MAX(version),0) FROM schema_migrations").fetchone()[0]
 
     def initialize_safely(self, backups_dir: Path | None = None) -> int:

@@ -390,14 +390,16 @@ def retry_jobs_keyboard(rows):
     return kb.as_markup() if added else None
 
 
-def backfill_source_keyboard(*, has_ozon: bool, has_wb: bool):
+def backfill_source_keyboard(*, has_ozon: bool, has_wb: bool, has_yandex: bool = False):
     kb=InlineKeyboardBuilder()
     if has_ozon:
         kb.button(text=OZON_LABEL,callback_data='backfill:source:ozon')
     if has_wb:
         kb.button(text=WB_LABEL,callback_data='backfill:source:wildberries')
-    if has_ozon and has_wb:
-        kb.button(text=f'{OZON_ICON}{WB_ICON} Оба маркетплейса',callback_data='backfill:source:all')
+    if has_yandex:
+        kb.button(text='🟡 Яндекс Маркет',callback_data='backfill:source:yandex_market')
+    if sum((has_ozon,has_wb,has_yandex))>1:
+        kb.button(text='Все маркетплейсы' if has_yandex else f'{OZON_ICON}{WB_ICON} Оба маркетплейса',callback_data='backfill:source:all')
     kb.button(text='❌ Отмена',callback_data='backfill:cancel')
     kb.adjust(1)
     return kb.as_markup()

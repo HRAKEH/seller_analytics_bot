@@ -125,6 +125,8 @@ async def check_product_status(ctx):
             sources.append(('wildberries:errors',ctx.wb_connection_id,ctx.collector.wb.card_errors))
         if ctx.ozon_connection_id is not None and ctx.collector.ozon:
             sources.append(('ozon:cards',ctx.ozon_connection_id,ctx.collector.ozon.card_status_snapshot))
+        if getattr(ctx,'yandex_market_connection_id',None) is not None and getattr(ctx.collector,'yandex_market',None):
+            sources.append(('yandex_market:cards',ctx.yandex_market_connection_id,ctx.collector.yandex_market.card_status_snapshot))
         for source, connection_id, fetch in sources:
             key = 'card_check:' + source
             now = datetime.now(timezone.utc)
@@ -154,15 +156,19 @@ async def check_product_status(ctx):
                         resolved_subjects={r['subject_key'] for r in repo.active_alert_states(shop) if r['subject_key'].startswith('wildberries:vendor:')},
                         recovery='Ошибка больше не указана в списке черновиков WB. Публикация карточки не подтверждена.')
                 else:
-                    items = rows_at(response.data,'items')
-                    issues, healthy = ozon_cards(items)
-                    repo.record_success(connection_id,'card_status/ozon',now.date().isoformat(),response.data,[])
+                    if source == 'yandex_market:cards':
+                        from .yandex_market import normalize_cards
+                        issues, healthy = normalize_cards(response.data)
+                    else:
+                        items = rows_at(response.data,'items')
+                        issues, healthy = ozon_cards(items)
+                    repo.record_success(connection_id,'card_status/'+source.split(':')[0],now.date().isoformat(),response.data,[])
                     for rule in ('card_blocked','card_errors'):
                         messages = {s:m for s,(r,m) in issues.items() if r==rule}
                         # A changed problem replaces the old category without claiming recovery.
                         opposite = {s for s,(r,m) in issues.items() if r!=rule}
                         notes += apply_snapshot(repo,shop,rule,messages,resolved_subjects=healthy,
-                            recovery='Проверки карточки Ozon пройдены, ошибок нет. Наличие в продаже проверяется отдельно.')
+                            recovery='Проверки карточки пройдены, ошибок нет. Наличие в продаже проверяется отдельно.')
                         with repo.db.connect() as c:
                             for subject in opposite:
                                 c.execute('UPDATE alert_state SET active=0,last_resolved_at=?,updated_at=? WHERE shop_id=? AND rule_key=? AND subject_key=?',

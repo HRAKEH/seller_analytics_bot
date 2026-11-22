@@ -11,6 +11,8 @@ class MetricDefinition:
     description: str = ""
 
 METRICS: dict[str, MetricDefinition] = {
+    "ym_order_services": MetricDefinition("ym_order_services", "Услуги по заказам Яндекс Маркета", "RUB", False, "Стоимость услуг по дате создания заказа; не выплата и не расходы по дате начисления"),
+    "ym_order_boost": MetricDefinition("ym_order_boost", "Буст продаж по заказам Яндекс Маркета", "RUB", False, "Подмножество стоимости услуг; не вся рекламная статистика"),
     "revenue": MetricDefinition("revenue", "Выручка", "RUB", False, "Не объединяется, пока методика источников явно не сопоставлена"),
     "ordered_revenue": MetricDefinition("ordered_revenue", "Сумма заказов", "RUB", False, "Предварительная сумма заказов конкретного источника"),
     "orders_count": MetricDefinition("orders_count", "Заказы", "orders", False, "Число заказов, только при сопоставимой семантике"),
