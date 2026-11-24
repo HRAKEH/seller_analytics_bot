@@ -37,6 +37,36 @@ def test_orders_amount_is_line_total_with_cashback_not_quantity_multiplied():
     assert obs[0].fulfillment_units=={'FBS':3}
 
 
+def test_dashboard_order_amount_includes_market_compensation_once():
+    payload=order()
+    payload['items'][0]['prices']['subsidy']={'value':700,'currencyId':'RUR'}
+    payload['prices']={'payment':{'value':240,'currencyId':'RUR'},
+                       'subsidy':{'value':700,'currencyId':'RUR'},
+                       'delivery':{'payment':{'value':90,'currencyId':'RUR'}}}
+    points,obs=normalize_orders({'orders':[payload]},1,DAY.isoformat(),20)
+    assert {p.metric_key:p.value for p in points} == {
+        'ordered_units':3,'ordered_revenue':1000,'cancellations_units':1}
+    assert obs[0].ordered_revenue==1000
+
+
+@pytest.mark.parametrize('subsidy',[None, {'value':0,'currencyId':'RUB'}])
+def test_zero_or_null_market_compensation_does_not_change_total(subsidy):
+    payload=order()
+    payload['items'][0]['prices']['subsidy']=subsidy
+    points,obs=normalize_orders({'orders':[payload]},1,DAY.isoformat(),20)
+    assert obs[0].ordered_revenue==300
+    assert next(p.value for p in points if p.metric_key=='ordered_revenue')==300
+
+
+@pytest.mark.parametrize('subsidy',[{}, {'value':2,'currencyId':'USD'},
+    {'value':'NaN','currencyId':'RUR'}, {'value':-1,'currencyId':'RUR'}])
+def test_invalid_market_compensation_is_not_silently_ignored(subsidy):
+    payload=order()
+    payload['items'][0]['prices']['subsidy']=subsidy
+    with pytest.raises(ValueError):
+        normalize_orders({'orders':[payload]},1,DAY.isoformat(),20)
+
+
 @pytest.mark.parametrize('mutation',[
     lambda o:o.update(campaignId=21),lambda o:o.update(fake=True),lambda o:o.update(creationDate='2026-11-13T01:00:00+03:00'),
     lambda o:o['items'][0].update(count=-1),lambda o:o['items'][0]['prices']['payment'].update(currencyId='USD'),
@@ -87,12 +117,14 @@ def test_credentials_validate_and_never_display_key(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_runtime_collection_reports_and_failed_refresh_preserve_data(tmp_path):
-    repo,shop,conn=setup(tmp_path);failed=False
+    repo,shop,conn=setup(tmp_path);failed=False;subsidy=None
     def handle(req):
         if req.url.path=='/v2/campaigns':
             return httpx.Response(200,json={'campaigns':[{'id':20,'business':{'id':10},'placementType':'FBS'}]})
         assert req.url.path=='/v1/businesses/10/orders'
-        return httpx.Response(200,json={} if failed else {'orders':[order()]})
+        payload=order()
+        payload['items'][0]['prices']['subsidy']=subsidy
+        return httpx.Response(200,json={} if failed else {'orders':[payload]})
     async with YandexMarketClient('key',min_interval=0,transport=httpx.MockTransport(handle)) as client:
         client.business_id=10;client.campaign_id=20
         ctx=AppContext(Settings.from_env(),repo,shop.id,CollectionService(repo,yandex_market=client),yandex_market_connection_id=conn.id)
@@ -104,9 +136,14 @@ async def test_runtime_collection_reports_and_failed_refresh_preserve_data(tmp_p
         assert 'Яндекс Маркет' in card.summary_html and 'Источник заказов: Воронка продаж WB' not in card.details_html
         assert 'Яндекс Маркет' in format_product_report(build_product_report(repo,shop.id,DAY,days=1))
         assert repo.raw_payload_for_run(repo.last_successful_order_run(conn.id,DAY.isoformat()).id) is None
+        assert repo.latest_metric(conn.id,DAY.isoformat(),'ordered_revenue')['value']==300
+        subsidy={'value':700,'currencyId':'RUR'}
+        assert (await ctx.collect_day(DAY))[0].ok
+        assert repo.latest_metric(conn.id,DAY.isoformat(),'ordered_revenue')['value']==1000
         failed=True
         assert not (await ctx.collect_day(DAY))[0].ok
         assert build_daily_report(repo,shop.id,DAY).total_units==3
+        assert repo.latest_metric(conn.id,DAY.isoformat(),'ordered_revenue')['value']==1000
 
 
 @pytest.mark.asyncio

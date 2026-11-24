@@ -69,11 +69,13 @@ def normalize_orders(payload, connection_id, day, campaign_id):
             prices = item.get('prices')
             if not isinstance(prices, dict):
                 raise ValueError('Нет цены позиции')
-            # API returns totals for ALL units, not a unit price. Subsidy is
-            # separate compensation, not buyer order value or net proceeds.
+            # Dashboard order turnover includes compensation of Market-funded
+            # discounts. All three fields are line totals, not unit prices.
+            # Delivery, fees and other payout deductions are not included.
             amount = money(prices.get('payment'))
-            if prices.get('cashback') is not None:
-                amount += money(prices['cashback'])
+            for component in ('cashback', 'subsidy'):
+                if prices.get(component) is not None:
+                    amount += money(prices[component])
             cancelled = count if status == 'CANCELLED' else 0
             if item.get('itemStatuses') is not None:
                 states = rows(item, 'itemStatuses'); seen_status = set(); total = 0; cancelled = 0

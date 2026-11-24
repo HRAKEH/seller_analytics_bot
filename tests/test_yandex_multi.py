@@ -28,10 +28,12 @@ def test_orders_same_sku_sum_across_campaigns():
     def order(cid):
         return {'orderId': 1, 'campaignId': cid, 'creationDate': '2026-11-22T12:00:00+03:00',
             'programType': 'FBS', 'status': 'PROCESSING', 'items': [{'id':1, 'offerId':'SKU', 'count':2,
-                'prices': {'payment': {'value':100, 'currencyId':'RUR'}}}]}
+                'prices': {'payment': {'value':100, 'currencyId':'RUR'},
+                           'subsidy': {'value':50, 'currencyId':'RUR'}}}]}
     points, observations = normalize_orders({'orders': [order(20), order(21)]}, 1, '2026-11-22', (20,21))
     assert len(observations) == 1 and observations[0].ordered_units == 4
-    assert observations[0].ordered_revenue == 200
+    assert observations[0].ordered_revenue == 300
+    assert next(p.value for p in points if p.metric_key=='ordered_revenue') == 300
     with pytest.raises(ValueError):
         normalize_orders({'orders': [order(22)]}, 1, '2026-11-22', (20,21))
 
