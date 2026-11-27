@@ -281,3 +281,30 @@ def test_partial_cancellation_keeps_original_order_amount_and_separate_active_to
     assert values['ym_noncancelled_units']==2 and values['ym_noncancelled_revenue']==200
     assert obs[0].ordered_units==3 and obs[0].ordered_revenue==300
     assert obs[0].fulfillment_units=={'FBS':3}
+
+
+def test_dashboard_card_uses_noncancelled_yandex_subtotal_and_keeps_demand(tmp_path):
+    repo,shop,conn=setup(tmp_path)
+    ds=DAY.isoformat()
+    full=order()
+    full['status']='CANCELLED'
+    full['items'][0]['count']=2
+    full['items'][0]['itemStatuses']=[{'status':'CANCELLED','count':2}]
+    full['items'][0]['prices']={'payment':{'value':2700,'currencyId':'RUR'}}
+    active=order()
+    active['orderId']=2
+    active['items'][0]['count']=12
+    active['items'][0]['itemStatuses']=[{'status':'CREATED','count':12}]
+    active['items'][0]['prices']={'payment':{'value':9123,'currencyId':'RUR'}}
+    points,_=normalize_orders({'orders':[full,active]},conn.id,ds,20,include_created=True)
+    repo.record_success(conn.id,'statistics/orders',ds,{'case':'dashboard'},points,store_raw=False)
+    report=build_daily_report(repo,shop.id,DAY)
+    assert report.total_units==14
+    card=format_daily_card(repo,shop.id,report)
+    assert 'Всего заказано: <b>12 шт. · 9 123,00 ₽</b>' in card.summary_html
+    assert 'Заказано: <b>12 шт. · 9 123,00 ₽</b>' in card.summary_html
+    assert 'Все оформленные товары, включая отменённые: 14 шт. · 11 823,00 ₽' in card.details_html
+    # A newer gross snapshot without active totals cannot reuse a stale subtotal.
+    repo.record_success(conn.id,'statistics/orders',ds,{'case':'newer'},[p for p in points if not p.metric_key.startswith('ym_noncancelled')],store_raw=False)
+    card=format_daily_card(repo,shop.id,build_daily_report(repo,shop.id,DAY))
+    assert 'Всего заказано: ⏳ неполные данные.' in card.summary_html

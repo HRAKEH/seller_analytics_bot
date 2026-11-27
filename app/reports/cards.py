@@ -1,7 +1,7 @@
 """Daily cards: order totals use displayed prices; accruals stay separate."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date
 from decimal import Decimal, ROUND_HALF_UP
 from html import escape
@@ -68,6 +68,29 @@ def _event_details(label: str, event: DayEvent, *, tz: str) -> list[str]:
     return lines
 
 
+def _dashboard_report(repo, report: DailyReport) -> DailyReport:
+    """Use the verified same-run Yandex noncancelled subtotal for dashboard comparison.
+
+    The canonical report and SKU history still describe all created orders.
+    """
+    sources=[]
+    for source in report.sources:
+        if source.marketplace != 'yandex_market':
+            sources.append(source)
+            continue
+        keys=('ordered_units','ordered_revenue','ym_noncancelled_units','ym_noncancelled_revenue')
+        rows=[repo.latest_metric(source.connection_id,report.day,key) for key in keys]
+        if (source.units is not None and source.ordered_revenue is not None and
+                all(row is not None for row in rows) and
+                len({row['source_run_id'] for row in rows})==1 and
+                all(Decimal(str(row['value'])).is_finite() and row['value']>=0 for row in rows) and
+                rows[2]['value']<=rows[0]['value']):
+            sources.append(replace(source,units=rows[2]['value'],ordered_revenue=rows[3]['value']))
+        else:
+            sources.append(replace(source,units=None,ordered_revenue=None))
+    return replace(report,sources=tuple(sources))
+
+
 def _orders_total(report: DailyReport) -> tuple[Decimal | None, bool]:
     """Sum the visible marketplace amounts, never substitute net/max prices."""
     if not report.complete:return None,False
@@ -109,6 +132,8 @@ def _wb_period(repo, metric) -> str:
 
 
 def format_daily_card(repo, shop_id: int, report: DailyReport) -> DailyCardText:
+    gross_by_id={source.connection_id:source for source in report.sources}
+    report=_dashboard_report(repo,report)
     shop=repo.get_shop(shop_id)
     pref=repo.get_shop_preferences(shop_id)
     summary=[f'📊 <b>Отчёт за {_day(report.day)}</b>']
@@ -184,18 +209,14 @@ def format_daily_card(repo, shop_id: int, report: DailyReport) -> DailyCardText:
             else:accruals.append('После удержаний Ozon: ⏳ начисления ещё не загружены.')
         elif s.marketplace=='yandex_market':
             finance=None
-            active=repo.latest_metric(s.connection_id,report.day,'ym_noncancelled_units')
-            active_money=repo.latest_metric(s.connection_id,report.day,'ym_noncancelled_revenue')
+            gross=gross_by_id[s.connection_id]
             summary.append('🛒 Заказано: <b>'+units+' · '+rubles(s.ordered_revenue)+'</b>' if s.units is not None and s.ordered_revenue is not None else '🛒 Заказано: <b>'+units+'</b> · ⏳ сумма неполная.')
-            if active is not None and active_money is not None and s.units is not None:
-                # Separate the creation cohort from the noncancelled comparison;
-                # neither is a cancellation-event total. Do not alter gross totals.
-                active_line=num(active['value'])+' шт. · '+rubles(active_money['value'])
-                summary.append('  Из них без отмен: <b>'+active_line+'</b>')
-                details.append('Без отмен среди оформленных в этот день: '+active_line)
+            if gross.units is not None and gross.ordered_revenue is not None:
+                details.append('Все оформленные товары, включая отменённые: '+num(gross.units)+' шт. · '+rubles(gross.ordered_revenue))
             if s.units is None:
-                details.append('Обновите заказы за выбранную дату: старый расчёт не смешивается с новым.')
-            details.append('Источник: все товары в заказах Яндекс Маркета по дате создания (Москва), включая отменённые.')
+                details.append('Обновите заказы за выбранную дату: нет подтверждённой суммы и количества без отмен из одного снимка.')
+            details.append('Источник: заказы Яндекс Маркета по дате создания (Москва), без отмен среди заказов выбранной даты. Частичные отмены распределяются пропорционально.')
+            details.append('Товарная аналитика спроса использует все оформленные товары, включая отменённые.')
             details.append('Оплата, баллы Плюса и компенсации скидок Маркета; без доставки и удержаний.')
             accruals.append('Выплаты и удержания не рассчитаны по сумме заказов.')
         else:
@@ -244,11 +265,13 @@ def format_daily_card(repo, shop_id: int, report: DailyReport) -> DailyCardText:
         accruals.append('Нет подключённых финансовых источников.')
     summary.extend(['','ℹ️ Каждый показатель относится к дате своего события. '
                     'Начисления после удержаний открываются отдельно.','Данные предварительные.'])
+    if any(s.marketplace=='yandex_market' for s in sources):
+        summary.append('ЯМ: заказы без отмен среди оформленных в выбранный день.')
     if event_freshness:
         summary.append('🕘 События проверены: '+display_time(min(event_freshness),tz=tz))
     if event_load_failed or any(s.warning for s in sources):
         summary.append('⚠️ Есть сбой загрузки — см. «Подробнее».')
-    details.extend(['','Общий итог — ориентир по сумме показанных цен, денежные базы отличаются: WB до удержаний, Ozon по цене покупателя, Яндекс Маркет — оплата, баллы Плюса и компенсации скидок. '
+    details.extend(['','Общий итог — ориентир по сумме показанных цен, денежные базы отличаются: WB до удержаний, Ozon по цене покупателя, Яндекс Маркет — оплата, баллы Плюса и компенсации скидок без отмен среди заказов дня. Это сопоставление с кабинетами, а не единая метрика спроса. '
         'При пересчёте валют это оценка по ЦБ. Начисления после удержаний смотрите отдельно.'])
     accruals.extend(['','Это не чистая прибыль: себестоимость и налоги здесь не вычитаются.'])
     return DailyCardText('\n'.join(summary),'\n'.join(details),'\n'.join(accruals))
