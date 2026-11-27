@@ -1,7 +1,7 @@
 """Strict Yandex Market normalization; amounts are not net seller payouts."""
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from app.storage import MetricPoint
 from .product_analytics import ProductDayObservation, StockObservation
 
@@ -87,11 +87,21 @@ def normalize_orders(payload, connection_id, day, campaign_id):
                     if name == 'CANCELLED': cancelled += units
                 if total != count:
                     raise ValueError('Количество единиц не совпадает со статусами')
+            # A fully cancelled order is authoritative even if unit statuses lag.
+            if status == 'CANCELLED':
+                cancelled = count
+            active = count - cancelled
+            # API prices cover all units of this SKU line. Partial cancellations
+            # are allocated proportionally to the surviving quantity, rounded
+            # to kopecks (the API does not return a per-unit price breakdown).
+            if cancelled:
+                amount = (amount * Decimal(active) / Decimal(count)).quantize(
+                    Decimal('0.01'), rounding=ROUND_HALF_UP)
             obs = products.setdefault(sku, ProductDayObservation(day, sku, item.get('offerName') or sku, sku))
-            obs.ordered_units += count
+            obs.ordered_units += active
             obs.ordered_revenue += float(amount)
             obs.cancellations_units += cancelled
-            obs.fulfillment_units[scheme] = obs.fulfillment_units.get(scheme, 0) + count
+            obs.fulfillment_units[scheme] = obs.fulfillment_units.get(scheme, 0) + active
     observations = list(products.values())
     points = [MetricPoint(connection_id, day, metric, sum(getattr(x, metric) for x in observations), unit, True)
               for metric, unit in [('ordered_units','units'),('ordered_revenue','RUB'),('cancellations_units','units')]]
@@ -129,11 +139,13 @@ def normalize_stocks(payload, scheme, names=None):
             if 'AVAILABLE' in counts:
                 available = counts['AVAILABLE']
             elif 'FIT' in counts and 'FREEZE' in counts:
-                available = counts['FIT'] - counts['FREEZE']
+                # A reserve larger than usable stock cannot leave sellable units.
+                available = max(0, counts['FIT'] - counts['FREEZE'])
+            elif counts.get('FIT') == 0:
+                # Explicit zero usable stock proves zero available even without FREEZE.
+                available = 0
             else:
-                raise ValueError('Нет доступного остатка: нужен AVAILABLE либо FIT и FREEZE')
-            if available < 0:
-                raise ValueError('Отрицательный доступный остаток')
+                raise ValueError(f'Склад {wid}, SKU {sku}: нет AVAILABLE или FIT+FREEZE; типы: {",".join(sorted(counts)) or "нет"}')
             reserve = counts.get('FREEZE', max(0, counts.get('FIT', available)-available))
             out.append(StockObservation(sku, names.get(sku,sku), available, reserve, scheme,
                 str(wid), sku, offer.get('updatedAt')))
@@ -277,8 +289,15 @@ def normalize_inbound(payload):
         if not isinstance(status,str) or not status:raise ValueError('Нет статуса поставки')
         for item in rows({'items':payload['items'].get(rid)},'items'):
             sku=item.get('offerId');counts=item.get('counters')
-            if not isinstance(sku,str) or not sku or not isinstance(counts,dict):raise ValueError('Нет количества в поставке')
-            planned=quantity(counts.get('planCount'));accepted=quantity(counts.get('factCount'))
+            if not isinstance(sku,str) or not sku or not isinstance(counts,dict):raise ValueError(f'Поставка {rid}: нет SKU или counters')
+            planned=quantity(counts.get('planCount'))
+            accepted_raw=counts.get('factCount')
+            # Before physical receipt, the optional factCount can be absent.
+            if accepted_raw is None and status in {'CREATED','VALIDATED','PUBLISHED','ACCEPTED_BY_WAREHOUSE_SYSTEM','NEED_PREPARATION','REGISTERED_IN_ELECTRONIC_QUEUE','CANCELLED','INVALID'}:
+                accepted_raw=0
+            if accepted_raw is None:
+                raise ValueError(f'Поставка {rid}, SKU {sku}, статус {status}: отсутствует factCount')
+            accepted=quantity(accepted_raw)
             # Parent virtual/cross-dock requests must never duplicate child stock.
             remaining=max(0,planned-accepted) if not request.get('childrenLinks') and status not in {'FINISHED','CANCELLED','INVALID'} else 0
             items.append({'marketplace_sku':sku,'planned_units':planned,'accepted_units':accepted,'remaining_units':remaining})

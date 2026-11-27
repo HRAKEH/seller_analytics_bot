@@ -230,8 +230,8 @@ class AppContext:
         async with self.operation_lock('reconciliation'):
             outcomes=[]
             outcomes += await self.collector.backfill_orders(start=start,end=end,shop_id=self.shop_id,
-                wb_connection_id=self.wb_connection_id,ozon_connection_id=self.ozon_connection_id)
-            if self.yandex_market_connection_id is not None:
+                wb_connection_id=self.wb_connection_id if marketplace in (None,'wildberries') else None,ozon_connection_id=self.ozon_connection_id if marketplace in (None,'ozon') else None)
+            if self.yandex_market_connection_id is not None and marketplace in (None,'yandex_market'):
                 current=start
                 while current<=end:
                     outcomes.append(await self.collector.collect_yandex_orders_day(self.yandex_market_connection_id,current,shop_id=self.shop_id))
@@ -261,16 +261,16 @@ class AppContext:
             return await self.collector.collect_advertising(start=start,end=end,
                 wb_connection_id=self.wb_connection_id,ozon_connection_id=self.ozon_connection_id)
 
-    async def collect_inbound(self, day: date | None = None):
+    async def collect_inbound(self, day: date | None = None, *, marketplace: str | None = None):
         if self.demo_mode(): return []
         async with self.operation_lock('inbound'):
-            outcomes=await self.collector.collect_inbound(shop_id=self.shop_id,wb_connection_id=self.wb_connection_id,
-                ozon_connection_id=self.ozon_connection_id,data_date=day)
-            if self.yandex_market_connection_id is not None:
+            outcomes=await self.collector.collect_inbound(shop_id=self.shop_id,wb_connection_id=self.wb_connection_id if marketplace in (None,'wildberries') else None,
+                ozon_connection_id=self.ozon_connection_id if marketplace in (None,'ozon') else None,data_date=day)
+            if self.yandex_market_connection_id is not None and marketplace in (None,'yandex_market'):
                 outcomes.append(await self.collector.collect_yandex_snapshot(self.yandex_market_connection_id,'inbound',day))
             return outcomes
 
-    async def collect_promotions(self, day: date | None = None):
+    async def collect_promotions(self, day: date | None = None, *, marketplace: str | None = None):
         if self.demo_mode(): return []
         async with self.operation_lock('promotions'):
             outcomes=await self.collector.collect_promotions(shop_id=self.shop_id,as_of=day or date.today(),

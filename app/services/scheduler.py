@@ -12,6 +12,7 @@ from app.reports.alerts import format_alert_digest_pages
 from app.services.alerts import AlertEngine
 from app.services.product_status import check_product_status
 from app.services.resilience import queue_retry, partial_error
+from app.services.performance import run_heavy_io
 from app.services.supply import evaluate_forecast_quality, build_supply_plan
 from app.services.actions import build_action_center
 from app.reports.dates import readable_text
@@ -96,16 +97,22 @@ async def collect_and_send_daily(bot: Bot, ctx: AppContext):
     await send_daily_cards(bot,ctx,day)
     try:
         promos=await ctx.collect_promotions(day)
-        if promos and not all(getattr(x,'ok',False) for x in promos):
-            raise RuntimeError(partial_error('promotions', promos))
+        for outcome in promos or []:
+            if not outcome.ok:
+                queue_retry(ctx.repository,ctx.settings,ctx.shop_id,'promotions',f'{day}:{outcome.marketplace}',
+                    {'day':day.isoformat(),'marketplace':outcome.marketplace},
+                    error=partial_error('promotions',[outcome]),delay_seconds=900)
     except Exception as exc:
         queue_retry(ctx.repository,ctx.settings,ctx.shop_id,'promotions',day.isoformat(),
             {'day':day.isoformat()},error=str(exc),delay_seconds=900)
         log.exception('Promotion calendar refresh failed; retry queued')
     try:
         inbound=await ctx.collect_inbound(day)
-        if inbound and not all(getattr(x,'ok',False) for x in inbound):
-            raise RuntimeError('inbound refresh remained partial')
+        for outcome in inbound or []:
+            if not outcome.ok:
+                queue_retry(ctx.repository,ctx.settings,ctx.shop_id,'inbound',f'{day}:{outcome.marketplace}',
+                    {'day':day.isoformat(),'marketplace':outcome.marketplace},
+                    error=partial_error('inbound',[outcome]),delay_seconds=600)
     except Exception as exc:
         queue_retry(ctx.repository,ctx.settings,ctx.shop_id,'inbound',day.isoformat(),
             {'day':day.isoformat()},error=str(exc),delay_seconds=600)
@@ -113,9 +120,9 @@ async def collect_and_send_daily(bot: Bot, ctx: AppContext):
     # Local learning is intentionally decoupled from remote APIs. Persist a
     # completed backtest and today's plan so calibration has durable evidence.
     try:
-        evaluate_forecast_quality(ctx.repository,ctx.shop_id,day,persist=True)
-        build_supply_plan(ctx.repository,ctx.shop_id,day,persist=True)
-        build_action_center(ctx.repository,ctx.shop_id,day,persist=True)
+        await run_heavy_io(evaluate_forecast_quality,ctx.repository,ctx.shop_id,day,persist=True)
+        await run_heavy_io(build_supply_plan,ctx.repository,ctx.shop_id,day,persist=True)
+        await run_heavy_io(build_action_center,ctx.repository,ctx.shop_id,day,persist=True)
     except Exception:
         log.exception('Forecast quality / supply calibration refresh failed')
 

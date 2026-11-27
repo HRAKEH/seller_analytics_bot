@@ -21,7 +21,7 @@ def order():
     return {'orderId':1,'campaignId':20,'fake':False,'creationDate':'2026-11-14T01:00:00+03:00',
         'status':'PROCESSING','programType':'FBS','items':[{'id':1,'offerId':'SKU','offerName':'Товар','count':3,
         'prices':{'payment':{'value':240,'currencyId':'RUR'},'cashback':{'value':60,'currencyId':'RUR'}},
-        'itemStatuses':[{'status':'CREATED','count':2},{'status':'CANCELLED','count':1}]}]}
+        'itemStatuses':[{'status':'CREATED','count':3}]}]}
 
 
 def setup(tmp_path):
@@ -33,7 +33,7 @@ def setup(tmp_path):
 
 def test_orders_amount_is_line_total_with_cashback_not_quantity_multiplied():
     points,obs=normalize_orders({'orders':[order()]},1,DAY.isoformat(),20)
-    assert {p.metric_key:p.value for p in points} == {'ordered_units':3,'ordered_revenue':300,'cancellations_units':1}
+    assert {p.metric_key:p.value for p in points} == {'ordered_units':3,'ordered_revenue':300,'cancellations_units':0}
     assert obs[0].fulfillment_units=={'FBS':3}
 
 
@@ -45,7 +45,7 @@ def test_dashboard_order_amount_includes_market_compensation_once():
                        'delivery':{'payment':{'value':90,'currencyId':'RUR'}}}
     points,obs=normalize_orders({'orders':[payload]},1,DAY.isoformat(),20)
     assert {p.metric_key:p.value for p in points} == {
-        'ordered_units':3,'ordered_revenue':1000,'cancellations_units':1}
+        'ordered_units':3,'ordered_revenue':1000,'cancellations_units':0}
     assert obs[0].ordered_revenue==1000
 
 
@@ -76,6 +76,46 @@ def test_invalid_market_compensation_is_not_silently_ignored(subsidy):
 def test_orders_reject_corrupt_or_cross_account_data(mutation):
     item=order();mutation(item)
     with pytest.raises(ValueError):normalize_orders({'orders':[item]},1,DAY.isoformat(),20)
+
+
+def test_cancelled_orders_and_partial_lines_are_excluded():
+    full=order()
+    full['status']='CANCELLED'
+    full['items'][0]['count']=2
+    full['items'][0]['itemStatuses']=[{'status':'CANCELLED','count':2}]
+    full['items'][0]['prices']={'payment':{'value':2700,'currencyId':'RUR'}}
+    active=order()
+    active['orderId']=2
+    active['items'][0]['count']=12
+    active['items'][0]['itemStatuses']=[{'status':'CREATED','count':12}]
+    active['items'][0]['prices']={'payment':{'value':9123,'currencyId':'RUR'}}
+    points,obs=normalize_orders({'orders':[full,active]},1,DAY.isoformat(),20)
+    assert {p.metric_key:p.value for p in points}=={
+        'ordered_units':12,'ordered_revenue':9123,'cancellations_units':2}
+    assert obs[0].fulfillment_units=={'FBS':12}
+    partial=order()
+    partial['items'][0]['itemStatuses']=[{'status':'CREATED','count':2},{'status':'CANCELLED','count':1}]
+    points,obs=normalize_orders({'orders':[partial]},1,DAY.isoformat(),20)
+    assert {p.metric_key:p.value for p in points}=={
+        'ordered_units':2,'ordered_revenue':200,'cancellations_units':1}
+
+
+def test_stock_explicit_zero_and_overreserve():
+    offer={'offerId':'SKU','stocks':[{'type':'FIT','count':0}]}
+    payload={'warehouses':[{'warehouseId':50,'offers':[offer]}]}
+    assert normalize_stocks(payload,'FBS')[0].available_units==0
+    offer['stocks']=[{'type':'FIT','count':2},{'type':'FREEZE','count':3}]
+    assert normalize_stocks(payload,'FBS')[0].available_units==0
+
+
+def test_supply_before_receipt_without_fact_count():
+    from app.services.yandex_market import normalize_inbound
+    payload={'requests':[{'id':{'id':1},'type':'SUPPLY','status':'CREATED'}],
+             'items':{'1':[{'offerId':'SKU','counters':{'planCount':10}}]}}
+    assert normalize_inbound(payload)[0]['items'][0]['remaining_units']==10
+    payload['requests'][0]['status']='WAREHOUSE_HANDLING'
+    with pytest.raises(ValueError,match='factCount'):
+        normalize_inbound(payload)
 
 
 def test_stocks_do_not_double_count_fit_and_available():

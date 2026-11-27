@@ -185,7 +185,7 @@ def format_daily_card(repo, shop_id: int, report: DailyReport) -> DailyCardText:
         elif s.marketplace=='yandex_market':
             finance=None
             summary.append('🛒 Заказано: <b>'+units+'</b> · '+(rubles(s.ordered_revenue) if s.ordered_revenue is not None else '⏳ нет суммы'))
-            details.append('Источник: заказы Яндекс Маркета по дате создания (Москва).')
+            details.append('Источник: заказы Яндекс Маркета по дате создания (Москва). После обновления отменённые единицы исключаются из суммы и количества.')
             details.append('Сумма оплаты и баллов Плюса за позиции; без доставки, субсидий и удержаний.')
             accruals.append('Выплаты и удержания не рассчитаны по сумме заказов.')
         else:

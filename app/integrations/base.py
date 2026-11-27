@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from typing import Any
 import httpx
-from app.services.performance import timed_api
+from app.services.performance import timed_api, observe
 
 log=logging.getLogger(__name__)
 
@@ -141,7 +141,9 @@ class MarketplaceClient:
                             429,0)
                     await asyncio.sleep(due_wait)
                 try:
+                    network_started=loop.time()
                     response = await self._client.request(method, url, params=params, json=json, headers=headers)
+                    observe('api_network:'+self.source,loop.time()-network_started,response.status_code)
                 except (httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError) as exc:
                     self._shared_rate_next[state_key]=loop.time()+interval
                     if attempt > self.max_retries:

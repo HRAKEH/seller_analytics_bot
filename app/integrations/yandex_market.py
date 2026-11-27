@@ -212,6 +212,11 @@ class YandexMarketClient(MarketplaceClient):
             rid=(row.get('id') or {}).get('id') if isinstance(row.get('id'),dict) else None
             if type(rid) is not int or rid<=0:
                 return FetchResult.failure(self.source,'Нет ID заявки на поставку',None,attempts)
+            # Cancelled/invalid requests cannot contribute inbound stock.
+            # Keep their header for reconciliation, without a useless detail request.
+            if row.get('status') in {'CANCELLED','INVALID'}:
+                items[str(rid)]=[]
+                continue
             detail=await self._pages(f'/v2/campaigns/{self.campaign_id}/supply-requests/items','items',body={'requestId':rid},limit=100)
             attempts+=detail.attempts
             if not detail.ok:return detail

@@ -25,7 +25,7 @@ def _all_ok(outcomes) -> bool:
 
 
 def partial_error(job_type: str, outcomes) -> str:
-    if job_type not in {'promotions', 'advertising'}:
+    if job_type not in {'promotions', 'advertising', 'inbound'}:
         return f'{job_type} retry remains partial'
     failures = []
     for outcome in outcomes:
@@ -33,7 +33,7 @@ def partial_error(job_type: str, outcomes) -> str:
             continue
         market = {'wildberries': 'WB', 'ozon': 'Ozon','yandex_market':'Яндекс Маркет'}.get(outcome.marketplace, outcome.marketplace)
         failures.append(f'{market}: {outcome.message}')
-    label = 'Акции' if job_type == 'promotions' else 'Реклама'
+    label = {'promotions':'Акции','advertising':'Реклама','inbound':'Поставки'}[job_type]
     return label+' обновлены не полностью. ' + ('; '.join(failures) or 'Нет результата загрузки.')
 
 
@@ -90,10 +90,18 @@ async def execute_retry_job(bot, registry, job: dict) -> None:
             outcomes=await ctx.collect_inventory(day)
         elif job_type=='inbound':
             raw=payload.get('day'); day=date.fromisoformat(str(raw)) if raw else None
-            outcomes=await ctx.collect_inbound(day)
+            selected=payload.get('marketplace')
+            if selected in {'wildberries','ozon','yandex_market'}:
+                outcomes=await ctx.collect_inbound(day,marketplace=selected)
+            else:
+                outcomes=await ctx.collect_inbound(day)
         elif job_type=='promotions':
             raw=payload.get('day'); day=date.fromisoformat(str(raw)) if raw else None
-            outcomes=await ctx.collect_promotions(day)
+            selected=payload.get('marketplace')
+            if selected in {'wildberries','ozon','yandex_market'}:
+                outcomes=await ctx.collect_promotions(max(day, date.today()) if day else None,marketplace=selected)
+            else:
+                outcomes=await ctx.collect_promotions(max(day, date.today()) if day else None)
         elif job_type=='finance':
             start=date.fromisoformat(str(payload['start'])); end=date.fromisoformat(str(payload['end']))
             outcomes=await ctx.collect_finance(start,end)

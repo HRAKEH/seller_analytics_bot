@@ -89,7 +89,7 @@ class CollectionService:
         try:
             points,observations=normalize_orders(result.data,connection_id,ds,client.campaign_id)
             # Do not persist buyer addresses, names or phone numbers from orders.
-            rid=self.repo.record_success(connection_id,endpoint,ds,result.data,points,
+            rid=self.repo.record_success(connection_id,endpoint,ds,{'normalizer':'ym_exclude_cancelled_v1','payload':result.data},points,
                 attempts=result.attempts,store_raw=False)
             self._save_product_observations(shop_id=shop_id,connection_id=connection_id,
                 marketplace=market,source_run_id=rid,observations=observations)
@@ -134,9 +134,9 @@ class CollectionService:
                 self.repo.upsert_promotions(connection_id,rid,market,normalized,complete_external_ids=[x['external_promotion_id'] for x in normalized])
             else:
                 self.repo.upsert_inbound_shipments(connection_id,rid,market,normalized,active_external_ids=[x['external_supply_id'] for x in normalized])
-        except (ValueError,KeyError,TypeError):
+        except (ValueError,KeyError,TypeError) as exc:
             return self._failure(connection_id,endpoint,ds,market,
-                FetchResult.failure(market,'Неполные данные акций или поставок',result.status_code,result.attempts))
+                FetchResult.failure(market,f'Нормализация {kind}: {str(exc)[:250]}',result.status_code,result.attempts))
         return CollectionOutcome(market,ds,True,rid,kind+' loaded')
 
     async def collect_yandex_inventory(self, connection_id, *, shop_id, day=None):
@@ -1157,7 +1157,7 @@ class CollectionService:
                     outcomes.append(self._failure(wb_connection_id,endpoint,ds,'wildberries',result))
                 else:
                     normalized=[]; raw=[]; attempts=result.attempts
-                    active_external_ids=[]
+                    active_external_ids=[]; detail_errors=[]
                     for row in result.data or []:
                         if row.get('supplyID') is not None:
                             active_external_ids.append(f"supply:{row.get('supplyID')}")
@@ -1166,11 +1166,14 @@ class CollectionService:
                         supply_id=row.get('supplyID')
                         preorder_id=row.get('preorderID')
                         lookup=supply_id if supply_id is not None else preorder_id
-                        if lookup is None: continue
+                        if lookup is None:
+                            detail_errors.append('нет ID поставки')
+                            continue
                         goods=await self.wb.fbw_supply_goods_all(int(lookup),is_preorder_id=supply_id is None)
                         attempts += goods.attempts
                         if not goods.ok:
                             # A single malformed/inaccessible supply should not erase all known inbound state.
+                            detail_errors.append(f'поставка {lookup}: {goods.error or goods.status_code}')
                             continue
                         normalized.append(normalize_wb_supply(row,goods.data or []))
                         raw.append({'supply':row,'goods':goods.data or []})
@@ -1180,7 +1183,7 @@ class CollectionService:
                         wb_connection_id,rid,'wildberries',normalized,active_external_ids=active_external_ids)
                     complete=len(normalized)==len(result.data or [])
                     outcomes.append(CollectionOutcome('wildberries',ds,complete,rid,f'inbound supplies loaded: {len(normalized)}' +
-                        ('; часть поставок не обновлена, ранее сохранённые данные сохранены' if not complete else '')))
+                        ('; часть поставок не обновлена: '+ '; '.join(detail_errors)[:500] if not complete else '')))
 
         if ozon_connection_id is not None:
             endpoint='supply-order/inbound'
@@ -1193,10 +1196,11 @@ class CollectionService:
                     outcomes.append(self._failure(ozon_connection_id,endpoint,ds,'ozon',listed))
                 else:
                     order_ids=list((listed.data or {}).get('order_ids') or [])
-                    normalized=[]; raw=[]; attempts=listed.attempts; partial=False
+                    normalized=[]; raw=[]; attempts=listed.attempts; partial=False; detail_errors=[]
                     for i in range(0,len(order_ids),100):
                         details=await self.ozon.supply_orders_get(order_ids[i:i+100]); attempts += details.attempts
                         if not details.ok:
+                            detail_errors.append(details.error or 'не получены детали Ozon')
                             partial=True; continue
                         orders=(details.data or {}).get('orders') or []
                         for order in orders:
@@ -1204,12 +1208,15 @@ class CollectionService:
                             for supply in order.get('supplies') or []:
                                 bundle_id=str((supply or {}).get('bundle_id') or '')
                                 if not bundle_id:
+                                    detail_errors.append('нет bundle_id')
                                     partial=True; order_complete=False; continue
                                 bundle=await self.ozon.supply_bundle_all(bundle_id); attempts += bundle.attempts
                                 if not bundle.ok:
+                                    detail_errors.append(f'комплект {bundle_id}: {bundle.error or bundle.status_code}')
                                     partial=True; order_complete=False; continue
                                 items=(bundle.data or {}).get('items')
                                 if not isinstance(items,list):
+                                    detail_errors.append(f'комплект {bundle_id}: нет списка товаров')
                                     partial=True; order_complete=False; continue
                                 bundles[bundle_id]=items
                             # An inaccessible bundle is unknown, not an empty
@@ -1223,7 +1230,7 @@ class CollectionService:
                         ozon_connection_id,rid,'ozon',normalized,
                         active_external_ids=None if partial else [x['external_supply_id'] for x in normalized])
                     note=f'inbound supplies loaded: {len(normalized)}'
-                    if partial:note+='; часть поставок не обновлена, ранее сохранённые данные сохранены'
+                    if partial:note+='; часть поставок не обновлена: '+ '; '.join(detail_errors)[:500]
                     outcomes.append(CollectionOutcome('ozon',ds,not partial,rid,note))
         return outcomes
 

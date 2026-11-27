@@ -46,7 +46,14 @@ def timed_api(fn):
             status = result.status_code
             return result
         finally:
-            observe('api:' + self.source, monotonic() - start, status)
+            elapsed=monotonic() - start
+            observe('api:' + self.source, elapsed, status)
+            # rate_key is an internal method group, never a URL or a credential.
+            key=str(kwargs.get('rate_key','default'))
+            if key.startswith('ping:'):
+                key='ping'
+            if key.replace('_','').replace('-','').isalnum() and len(key)<=48:
+                observe('api_method:'+self.source+':'+key,elapsed,status)
     return wrapped
 
 
@@ -165,7 +172,7 @@ def format_performance(data):
              'SQLite: ' + mb(data['db_bytes']) + ' · WAL: ' + mb(data['wal_bytes']),
              f'Тяжёлые операции: {data["heavy_active"]} · в очереди: {data["heavy_waiting"]}']
     for key, item in data['timings'].items():
-        if key.startswith('api:') or key == 'report_refresh' or key == 'telegram_update' or key.startswith('heavy:'):
-            suffix = f' · итоговых HTTP 429: {item["rate_limited"]}' if key.startswith('api:') else ''
+        if key.startswith(('api:','api_method:','api_network:')) or key == 'report_refresh' or key == 'telegram_update' or key.startswith('heavy:'):
+            suffix = f' · итоговых HTTP 429: {item["rate_limited"]}' if key.startswith(('api:','api_method:','api_network:')) else ''
             lines.append(f'{key}: среднее {item["avg_seconds"]:.2f} с · макс. {item["max_seconds"]:.2f} с · n={item["count"]}' + suffix)
     return '\n'.join(lines)
