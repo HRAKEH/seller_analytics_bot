@@ -151,7 +151,7 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
 
     def keyboard_for(message: types.Message):
         uid=message.from_user.id if message.from_user else 0
-        return main_keyboard(ctx.repository.role_for_user(uid,ctx.shop_id))
+        return main_keyboard(ctx.repository.role_for_user(uid,ctx.shop_id),system_owner=is_system_owner(message))
 
     async def send(message: types.Message, text: str, *, permission='view', system_owner_only=False, reply_markup=None):
         required=action_permission(request_action(message))
@@ -578,7 +578,7 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
             await callback.message.edit_text(f'✅ Текущий магазин: <b>#{shop.id} {escape(shop.name)}</b>',parse_mode='HTML')
             role=registry.repository.role_for_user(callback.from_user.id,shop_id) or 'viewer'
             await navigation.show(callback.message,'🏠 Выберите раздел:',actor_user=callback.from_user,
-                                  reply_markup=main_keyboard(role))
+                                  reply_markup=main_keyboard(role,system_owner=is_tech_admin(ctx.settings,callback.from_user.id) and callback.message.chat.type=='private'))
 
     @dp.callback_query(F.data.startswith('shop:archive:'))
     async def cb_shop_archive_pick(callback: types.CallbackQuery):
@@ -1052,7 +1052,7 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
             'Продажи, выкупы и выплаты не смешиваются с заказами.\n'
             + setup_hint + readiness_hint +
             '\nВсе функции доступны через кнопки. Выберите раздел:',
-            parse_mode='HTML', reply_markup=main_keyboard(role_for(message)))
+            parse_mode='HTML', reply_markup=main_keyboard(role_for(message),system_owner=is_system_owner(message)))
 
     @dp.message(Command('day'))
     async def cmd_day(message: types.Message):
@@ -1762,7 +1762,8 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
 
     @dp.message(F.text == MENU_SERVICE)
     async def menu_service(message: types.Message):
-        await show_submenu(message,'🛠 <b>Ещё</b>\nСкачать данные магазина и служебные функции.',service_keyboard)
+        if not is_system_owner(message): return await show_main_menu(message)
+        await show_submenu(message,'🛠 <b>Ещё</b>\nТехнические функции. Выгрузка находится в отчётах.',service_keyboard)
 
     @dp.message(Command('tech'))
     async def cmd_tech(message: types.Message):

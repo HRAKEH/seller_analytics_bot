@@ -106,7 +106,7 @@ SECTIONS={
     'supply': ('Поставки','План пополнения и поставки WB/Ozon в пути.','Перед закупкой обновите остатки и поставки. Рекомендация зависит от истории заказов, срока доставки, страхового запаса и известных дат прибытия.'),
     'control': ('Проблемы','Предупреждения и подсказки на сегодня.','«Активные проблемы» показывает причины и единицы измерения. «Что делать сегодня» расставляет приоритеты и показывает исходные цифры в деталях действия.'),
     'shop': ('Магазин','Выбор магазина, настройки и доступ пользователей.','Проверьте выбранный магазин перед обновлением. «Что настроено» показывает недостающие данные, а «Проверить API» проверяет подключения.'),
-    'service': ('Ещё','Экспорт и технические функции.','Экспорт скачивает сохранённые данные. Технический раздел нужен для диагностики, резервных копий и работы с ошибками.'),
+    'service': ('Ещё','Технические функции.','Технический раздел нужен для диагностики, резервных копий и работы с ошибками. Экспорт находится в разделе «Отчёты».'),
     'technical': ('Техническое','Проверка работы бота и резервные копии.','Открывайте при ошибках или восстановлении. Функции управления всем экземпляром доступны только его владельцу.'),
 }
 
@@ -126,7 +126,7 @@ class MenuHelp:
     def menu_keyboard(self,message,section):
         owner=self.ctx.repository.can_user(message.from_user.id,self.ctx.shop_id,'shop_lifecycle')
         if section=='root':
-            reply=self.menus[section](self.role(message))
+            reply=self.menus[section](self.role(message),system_owner=self.system_owner(message))
             if owner and not self.ctx.repository.can_user(message.from_user.id,self.ctx.shop_id,'view'):
                 rows=[[item for item in row if item.text==MENU_SHOP] for row in reply.keyboard]
                 reply=reply.model_copy(update={'keyboard':[row for row in rows if row]})
@@ -205,7 +205,7 @@ class MenuHelp:
             await state.clear();await callback.answer();return await self.main(message)
         if not self.ctx.repository.can_user(callback.from_user.id,self.ctx.shop_id,permission) and not global_navigation:
             return await callback.answer('Функция недоступна для вашей роли.',show_alert=True)
-        if (section=='technical' or permission=='technical') and not self.system_owner(message):
+        if (section in {'technical','service'} or key=='service_menu' or permission=='technical') and not self.system_owner(message):
             return await callback.answer('Технические функции доступны владельцу всего бота.',show_alert=True)
         if key!='section' and key not in self.visible_keys(message,section):
             return await callback.answer('Функция недоступна для вашей роли в этом разделе.',show_alert=True)

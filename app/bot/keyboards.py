@@ -162,20 +162,21 @@ def _build(buttons: tuple[str, ...] | list[str], *, columns: int = 2, role=None,
     return kb.as_markup(resize_keyboard=True)
 
 
-def main_keyboard(role: str | None = 'owner'):
+def main_keyboard(role: str | None = 'owner', *, system_owner: bool = False):
     role = _role(role)
-    buttons = [MENU_REPORTS, MENU_PRODUCTS, MENU_MONEY, MENU_SUPPLY, MENU_CONTROL, MENU_SHOP, MENU_SERVICE]
+    buttons = [MENU_REPORTS, MENU_PRODUCTS, MENU_MONEY, MENU_SUPPLY, MENU_CONTROL, MENU_SHOP]
+    if system_owner: buttons.append(MENU_SERVICE)
     return _build(buttons, columns=2, role=role)
 
 
 def menu_button_texts() -> frozenset[str]:
     """Known reply-button taps; arbitrary typed arguments are never removed."""
-    texts=set(COMMAND_BUTTONS.values()) | {BACK, '📊 Сегодня'}
+    texts=set(COMMAND_BUTTONS.values()) | {BACK, '📊 Сегодня', MENU_SERVICE}
     keyboards=(main_keyboard, reports_keyboard, products_keyboard, money_keyboard,
                supply_keyboard, control_keyboard, shop_keyboard, service_keyboard,
                technical_keyboard)
     for keyboard in keyboards:
-        markup=keyboard('owner') if keyboard is main_keyboard else keyboard('owner',system_owner=True)
+        markup=keyboard('owner',system_owner=True)
         texts.update(button.text for row in markup.keyboard for button in row)
     return frozenset(texts)
 
@@ -185,7 +186,7 @@ def reports_keyboard(role: str | None = 'owner', *, system_owner: bool = False):
     buttons = [
         '📊 Вчера', '📅 Неделя',
         '📅 Месяц', '🗓 Другая дата',
-        '📜 Что уже загружено',
+        '📜 Что уже загружено', COMMAND_BUTTONS['export'],
     ]
     if can_role(role,'operate'):
         buttons += ['🔄 Обновить вчера', '📥 Догрузить данные', COMMAND_BUTTONS['refresh']]
@@ -268,9 +269,7 @@ def shop_keyboard(role: str | None = 'owner', *, system_owner: bool = False, sho
 
 def service_keyboard(role: str | None = 'owner', *, system_owner: bool = False):
     role = _role(role)
-    buttons = [COMMAND_BUTTONS['export']]
-    if system_owner:
-        buttons += [MENU_TECH]
+    buttons = [MENU_TECH] if system_owner else []
     buttons += [BACK, HOME]
     return _build(buttons,role=role,system_owner=system_owner)
 
