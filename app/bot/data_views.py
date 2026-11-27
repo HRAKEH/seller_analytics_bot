@@ -17,6 +17,7 @@ from app.reports.wb_accruals import build_wb_accrual_ledger, export_wb_accrual_l
 from app.reports.accrual_cards import build_accrual_card
 from app.reports.dates import display_day
 from app.services.exporting import export_xlsx, export_csv_zip
+from app.services.performance import run_heavy_io
 from app.access import is_tech_admin
 from app.services.spreadsheet_format import SHEETS, export_filename
 
@@ -174,11 +175,11 @@ class DataViewController:
                 name=export_filename('Данные',p['shop_name'],start,p['end'],'.xlsx' if fmt=='xlsx' else '_CSV.zip')
                 path=Path(folder)/name
                 exporter=export_xlsx if fmt=='xlsx' else export_csv_zip
-                await asyncio.to_thread(exporter,repo,shop_id,end,days,path,include_finance=finance,include_technical=technical)
+                await run_heavy_io(exporter,repo,shop_id,end,days,path,include_finance=finance,include_technical=technical)
                 caption='📤 Данные магазина'
             else:
                 builder=build_accrual_ledger if view['kind']=='ozon' else build_wb_accrual_ledger
-                ledger=builder(repo,shop_id,p['start'],p['end'],source_run_ids=p['source_run_ids'])
+                ledger=await run_heavy_io(builder,repo,shop_id,p['start'],p['end'],source_run_ids=p['source_run_ids'])
                 label='Ozon' if view['kind']=='ozon' else 'WB'
                 start=p['start']
                 file_start,file_end=start,p['end']
@@ -191,7 +192,7 @@ class DataViewController:
                 name=export_filename(prefix,p['shop_name'],file_start,file_end,'.'+fmt)
                 path=Path(folder)/name
                 exporter=export_accrual_ledger if view['kind']=='ozon' else export_wb_accrual_ledger
-                await asyncio.to_thread(exporter,ledger,path,timezone=p['timezone'],shop_name=p['shop_name'])
+                await run_heavy_io(exporter,ledger,path,timezone=p['timezone'],shop_name=p['shop_name'])
                 caption='🧾 Начисления '+label
             if not self._allowed(view,user) or finance and not repo.can_user(user,shop_id,'finance') or (
                     technical and not is_tech_admin(self.context.settings,user)):

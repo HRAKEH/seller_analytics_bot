@@ -10,6 +10,7 @@ from zoneinfo import ZoneInfo
 
 from app.bot.report_cards import send_daily_cards
 from app.services.observability import set_log_context, reset_log_context
+from app.services.performance import run_heavy_io
 
 log=logging.getLogger(__name__)
 
@@ -190,10 +191,10 @@ async def database_maintenance_loop(registry):
     while True:
         try:
             if not registry.maintenance_lock.locked():
-                repo.db.checkpoint('PASSIVE')
+                await run_heavy_io(repo.db.checkpoint,'PASSIVE')
                 today=datetime.now(timezone.utc).date()
                 if last_quick_check != today:
-                    if not repo.db.quick_check():
+                    if not await run_heavy_io(repo.db.quick_check):
                         raise DatabaseIntegrityError('SQLite quick_check FAILED; stopping process to avoid writes to a damaged database')
                     log.info('SQLite quick_check OK')
                     last_quick_check=today

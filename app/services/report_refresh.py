@@ -1,6 +1,7 @@
 """One isolated refresh of report sources, with progress and partial results."""
 from __future__ import annotations
 import asyncio
+from app.services.performance import timed_async
 import logging
 from dataclasses import dataclass
 from datetime import date, timedelta
@@ -17,6 +18,7 @@ class RefreshStage:
     skipped: bool = False
 
 
+@timed_async('report_refresh')
 async def refresh_reports(ctx, start: date, end: date, progress=None, *, include_finance=True) -> tuple[RefreshStage,...]:
     if end < start or (end-start).days >= 31:
         raise ValueError('Обновление отчётов: от 1 до 31 дня')

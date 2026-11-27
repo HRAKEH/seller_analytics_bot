@@ -44,7 +44,7 @@ class Repository:
     # --- tenants / shops -------------------------------------------------
     def ensure_seller(self, telegram_user_id: int, name: str = "Seller", timezone_name: str = "Europe/Moscow") -> Seller:
         now = utcnow()
-        with self.db.connect() as c:
+        with self.db.session() as c:
             c.execute("""INSERT INTO sellers(telegram_user_id,name,timezone,created_at)
                          VALUES(?,?,?,?) ON CONFLICT(telegram_user_id) DO NOTHING""",
                       (telegram_user_id, name, timezone_name, now))
@@ -54,14 +54,14 @@ class Repository:
     def ensure_shop(self, seller_id: int, name: str = "Основной магазин", currency: str = "RUB",
                     credential_profile: str = "DEFAULT") -> Shop:
         now = utcnow(); profile=(credential_profile or "DEFAULT").strip().upper()[:64]
-        with self.db.connect() as c:
+        with self.db.session() as c:
             c.execute("""INSERT INTO shops(seller_id,name,currency,created_at,credential_profile) VALUES(?,?,?,?,?)
                          ON CONFLICT(seller_id,name) DO NOTHING""", (seller_id, name, currency, now, profile))
             r = c.execute("SELECT * FROM shops WHERE seller_id=? AND name=?", (seller_id, name)).fetchone()
         return self._shop_from_row(r)
 
     def get_shop(self, shop_id: int) -> Shop | None:
-        with self.db.connect() as c:
+        with self.db.session() as c:
             r=c.execute("SELECT * FROM shops WHERE id=?",(shop_id,)).fetchone()
         return self._shop_from_row(r) if r else None
 
@@ -72,7 +72,7 @@ class Repository:
         if active_only:
             sql += " AND active=1"
         sql += " ORDER BY id"
-        with self.db.connect() as c:
+        with self.db.session() as c:
             rows=c.execute(sql,params).fetchall()
         return [self._shop_from_row(r) for r in rows]
 
@@ -89,7 +89,7 @@ class Repository:
         sql='SELECT * FROM shops WHERE active=0'; params=[]
         if seller_id is not None:
             sql += ' AND seller_id=?'; params.append(int(seller_id))
-        with self.db.connect() as c:
+        with self.db.session() as c:
             rows=c.execute(sql+' ORDER BY id',params).fetchall()
         return [self._shop_from_row(r) for r in rows]
 
@@ -103,7 +103,7 @@ class Repository:
             (int(actor_id),)).fetchone() is not None
 
     def is_shop_owner(self, actor_id: int) -> bool:
-        with self.db.connect() as c:
+        with self.db.session() as c:
             return self._is_shop_owner(c,actor_id)
 
     def _shop_for_owner(self, c, actor_id: int, shop_id: int) -> Shop:
@@ -116,7 +116,7 @@ class Repository:
 
     def archive_shop(self, actor_id: int, shop_id: int) -> Shop:
         """Soft-delete a shop while preserving all business data and access rows."""
-        with self.db.connect() as c:
+        with self.db.session() as c:
             c.execute('BEGIN IMMEDIATE')
             shop=self._shop_for_owner(c,actor_id,shop_id)
             if not shop.active:
@@ -131,7 +131,7 @@ class Repository:
         return self._shop_from_row(row)
 
     def restore_shop(self, actor_id: int, shop_id: int) -> Shop:
-        with self.db.connect() as c:
+        with self.db.session() as c:
             c.execute('BEGIN IMMEDIATE')
             shop=self._shop_for_owner(c,actor_id,shop_id)
             if shop.active:
@@ -142,7 +142,7 @@ class Repository:
 
     def delete_archived_shop(self, actor_id: int, shop_id: int) -> Shop:
         """Permanently delete an archived shop; FK cascades remove its dependent data."""
-        with self.db.connect() as c:
+        with self.db.session() as c:
             c.execute('BEGIN IMMEDIATE')
             shop=self._shop_for_owner(c,actor_id,shop_id)
             if shop.active:
@@ -156,21 +156,21 @@ class Repository:
         clean=(profile or "DEFAULT").strip().upper()[:64]
         if not clean.replace('_','').isalnum():
             raise ValueError('credential profile may contain only letters, numbers and underscore')
-        with self.db.connect() as c:
+        with self.db.session() as c:
             c.execute("UPDATE shops SET credential_profile=? WHERE id=?",(clean,shop_id))
             r=c.execute("SELECT * FROM shops WHERE id=?",(shop_id,)).fetchone()
         if not r: raise ValueError('shop not found')
         return self._shop_from_row(r)
 
     def selected_shop_for_user(self, telegram_user_id: int, fallback_shop_id: int | None = None) -> int | None:
-        with self.db.connect() as c:
+        with self.db.session() as c:
             r=c.execute("""SELECT us.shop_id FROM user_shop_selection us JOIN shops s ON s.id=us.shop_id
                              WHERE us.telegram_user_id=? AND s.active=1""",(telegram_user_id,)).fetchone()
             if r: return int(r['shop_id'])
         return fallback_shop_id
 
     def select_shop_for_user(self, telegram_user_id: int, shop_id: int) -> None:
-        with self.db.connect() as c:
+        with self.db.session() as c:
             r=c.execute("SELECT id FROM shops WHERE id=? AND active=1",(shop_id,)).fetchone()
             if not r: raise ValueError('shop not found or inactive')
             c.execute("""INSERT INTO user_shop_selection(telegram_user_id,shop_id,updated_at) VALUES(?,?,?)
@@ -181,7 +181,7 @@ class Repository:
     # --- users / role-based access -------------------------------------
     def ensure_bot_user(self, telegram_user_id: int, display_name: str = '') -> None:
         now=utcnow(); clean=(display_name or '').strip()[:200]
-        with self.db.connect() as c:
+        with self.db.session() as c:
             c.execute("""INSERT INTO bot_users(telegram_user_id,display_name,active,created_at,updated_at)
                          VALUES(?,?,1,?,?)
                          ON CONFLICT(telegram_user_id) DO UPDATE SET
@@ -194,7 +194,7 @@ class Repository:
         role=normalize_role(role)
         self.ensure_bot_user(telegram_user_id,display_name)
         now=utcnow()
-        with self.db.connect() as c:
+        with self.db.session() as c:
             if not c.execute('SELECT 1 FROM shops WHERE id=? AND active=1',(shop_id,)).fetchone():
                 raise ValueError('shop not found or inactive')
             c.execute("""INSERT INTO user_shop_access(telegram_user_id,shop_id,role,created_at,updated_at)
@@ -203,7 +203,7 @@ class Repository:
                       (int(telegram_user_id),int(shop_id),role,now,now))
 
     def revoke_shop_access(self, telegram_user_id: int, shop_id: int) -> bool:
-        with self.db.connect() as c:
+        with self.db.session() as c:
             cur=c.execute('DELETE FROM user_shop_access WHERE telegram_user_id=? AND shop_id=?',
                           (int(telegram_user_id),int(shop_id)))
             selected=c.execute('SELECT shop_id FROM user_shop_selection WHERE telegram_user_id=?',(int(telegram_user_id),)).fetchone()
@@ -212,7 +212,7 @@ class Repository:
             return bool(cur.rowcount)
 
     def role_for_user(self, telegram_user_id: int, shop_id: int) -> str | None:
-        with self.db.connect() as c:
+        with self.db.session() as c:
             r=c.execute("""SELECT usa.role FROM user_shop_access usa JOIN bot_users bu
                            ON bu.telegram_user_id=usa.telegram_user_id
                            JOIN shops s ON s.id=usa.shop_id
@@ -221,7 +221,7 @@ class Repository:
         return str(r['role']) if r else None
 
     def shops_for_user(self, telegram_user_id: int) -> list[dict[str,Any]]:
-        with self.db.connect() as c:
+        with self.db.session() as c:
             rows=c.execute("""SELECT s.*,usa.role FROM user_shop_access usa
                 JOIN bot_users bu ON bu.telegram_user_id=usa.telegram_user_id
                 JOIN shops s ON s.id=usa.shop_id
@@ -239,7 +239,7 @@ class Repository:
             if clean:
                 sql += ' AND usa.role IN ('+','.join('?' for _ in clean)+')'; params.extend(clean)
         sql += " ORDER BY CASE usa.role WHEN 'owner' THEN 1 WHEN 'accountant' THEN 2 WHEN 'manager' THEN 3 ELSE 4 END,bu.telegram_user_id"
-        with self.db.connect() as c:
+        with self.db.session() as c:
             rows=c.execute(sql,params).fetchall()
         return [dict(r) for r in rows]
 
@@ -256,7 +256,7 @@ class Repository:
             raise ValueError('Telegram ID должен быть положительным числом.')
         role=normalize_role(role) if role is not None else None
         now=utcnow()
-        with self.db.connect() as c:
+        with self.db.session() as c:
             c.execute('BEGIN IMMEDIATE')
             actor=c.execute('''SELECT a.role FROM user_shop_access a JOIN bot_users u
                 ON u.telegram_user_id=a.telegram_user_id JOIN shops s ON s.id=a.shop_id
@@ -306,13 +306,13 @@ class Repository:
         return int(allowed[0]['id'])
 
     def navigation_message(self, bot_id: int, chat_id: int, user_id: int) -> int | None:
-        with self.db.connect() as c:
+        with self.db.session() as c:
             row=c.execute('SELECT message_id FROM telegram_navigation WHERE bot_id=? AND chat_id=? AND user_id=?',
                           (bot_id,chat_id,user_id)).fetchone()
         return int(row['message_id']) if row else None
 
     def save_navigation_message(self, bot_id: int, chat_id: int, user_id: int, message_id: int) -> None:
-        with self.db.connect() as c:
+        with self.db.session() as c:
             c.execute('''INSERT INTO telegram_navigation(bot_id,chat_id,user_id,message_id,updated_at)
                 VALUES(?,?,?,?,?) ON CONFLICT(bot_id,chat_id,user_id) DO UPDATE SET
                 message_id=excluded.message_id,updated_at=excluded.updated_at''',
@@ -320,12 +320,12 @@ class Repository:
 
     def clear_navigation_message(self, bot_id: int, chat_id: int, user_id: int, message_id: int) -> None:
         # Compare the ID: a slow report must never clear a newer menu.
-        with self.db.connect() as c:
+        with self.db.session() as c:
             c.execute('DELETE FROM telegram_navigation WHERE bot_id=? AND chat_id=? AND user_id=? AND message_id=?',
                       (bot_id,chat_id,user_id,message_id))
 
     def report_card(self, bot_id: int, chat_id: int, message_id: int) -> dict[str,Any] | None:
-        with self.db.connect() as c:
+        with self.db.session() as c:
             row=c.execute('''SELECT * FROM telegram_report_cards
                 WHERE bot_id=? AND chat_id=? AND message_id=?''',
                 (bot_id,chat_id,message_id)).fetchone()
@@ -339,7 +339,7 @@ class Repository:
             raise ValueError('invalid report section')
         date.fromisoformat(report_day)
         now=utcnow()
-        with self.db.connect() as c:
+        with self.db.session() as c:
             c.execute('''INSERT INTO telegram_report_cards
                 (bot_id,chat_id,message_id,shop_id,report_day,summary_html,details_html,
                  accruals_html,section,status_note,created_at,updated_at,page)
@@ -360,7 +360,7 @@ class Repository:
         if permission not in PERMISSIONS or not pages:
             raise ValueError('invalid paged report')
         coarse=permission if permission in {'view','operate','manage'} else 'view'
-        with self.db.connect() as c:
+        with self.db.session() as c:
             c.execute('''INSERT INTO telegram_paged_reports
                 (bot_id,chat_id,message_id,shop_id,user_id,permission,system_owner_only,
                  pages_json,markup_json,current_page,created_at,capability) VALUES(?,?,?,?,?,?,?,?,?,0,?,?)''',
@@ -368,13 +368,13 @@ class Repository:
                  json.dumps(pages,ensure_ascii=False),json.dumps(markup) if markup else None,utcnow(),permission))
 
     def paged_report(self, bot_id: int, chat_id: int, message_id: int) -> dict[str,Any] | None:
-        with self.db.connect() as c:
+        with self.db.session() as c:
             row=c.execute('SELECT * FROM telegram_paged_reports WHERE bot_id=? AND chat_id=? AND message_id=?',
                           (bot_id,chat_id,message_id)).fetchone()
         return dict(row) if row else None
 
     def set_report_page(self, bot_id: int, chat_id: int, message_id: int, page: int) -> None:
-        with self.db.connect() as c:
+        with self.db.session() as c:
             c.execute('UPDATE telegram_paged_reports SET current_page=? WHERE bot_id=? AND chat_id=? AND message_id=?',
                       (max(0,int(page)),bot_id,chat_id,message_id))
 
@@ -383,7 +383,7 @@ class Repository:
         if kind not in {'ozon', 'wb', 'export'}:
             raise ValueError('invalid data view')
         now = utcnow()
-        with self.db.connect() as c:
+        with self.db.session() as c:
             c.execute('''INSERT INTO telegram_data_views
                 VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(bot_id,chat_id,message_id)
                 DO UPDATE SET payload_json=excluded.payload_json,updated_at=excluded.updated_at
@@ -394,7 +394,7 @@ class Repository:
                  json.dumps(payload,ensure_ascii=False),now,now))
 
     def data_view(self, bot_id: int, chat_id: int, message_id: int) -> dict | None:
-        with self.db.connect() as c:
+        with self.db.session() as c:
             row = c.execute('SELECT * FROM telegram_data_views WHERE bot_id=? AND chat_id=? AND message_id=?',
                             (bot_id,chat_id,message_id)).fetchone()
         if row is None:return None
@@ -403,12 +403,12 @@ class Repository:
         return data
 
     def get_job_state(self, shop_id: int, job_key: str) -> str | None:
-        with self.db.connect() as c:
+        with self.db.session() as c:
             r=c.execute("SELECT last_run_key FROM shop_job_state WHERE shop_id=? AND job_key=?",(shop_id,job_key)).fetchone()
         return str(r['last_run_key']) if r and r['last_run_key'] is not None else None
 
     def set_job_state(self, shop_id: int, job_key: str, run_key: str) -> None:
-        with self.db.connect() as c:
+        with self.db.session() as c:
             c.execute("""INSERT INTO shop_job_state(shop_id,job_key,last_run_key,updated_at) VALUES(?,?,?,?)
                          ON CONFLICT(shop_id,job_key) DO UPDATE SET last_run_key=excluded.last_run_key,updated_at=excluded.updated_at""",
                       (shop_id,job_key,run_key,utcnow()))
@@ -417,20 +417,20 @@ class Repository:
                       schema_version: int, status: str, message: str | None = None) -> int:
         if kind not in {'manual','automatic','pre_restore','restore'}: raise ValueError('invalid backup kind')
         if status not in {'success','failed'}: raise ValueError('invalid backup status')
-        with self.db.connect() as c:
+        with self.db.session() as c:
             cur=c.execute("""INSERT INTO backup_history(kind,filename,checksum,size_bytes,schema_version,status,message,created_at)
                              VALUES(?,?,?,?,?,?,?,?)""",(kind,filename,checksum,size_bytes,schema_version,status,message,utcnow()))
             return int(cur.lastrowid)
 
     def recent_backups(self, limit: int = 10) -> list[dict[str,Any]]:
-        with self.db.connect() as c:
+        with self.db.session() as c:
             rows=c.execute("SELECT * FROM backup_history ORDER BY created_at DESC,id DESC LIMIT ?",(limit,)).fetchall()
         return [dict(r) for r in rows]
 
     def replace_backup_file(self, filename: str, new_filename: str, checksum: str,
                             size_bytes: int, *, previous_checksum: str) -> None:
         """Keep recorded backup paths/checksums correct after lossless compression."""
-        with self.db.connect() as c:
+        with self.db.session() as c:
             c.execute("""UPDATE backup_history SET filename=?,checksum=?,size_bytes=?
                          WHERE filename=? AND checksum=? AND status='success' AND kind!='restore'""",
                       (new_filename,checksum,size_bytes,filename,previous_checksum))
@@ -441,7 +441,7 @@ class Repository:
             raise ValueError("marketplace must be ozon, wildberries or yandex_market")
         name = display_name or marketplace.title()
         now = utcnow()
-        with self.db.connect() as c:
+        with self.db.session() as c:
             c.execute("""INSERT INTO marketplace_connections
                          (shop_id,marketplace,display_name,external_account_id,created_at)
                          VALUES(?,?,?,?,?) ON CONFLICT(shop_id,marketplace,display_name) DO NOTHING""",
@@ -452,7 +452,7 @@ class Repository:
         return MarketplaceConnection(r["id"], r["shop_id"], r["marketplace"], r["display_name"], r["external_account_id"], bool(r["enabled"]))
 
     def list_connections(self, shop_id: int) -> list[MarketplaceConnection]:
-        with self.db.connect() as c:
+        with self.db.session() as c:
             rows = c.execute("SELECT * FROM marketplace_connections WHERE shop_id=? ORDER BY id", (shop_id,)).fetchall()
         return [MarketplaceConnection(r["id"], r["shop_id"], r["marketplace"], r["display_name"], r["external_account_id"], bool(r["enabled"])) for r in rows]
 
@@ -460,7 +460,7 @@ class Repository:
         clean = (name or "").strip()[:120]
         if not clean:
             raise ValueError("shop name must not be empty")
-        with self.db.connect() as c:
+        with self.db.session() as c:
             current = c.execute("SELECT seller_id FROM shops WHERE id=?", (shop_id,)).fetchone()
             if not current:
                 raise ValueError("shop not found")
@@ -506,7 +506,7 @@ class Repository:
             float(d.get("alert_api_stale_hours", 26)), float(d.get("alert_drr_pct", 25)),
             int(d.get("alert_cooldown_minutes", 1440)), now,
         )
-        with self.db.connect() as c:
+        with self.db.session() as c:
             c.execute("""INSERT INTO shop_preferences(
                 shop_id,timezone,report_time,product_report_days,stock_velocity_days,stock_risk_days,
                 finance_lookback_days,alerts_enabled,alerts_interval_minutes,alert_order_drop_pct,
@@ -516,7 +516,7 @@ class Repository:
         return self._preferences_from_row(r)
 
     def get_shop_preferences(self, shop_id: int) -> ShopPreferences | None:
-        with self.db.connect() as c:
+        with self.db.session() as c:
             r = c.execute("SELECT * FROM shop_preferences WHERE shop_id=?", (shop_id,)).fetchone()
         return self._preferences_from_row(r) if r else None
 
@@ -541,7 +541,7 @@ class Repository:
                 normalized[key] = int(bool(normalized[key]))
         assignments = ", ".join(f"{k}=?" for k in normalized)
         params = list(normalized.values()) + [utcnow(), shop_id]
-        with self.db.connect() as c:
+        with self.db.session() as c:
             c.execute(f"UPDATE shop_preferences SET {assignments}, updated_at=? WHERE shop_id=?", params)
             r = c.execute("SELECT * FROM shop_preferences WHERE shop_id=?", (shop_id,)).fetchone()
         if not r:
@@ -552,7 +552,7 @@ class Repository:
                                 optional_ok: int, optional_total: int, details: Any) -> int:
         if status not in {"ready","partial","blocked"}:
             raise ValueError("invalid readiness status")
-        with self.db.connect() as c:
+        with self.db.session() as c:
             cur=c.execute("""INSERT INTO shop_readiness_snapshots
                 (shop_id,checked_at,status,critical_ok,critical_total,optional_ok,optional_total,details_json)
                 VALUES(?,?,?,?,?,?,?,?)""",
@@ -560,13 +560,13 @@ class Repository:
             return int(cur.lastrowid)
 
     def latest_readiness_snapshot(self, shop_id: int) -> dict[str,Any] | None:
-        with self.db.connect() as c:
+        with self.db.session() as c:
             r=c.execute("SELECT * FROM shop_readiness_snapshots WHERE shop_id=? ORDER BY checked_at DESC,id DESC LIMIT 1",(shop_id,)).fetchone()
         return dict(r) if r else None
 
     # --- source runs ------------------------------------------------------
     def currency_rate_snapshot(self, requested_date: str, source: str = 'cbr') -> dict | None:
-        with self.db.connect() as c:
+        with self.db.session() as c:
             row = c.execute('''SELECT * FROM currency_rate_snapshots
                 WHERE source=? AND requested_date=?''', (source, requested_date)).fetchone()
         return dict(row) if row else None
@@ -575,7 +575,7 @@ class Repository:
                                    payload: bytes, source: str = 'cbr') -> None:
         if date.fromisoformat(effective_date) > date.fromisoformat(requested_date):
             raise ValueError('Exchange rate belongs to a later date')
-        with self.db.connect() as c:
+        with self.db.session() as c:
             c.execute('''INSERT INTO currency_rate_snapshots
                 (source,requested_date,effective_date,fetched_at,payload) VALUES(?,?,?,?,?)
                 ON CONFLICT(source,requested_date) DO UPDATE SET
@@ -588,7 +588,7 @@ class Repository:
         placeholders = ','.join('?' for _ in endpoints)
         if not endpoints:
             return None
-        with self.db.connect() as c:
+        with self.db.session() as c:
             row = c.execute(f'''SELECT sr.*,rp.payload_json FROM source_runs sr
                 JOIN raw_payloads rp ON rp.source_run_id=sr.id
                 WHERE sr.connection_id=? AND sr.data_date=? AND sr.endpoint IN ({placeholders})
@@ -598,7 +598,7 @@ class Repository:
         return dict(row) if row else None
 
     def raw_payload_for_run(self, source_run_id: int) -> str | None:
-        with self.db.connect() as c:
+        with self.db.session() as c:
             row = c.execute('SELECT payload_json FROM raw_payloads WHERE source_run_id=?',
                             (source_run_id,)).fetchone()
         return row['payload_json'] if row else None
@@ -611,7 +611,7 @@ class Repository:
         combine older revisions to fill prices absent in the latest capture.
         """
         day = date.fromisoformat(data_date)
-        with self.db.connect() as c:
+        with self.db.session() as c:
             rows = c.execute('''SELECT sr.*,rp.payload_json FROM source_runs sr
                 JOIN raw_payloads rp ON rp.source_run_id=sr.id
                 WHERE sr.connection_id=? AND sr.endpoint='finance/products/buyout'
@@ -635,7 +635,7 @@ class Repository:
                        *, http_status: int | None = None, attempts: int = 1,
                        started_at: str | None = None, raw_payload: Any = None) -> int:
         now = source_utcnow()
-        with self.db.connect() as c:
+        with self.db.session() as c:
             cur = c.execute("""INSERT INTO source_runs
                 (connection_id,endpoint,data_date,status,started_at,finished_at,error,http_status,attempts,created_at)
                 VALUES(?,?,?,'failed',?,?,?,?,?,?)""",
@@ -664,7 +664,7 @@ class Repository:
             if p.unit != known.unit:
                 raise ValueError(f"Unexpected unit for {p.metric_key}: {p.unit}; expected {known.unit}")
 
-        with self.db.connect() as c:
+        with self.db.session() as c:
             c.execute("BEGIN IMMEDIATE")
             if status == "success":
                 # Daily/backfill share versions within the same source basis.
@@ -720,7 +720,7 @@ class Repository:
 
     def latest_metric(self, connection_id: int, data_date: str, metric_key: str):
         """Latest metric from a successful/partial run; failed runs never shadow it."""
-        with self.db.connect() as c:
+        with self.db.session() as c:
             return c.execute("""SELECT mv.*, sr.status, sr.finished_at, sr.endpoint
                 FROM metric_values mv JOIN source_runs sr ON sr.id=mv.source_run_id
                 WHERE mv.connection_id=? AND mv.data_date=? AND mv.metric_key=?
@@ -729,7 +729,7 @@ class Repository:
                 (connection_id, data_date, metric_key)).fetchone()
 
     def metrics_for_day(self, connection_id: int, data_date: str) -> dict[str, float]:
-        with self.db.connect() as c:
+        with self.db.session() as c:
             rows = c.execute("""SELECT mv.* FROM metric_values mv
                 JOIN source_runs sr ON sr.id=mv.source_run_id
                 WHERE mv.connection_id=? AND mv.data_date=? AND sr.status IN ('success','partial')
@@ -740,7 +740,7 @@ class Repository:
         return result
 
     def has_wb_funnel_snapshot(self, connection_id: int, data_date: str) -> bool:
-        with self.db.connect() as c:
+        with self.db.session() as c:
             row=c.execute("""SELECT 1 FROM source_runs
                 WHERE connection_id=? AND data_date=? AND status='success'
                   AND endpoint IN ('analytics/orders','analytics/orders/backfill') LIMIT 1""",
@@ -753,7 +753,7 @@ class Repository:
         if endpoint:
             sql += " AND endpoint=?"; params.append(endpoint)
         sql += " ORDER BY finished_at DESC, id DESC LIMIT 1"
-        with self.db.connect() as c:
+        with self.db.session() as c:
             r = c.execute(sql, params).fetchone()
         if not r: return None
         return SourceRun(r["id"], r["connection_id"], r["endpoint"], r["data_date"], r["status"], r["started_at"], r["finished_at"], r["error"], r["http_status"], r["attempts"], r["payload_hash"])
@@ -770,7 +770,7 @@ class Repository:
         if data_date is not None:
             sql += " AND data_date=?"; params.append(data_date)
         sql += " ORDER BY finished_at DESC,id DESC LIMIT 1"
-        with self.db.connect() as c:
+        with self.db.session() as c:
             r=c.execute(sql,params).fetchone()
         if not r: return None
         return SourceRun(r["id"],r["connection_id"],r["endpoint"],r["data_date"],r["status"],
@@ -785,7 +785,7 @@ class Repository:
         if data_date is not None:
             sql += " AND data_date=?"; params.append(data_date)
         sql += " ORDER BY finished_at DESC,id DESC LIMIT 1"
-        with self.db.connect() as c:
+        with self.db.session() as c:
             r=c.execute(sql,params).fetchone()
         if not r: return None
         return SourceRun(r["id"],r["connection_id"],r["endpoint"],r["data_date"],r["status"],
@@ -797,7 +797,7 @@ class Repository:
             raise ValueError('cost_price must be >= 0')
         now = utcnow()
         clean_name = (name or internal_sku).strip()[:500]
-        with self.db.connect() as c:
+        with self.db.session() as c:
             c.execute("""INSERT INTO products(shop_id,internal_sku,name,cost_price,created_at)
                          VALUES(?,?,?,?,?) ON CONFLICT(shop_id,internal_sku) DO UPDATE SET
                          name=CASE WHEN excluded.name<>'' THEN excluded.name ELSE products.name END""",
@@ -815,7 +815,7 @@ class Repository:
     def ensure_listing(self, product_id: int, connection_id: int, marketplace_sku: str,
                        offer_id: str | None = None) -> ProductListing:
         now=utcnow(); sku=str(marketplace_sku)
-        with self.db.connect() as c:
+        with self.db.session() as c:
             c.execute("""INSERT INTO product_listings(product_id,connection_id,marketplace_sku,offer_id,created_at)
                          VALUES(?,?,?,?,?) ON CONFLICT(connection_id,marketplace_sku) DO UPDATE SET
                          offer_id=COALESCE(excluded.offer_id,product_listings.offer_id)""",
@@ -825,14 +825,14 @@ class Repository:
         return ProductListing(r['id'],r['product_id'],r['connection_id'],r['marketplace_sku'],r['offer_id'])
 
     def listing_by_marketplace_sku(self, connection_id: int, marketplace_sku: str) -> ProductListing | None:
-        with self.db.connect() as c:
+        with self.db.session() as c:
             r=c.execute("SELECT * FROM product_listings WHERE connection_id=? AND marketplace_sku=?",
                         (connection_id,str(marketplace_sku))).fetchone()
         if not r: return None
         return ProductListing(r['id'],r['product_id'],r['connection_id'],r['marketplace_sku'],r['offer_id'])
 
     def listing_for_shop(self, shop_id: int, marketplace: str, marketplace_sku: str) -> dict[str, Any] | None:
-        with self.db.connect() as c:
+        with self.db.session() as c:
             r=c.execute("""SELECT pl.*,p.internal_sku,p.name,p.cost_price,mc.marketplace
                 FROM product_listings pl JOIN products p ON p.id=pl.product_id
                 JOIN marketplace_connections mc ON mc.id=pl.connection_id
@@ -866,7 +866,7 @@ class Repository:
 
         canonical=self.ensure_product(shop_id,clean_sku,name or resolved[0]['name'])
         now=utcnow()
-        with self.db.connect() as c:
+        with self.db.session() as c:
             c.execute('BEGIN IMMEDIATE')
             source_product_ids={int(r['product_id']) for r in resolved if int(r['product_id']) != canonical.id}
             for source_id in source_product_ids:
@@ -908,7 +908,7 @@ class Repository:
                              replace_fulfillment_snapshot: bool = False) -> int:
         now=utcnow(); rows=list(points)
         if not rows and not (replace_order_snapshot or replace_finance_snapshot or replace_fulfillment_snapshot): return 0
-        with self.db.connect() as c:
+        with self.db.session() as c:
             run=c.execute("SELECT connection_id,status,data_date,endpoint FROM source_runs WHERE id=?",(source_run_id,)).fetchone()
             if not run or run['status'] not in ('success','partial'):
                 raise ValueError('Product metrics require a successful/partial source run')
@@ -972,7 +972,7 @@ class Repository:
     def save_inventory(self, source_run_id: int, points: Iterable[InventoryPoint]) -> int:
         now=utcnow(); rows=list(points)
         if not rows: return 0
-        with self.db.connect() as c:
+        with self.db.session() as c:
             run=c.execute("SELECT connection_id,status FROM source_runs WHERE id=?",(source_run_id,)).fetchone()
             if not run or run['status'] not in ('success','partial'):
                 raise ValueError('Inventory requires a successful/partial source run')
@@ -992,7 +992,7 @@ class Repository:
 
     def product_metric_series(self, listing_id: int, start_date: str, end_date: str,
                               metric_key: str, fulfillment_scheme: str = 'ALL') -> dict[str,float]:
-        with self.db.connect() as c:
+        with self.db.session() as c:
             rows=c.execute("""SELECT pm.data_date,pm.value,pm.fetched_at,pm.id
                 FROM product_metric_values pm JOIN source_runs sr ON sr.id=pm.source_run_id
                 WHERE pm.listing_id=? AND pm.data_date BETWEEN ? AND ? AND pm.metric_key=?
@@ -1006,7 +1006,7 @@ class Repository:
     def product_period_totals(self, shop_id: int, start_date: str, end_date: str,
                               metric_key: str = 'ordered_units', fulfillment_scheme: str = 'ALL') -> list[dict[str,Any]]:
         """Latest value per listing/day, summed for the requested period."""
-        with self.db.connect() as c:
+        with self.db.session() as c:
             rows=c.execute("""WITH ranked AS (
                 SELECT pm.*, ROW_NUMBER() OVER (
                   PARTITION BY pm.listing_id,pm.data_date,pm.metric_key,pm.fulfillment_scheme
@@ -1027,7 +1027,7 @@ class Repository:
         return [dict(r) for r in rows]
 
     def fulfillment_totals(self, shop_id: int, start_date: str, end_date: str) -> list[dict[str,Any]]:
-        with self.db.connect() as c:
+        with self.db.session() as c:
             rows=c.execute("""WITH ranked AS (
                 SELECT pm.*, ROW_NUMBER() OVER (
                   PARTITION BY pm.listing_id,pm.data_date,pm.metric_key,pm.fulfillment_scheme
@@ -1058,7 +1058,7 @@ class Repository:
 
     def latest_inventory_by_scheme(self, shop_id: int) -> list[dict[str,Any]]:
         """Newest inventory run per listing+scheme, aggregated over its warehouses."""
-        with self.db.connect() as c:
+        with self.db.session() as c:
             rows=c.execute("""WITH source_versions AS (
                 SELECT sr.*,ROW_NUMBER() OVER(PARTITION BY sr.connection_id,sr.endpoint
                   ORDER BY sr.finished_at DESC,sr.id DESC) source_rank
@@ -1095,7 +1095,7 @@ class Repository:
         Only schemes that have actually held stock require a fresh observation.
         An unused, always-zero FBS scheme must not block a seller using only FBO.
         """
-        with self.db.connect() as c:
+        with self.db.session() as c:
             rows=c.execute('''SELECT i.listing_id,i.fulfillment_scheme,
                   MAX(CASE WHEN i.available_units>0 THEN 1 ELSE 0 END) held_stock
                 FROM inventory_snapshots i
@@ -1117,7 +1117,7 @@ class Repository:
         """
         endpoints=(('analytics/orders','analytics/orders/backfill') if prefer_wb_funnel else
                    ('statistics/orders','statistics/orders/backfill','analytics/orders','analytics/orders/backfill'))
-        with self.db.connect() as c:
+        with self.db.session() as c:
             rows=c.execute(f"""SELECT DISTINCT data_date FROM source_runs
                 WHERE connection_id=? AND data_date BETWEEN ? AND ?
                   AND status='success'
@@ -1135,7 +1135,7 @@ class Repository:
                    "shop_supply_preferences","product_supply_settings","supply_recommendation_snapshots",
                    "inbound_shipments","inbound_shipment_items","forecast_quality_snapshots","supply_calibration_snapshots","promotions","promotion_products"}
         if table not in allowed: raise ValueError("unsupported table")
-        with self.db.connect() as c:
+        with self.db.session() as c:
             return int(c.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
 
     def ozon_cancellations_day(self, connection_id: int, day: str):
@@ -1150,13 +1150,13 @@ class Repository:
         if data_date:
             sql += " AND data_date=?"; params.append(data_date)
         sql += " ORDER BY COALESCE(finished_at,started_at) DESC, id DESC LIMIT 1"
-        with self.db.connect() as c:
+        with self.db.session() as c:
             r = c.execute(sql, params).fetchone()
         if not r: return None
         return SourceRun(r["id"], r["connection_id"], r["endpoint"], r["data_date"], r["status"], r["started_at"], r["finished_at"], r["error"], r["http_status"], r["attempts"], r["payload_hash"])
 
     def metric_series(self, connection_id: int, start_date: str, end_date: str, metric_key: str) -> dict[str, float]:
-        with self.db.connect() as c:
+        with self.db.session() as c:
             rows = c.execute("""SELECT mv.data_date,mv.value,mv.fetched_at,mv.id
                 FROM metric_values mv JOIN source_runs sr ON sr.id=mv.source_run_id
                 WHERE mv.connection_id=? AND mv.data_date BETWEEN ? AND ? AND mv.metric_key=?
@@ -1174,7 +1174,7 @@ class Repository:
         current=list(current_dates); previous=list(previous_dates)
         if not current or len(current)!=len(previous):return False
         dates=current+previous
-        with self.db.connect() as c:
+        with self.db.session() as c:
             rows=c.execute("""SELECT mv.data_date,sr.endpoint
                 FROM metric_values mv JOIN source_runs sr ON sr.id=mv.source_run_id
                 WHERE mv.connection_id=? AND mv.data_date BETWEEN ? AND ?
@@ -1194,7 +1194,7 @@ class Repository:
         if not enabled: return []
         ids=[c.id for c in enabled]
         placeholders=','.join('?' for _ in ids)
-        with self.db.connect() as c:
+        with self.db.session() as c:
             rows=c.execute(f"""SELECT mv.data_date, COUNT(DISTINCT mv.connection_id) AS source_count
                 FROM metric_values mv JOIN source_runs sr ON sr.id=mv.source_run_id
                 WHERE mv.connection_id IN ({placeholders}) AND mv.metric_key=?
@@ -1210,7 +1210,7 @@ class Repository:
         try: datetime.fromisoformat(effective_date)
         except ValueError as exc: raise ValueError('effective_date must be YYYY-MM-DD') from exc
         day=effective_date[:10]; now=utcnow()
-        with self.db.connect() as c:
+        with self.db.session() as c:
             row=c.execute('SELECT id FROM products WHERE id=?',(product_id,)).fetchone()
             if not row: return False
             c.execute("""INSERT INTO product_cost_history(product_id,effective_date,cost_price,source,import_batch_id,created_at)
@@ -1227,7 +1227,7 @@ class Repository:
     def set_product_cost_by_listing(self, connection_id: int, marketplace_sku: str, cost_price: float,
                                     *, effective_date: str | None = None, source: str = 'manual',
                                     import_batch_id: int | None = None) -> bool:
-        with self.db.connect() as c:
+        with self.db.session() as c:
             row=c.execute('SELECT product_id FROM product_listings WHERE connection_id=? AND marketplace_sku=?',
                           (connection_id,str(marketplace_sku))).fetchone()
         if not row: return False
@@ -1236,7 +1236,7 @@ class Repository:
                                      source=source,import_batch_id=import_batch_id)
 
     def product_cost_history(self, product_id: int) -> list[dict[str,Any]]:
-        with self.db.connect() as c:
+        with self.db.session() as c:
             rows=c.execute("""SELECT * FROM product_cost_history WHERE product_id=?
                               ORDER BY effective_date DESC,id DESC""",(product_id,)).fetchall()
         return [dict(r) for r in rows]
@@ -1247,7 +1247,7 @@ class Repository:
         if status not in {'success','partial','failed'}:
             raise ValueError('unsupported import status')
         now=utcnow()
-        with self.db.connect() as c:
+        with self.db.session() as c:
             cur=c.execute("""INSERT INTO import_batches(shop_id,import_kind,filename,status,total_rows,
                 applied_rows,error_rows,error_json,created_at) VALUES(?,?,?,?,?,?,?,?,?)""",
                 (shop_id,import_kind,filename,status,total_rows,applied_rows,len(errors),
@@ -1262,18 +1262,18 @@ class Repository:
                             applied_rows: int, errors: list[dict[str,Any]]) -> None:
         if status not in {'success','partial','failed'}:
             raise ValueError('unsupported import status')
-        with self.db.connect() as c:
+        with self.db.session() as c:
             c.execute("""UPDATE import_batches SET status=?,total_rows=?,applied_rows=?,error_rows=?,error_json=?
                          WHERE id=?""",(status,total_rows,applied_rows,len(errors),canonical_json(errors[:200]),batch_id))
 
     def recent_import_batches(self, shop_id: int, limit: int = 10) -> list[dict[str,Any]]:
-        with self.db.connect() as c:
+        with self.db.session() as c:
             rows=c.execute("""SELECT * FROM import_batches WHERE shop_id=?
                               ORDER BY created_at DESC,id DESC LIMIT ?""",(shop_id,limit)).fetchall()
         return [dict(r) for r in rows]
 
     def products_without_cost(self, shop_id: int, limit: int = 20) -> list[dict[str,Any]]:
-        with self.db.connect() as c:
+        with self.db.session() as c:
             rows=c.execute('''SELECT DISTINCT p.id,p.internal_sku,p.name,mc.marketplace,pl.marketplace_sku
                 FROM products p JOIN product_listings pl ON pl.product_id=p.id
                 JOIN marketplace_connections mc ON mc.id=pl.connection_id
@@ -1281,7 +1281,7 @@ class Repository:
         return [dict(r) for r in rows]
 
     def financial_metric_totals(self, shop_id: int, start_date: str, end_date: str) -> dict[str,dict[str,float]]:
-        with self.db.connect() as c:
+        with self.db.session() as c:
             rows=c.execute('''WITH ranked AS (
                 SELECT mv.*,mc.marketplace,ROW_NUMBER() OVER(
                   PARTITION BY mv.connection_id,mv.data_date,mv.metric_key ORDER BY mv.fetched_at DESC,mv.id DESC) rn
@@ -1296,7 +1296,7 @@ class Repository:
 
     def ozon_ad_accounting(self, shop_id: int, start_date: str, end_date: str) -> dict[str, Any]:
         """Deduct billed ads once; use Performance only on days without accruals."""
-        with self.db.connect() as c:
+        with self.db.session() as c:
             rows=c.execute("""WITH ranked AS (
                 SELECT mv.*,EXISTS(SELECT 1 FROM raw_payloads rp WHERE rp.source_run_id=sr.id) raw_saved,
                   ROW_NUMBER() OVER(PARTITION BY mv.connection_id,mv.data_date,mv.metric_key
@@ -1332,7 +1332,7 @@ class Repository:
 
         This remains an estimate of ordered-goods cost, not realized accounting COGS.
         """
-        with self.db.connect() as c:
+        with self.db.session() as c:
             rows=c.execute('''WITH ranked AS (
                 SELECT pm.*,ROW_NUMBER() OVER(PARTITION BY pm.listing_id,pm.data_date,pm.metric_key,pm.fulfillment_scheme
                   ORDER BY pm.fetched_at DESC,pm.id DESC) rn
@@ -1374,7 +1374,7 @@ class Repository:
 
         The result intentionally does not allocate marketplace fees or advertising to SKU.
         """
-        with self.db.connect() as c:
+        with self.db.session() as c:
             rows=c.execute('''WITH ranked AS (
                 SELECT pm.*,ROW_NUMBER() OVER(PARTITION BY pm.listing_id,pm.data_date,pm.metric_key,pm.fulfillment_scheme
                   ORDER BY pm.fetched_at DESC,pm.id DESC) rn
@@ -1406,7 +1406,7 @@ class Repository:
     def sku_financial_totals(self, shop_id: int, start_date: str, end_date: str) -> dict[tuple[str,str],dict[str,float]]:
         keys=('financial_sales','goods_payable','commission','logistics','storage','acceptance','acquiring','services','penalties','compensation','finance_ad_spend')
         placeholders=','.join('?' for _ in keys)
-        with self.db.connect() as c:
+        with self.db.session() as c:
             rows=c.execute(f'''WITH ranked AS (
                 SELECT pm.*,ROW_NUMBER() OVER(PARTITION BY pm.listing_id,pm.data_date,pm.metric_key,pm.fulfillment_scheme
                   ORDER BY pm.fetched_at DESC,pm.id DESC) rn
@@ -1430,7 +1430,7 @@ class Repository:
                         products: Iterable[AdProductPoint] = (), replace_campaign_snapshot: bool=False,
                         replace_product_snapshot: bool=False) -> tuple[int,int]:
         campaign_rows=list(campaigns); product_rows=list(products); now=utcnow()
-        with self.db.connect() as c:
+        with self.db.session() as c:
             run=c.execute('SELECT connection_id,status,endpoint,data_date FROM source_runs WHERE id=?',(source_run_id,)).fetchone()
             if not run or run['status'] not in ('success','partial'):
                 raise ValueError('Ad details require a successful/partial source run')
@@ -1481,7 +1481,7 @@ class Repository:
         return saved_campaigns,saved_products
 
     def ad_campaign_totals(self, shop_id: int, start_date: str, end_date: str) -> list[dict[str,Any]]:
-        with self.db.connect() as c:
+        with self.db.session() as c:
             rows=c.execute("""WITH ranked AS (
                 SELECT a.*,mc.marketplace,ROW_NUMBER() OVER(
                   PARTITION BY a.connection_id,a.data_date,a.campaign_id ORDER BY a.fetched_at DESC,a.id DESC) rn
@@ -1498,7 +1498,7 @@ class Repository:
         return [dict(r) for r in rows]
 
     def ad_product_totals(self, shop_id: int, start_date: str, end_date: str) -> list[dict[str,Any]]:
-        with self.db.connect() as c:
+        with self.db.session() as c:
             rows=c.execute("""WITH ranked AS (
                 SELECT a.*,mc.marketplace,p.internal_sku,p.name,ROW_NUMBER() OVER(
                   PARTITION BY a.connection_id,a.data_date,a.marketplace_sku,a.campaign_id ORDER BY a.fetched_at DESC,a.id DESC) rn
@@ -1532,7 +1532,7 @@ class Repository:
         also protects legacy finance where billed ads have no separate metric.
         Unallocated financial fees remain unallocated, never spread across SKU.
         """
-        with self.db.connect() as c:
+        with self.db.session() as c:
             rows=c.execute('''WITH finance AS (
                 SELECT mv.connection_id,mv.data_date
                 FROM metric_values mv JOIN source_runs sr ON sr.id=mv.source_run_id
@@ -1570,7 +1570,7 @@ class Repository:
     def correct_ozon_posting_dates(self, connection_id: int) -> int:
         """Repair historic posting days using their original UTC event times."""
         from app.services.ozon_dates import posting_day
-        with self.db.connect() as c:
+        with self.db.session() as c:
             c.execute('BEGIN IMMEDIATE')
             rows=c.execute("""SELECT id,data_date,event_time FROM commerce_events
                 WHERE connection_id=? AND source_name='ozon_postings'
@@ -1591,7 +1591,7 @@ class Repository:
             return 0
         allowed={'order','cancel','posting','sale','return','finance'}
         now=utcnow()
-        with self.db.connect() as c:
+        with self.db.session() as c:
             run=c.execute('SELECT connection_id,status,endpoint,data_date FROM source_runs WHERE id=?',(source_run_id,)).fetchone()
             if not run or run['status'] not in ('success','partial'):
                 raise ValueError('Commerce events require a successful/partial source run')
@@ -1640,7 +1640,7 @@ class Repository:
 
     def reconciliation_summary(self, shop_id: int, start_date: str, end_date: str) -> list[dict[str,Any]]:
         """Aggregate stored lifecycle events by marketplace/SKU without inventing joins."""
-        with self.db.connect() as c:
+        with self.db.session() as c:
             rows=c.execute("""WITH base_ids AS (
                 SELECT DISTINCT ce.connection_id,ce.external_order_id
                 FROM commerce_events ce JOIN marketplace_connections mc0 ON mc0.id=ce.connection_id
@@ -1678,7 +1678,7 @@ class Repository:
     def reconciliation_match_stats(self, shop_id: int, start_date: str, end_date: str) -> dict[str,dict[str,float]]:
         """Exact identifier coverage. WB uses srid; Ozon uses posting_number for posting->finance."""
         out: dict[str,dict[str,float]]={}
-        with self.db.connect() as c:
+        with self.db.session() as c:
             row=c.execute("""WITH orders AS (
                 SELECT DISTINCT ce.connection_id,ce.external_order_id FROM commerce_events ce
                 JOIN marketplace_connections mc ON mc.id=ce.connection_id
@@ -1713,7 +1713,7 @@ class Repository:
         return out
 
     def commerce_event_counts(self, shop_id: int, start_date: str, end_date: str) -> dict[str,dict[str,float]]:
-        with self.db.connect() as c:
+        with self.db.session() as c:
             rows=c.execute("""SELECT mc.marketplace,ce.event_kind,COUNT(*) rows_count,SUM(ce.quantity) quantity
               FROM commerce_events ce JOIN marketplace_connections mc ON mc.id=ce.connection_id
               WHERE mc.shop_id=? AND ce.data_date BETWEEN ? AND ?
@@ -1725,7 +1725,7 @@ class Repository:
 
     # --- alert persistence -----------------------------------------------
     def get_alert_state(self, shop_id: int, rule_key: str, subject_key: str = 'shop') -> dict[str,Any] | None:
-        with self.db.connect() as c:
+        with self.db.session() as c:
             row=c.execute('SELECT * FROM alert_state WHERE shop_id=? AND rule_key=? AND subject_key=?',
                           (shop_id,rule_key,subject_key)).fetchone()
         return dict(row) if row else None
@@ -1736,7 +1736,7 @@ class Repository:
         now=utcnow()
         old=self.get_alert_state(shop_id,rule_key,subject_key)
         first=(old or {}).get('first_triggered_at') or (now if active else None)
-        with self.db.connect() as c:
+        with self.db.session() as c:
             c.execute('''INSERT INTO alert_state(shop_id,rule_key,subject_key,active,last_value,fingerprint,
                 first_triggered_at,last_triggered_at,last_notified_at,last_resolved_at,updated_at)
                 VALUES(?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(shop_id,rule_key,subject_key) DO UPDATE SET
@@ -1751,19 +1751,19 @@ class Repository:
     def record_alert_event(self, shop_id: int, rule_key: str, subject_key: str, severity: str,
                            message: str, value: float | None = None, fingerprint: str | None = None) -> int:
         now=utcnow()
-        with self.db.connect() as c:
+        with self.db.session() as c:
             cur=c.execute('''INSERT INTO alert_events(shop_id,rule_key,subject_key,severity,message,value,fingerprint,created_at)
                              VALUES(?,?,?,?,?,?,?,?)''',(shop_id,rule_key,subject_key,severity,message,value,fingerprint,now))
             return int(cur.lastrowid)
 
     def recent_alert_events(self, shop_id: int, limit: int = 20) -> list[dict[str,Any]]:
-        with self.db.connect() as c:
+        with self.db.session() as c:
             rows=c.execute('SELECT * FROM alert_events WHERE shop_id=? ORDER BY created_at DESC,id DESC LIMIT ?',
                            (shop_id,limit)).fetchall()
         return [dict(r) for r in rows]
 
     def active_alert_states(self, shop_id: int) -> list[dict[str,Any]]:
-        with self.db.connect() as c:
+        with self.db.session() as c:
             rows=c.execute('''SELECT s.*, (SELECT message FROM alert_events e WHERE e.shop_id=s.shop_id
                               AND e.rule_key=s.rule_key AND e.subject_key=s.subject_key ORDER BY e.id DESC LIMIT 1) AS message
                               FROM alert_state s WHERE shop_id=? AND active=1
@@ -1774,7 +1774,7 @@ class Repository:
     def acquire_lease(self, lease_key: str, owner_id: str, ttl_seconds: int, *, metadata: dict[str,Any] | None = None) -> bool:
         now_dt=datetime.now(timezone.utc); now=now_dt.isoformat(timespec='seconds')
         expires=(now_dt+timedelta(seconds=max(1,ttl_seconds))).isoformat(timespec='seconds')
-        with self.db.connect() as c:
+        with self.db.session() as c:
             c.execute('BEGIN IMMEDIATE')
             row=c.execute('SELECT owner_id,expires_at FROM runtime_leases WHERE lease_key=?',(lease_key,)).fetchone()
             if row is not None:
@@ -1793,38 +1793,38 @@ class Repository:
     def renew_lease(self, lease_key: str, owner_id: str, ttl_seconds: int) -> bool:
         now_dt=datetime.now(timezone.utc); now=now_dt.isoformat(timespec='seconds')
         expires=(now_dt+timedelta(seconds=max(1,ttl_seconds))).isoformat(timespec='seconds')
-        with self.db.connect() as c:
+        with self.db.session() as c:
             cur=c.execute('UPDATE runtime_leases SET expires_at=?,updated_at=? WHERE lease_key=? AND owner_id=?',
                           (expires,now,lease_key,owner_id))
             return cur.rowcount==1
 
     def release_lease(self, lease_key: str, owner_id: str) -> bool:
-        with self.db.connect() as c:
+        with self.db.session() as c:
             cur=c.execute('DELETE FROM runtime_leases WHERE lease_key=? AND owner_id=?',(lease_key,owner_id))
             return cur.rowcount==1
 
     def lease_info(self, lease_key: str) -> dict[str,Any] | None:
-        with self.db.connect() as c:
+        with self.db.session() as c:
             row=c.execute('SELECT * FROM runtime_leases WHERE lease_key=?',(lease_key,)).fetchone()
         return dict(row) if row else None
 
     def heartbeat(self, instance_id: str, *, role: str='bot', hostname: str='', pid: int | None=None, metadata: dict[str,Any] | None=None) -> None:
         now=utcnow()
-        with self.db.connect() as c:
+        with self.db.session() as c:
             c.execute("""INSERT INTO process_heartbeats(instance_id,role,hostname,pid,started_at,heartbeat_at,metadata_json)
                          VALUES(?,?,?,?,?,?,?) ON CONFLICT(instance_id) DO UPDATE SET
                          role=excluded.role,hostname=excluded.hostname,pid=excluded.pid,heartbeat_at=excluded.heartbeat_at,metadata_json=excluded.metadata_json""",
                       (instance_id,role,hostname,pid,now,now,canonical_json(metadata or {})))
 
     def recent_heartbeats(self, limit: int=20) -> list[dict[str,Any]]:
-        with self.db.connect() as c:
+        with self.db.session() as c:
             rows=c.execute('SELECT * FROM process_heartbeats ORDER BY heartbeat_at DESC LIMIT ?',(limit,)).fetchall()
         return [dict(r) for r in rows]
 
     def enqueue_retry_job(self, shop_id: int, job_type: str, unique_key: str, payload: dict[str,Any], *, max_attempts: int=6, delay_seconds: int=0, last_error: str | None=None) -> int:
         now_dt=datetime.now(timezone.utc); now=now_dt.isoformat(timespec='seconds')
         due=(now_dt+timedelta(seconds=max(0,delay_seconds))).isoformat(timespec='seconds')
-        with self.db.connect() as c:
+        with self.db.session() as c:
             c.execute("""INSERT INTO retry_jobs(shop_id,job_type,unique_key,payload_json,status,attempts,max_attempts,next_attempt_at,last_error,created_at,updated_at)
                          VALUES(?,?,?,?, 'pending',0,?,?,?,?,?) ON CONFLICT(shop_id,job_type,unique_key) DO UPDATE SET
                          payload_json=excluded.payload_json,
@@ -1841,7 +1841,7 @@ class Repository:
     def claim_retry_job(self, owner_id: str, *, lease_seconds: int=900) -> dict[str,Any] | None:
         now_dt=datetime.now(timezone.utc); now=now_dt.isoformat(timespec='seconds')
         locked_until=(now_dt+timedelta(seconds=max(30,lease_seconds))).isoformat(timespec='seconds')
-        with self.db.connect() as c:
+        with self.db.session() as c:
             c.execute('BEGIN IMMEDIATE')
             row=c.execute("""SELECT * FROM retry_jobs WHERE
                 (status='pending' AND next_attempt_at<=?) OR
@@ -1858,7 +1858,7 @@ class Repository:
     def renew_retry_job(self, job_id: int, owner_id: str, lease_seconds: int=900) -> bool:
         now_dt=datetime.now(timezone.utc); now=now_dt.isoformat(timespec='seconds')
         locked_until=(now_dt+timedelta(seconds=max(30,lease_seconds))).isoformat(timespec='seconds')
-        with self.db.connect() as c:
+        with self.db.session() as c:
             cur=c.execute("""UPDATE retry_jobs SET locked_until=?,updated_at=?
                              WHERE id=? AND status='running' AND locked_by=?""",
                           (locked_until,now,job_id,owner_id))
@@ -1870,13 +1870,13 @@ class Repository:
         params: list[Any]=[now,job_id]
         if owner_id is not None:
             sql += " AND status='running' AND locked_by=?"; params.append(owner_id)
-        with self.db.connect() as c:
+        with self.db.session() as c:
             cur=c.execute(sql,params)
             return cur.rowcount==1
 
     def fail_retry_job(self, job_id: int, error: str, *, base_delay_seconds: int=60, owner_id: str | None=None) -> str:
         now_dt=datetime.now(timezone.utc); now=now_dt.isoformat(timespec='seconds')
-        with self.db.connect() as c:
+        with self.db.session() as c:
             c.execute('BEGIN IMMEDIATE')
             sql='SELECT attempts,max_attempts,status,locked_by FROM retry_jobs WHERE id=?'
             row=c.execute(sql,(job_id,)).fetchone()
@@ -1895,7 +1895,7 @@ class Repository:
             return status if cur.rowcount==1 else 'lost'
 
     def retry_job_counts(self, shop_id: int | None=None) -> dict[str,int]:
-        with self.db.connect() as c:
+        with self.db.session() as c:
             if shop_id is None:
                 rows=c.execute('SELECT status,COUNT(*) n FROM retry_jobs GROUP BY status').fetchall()
             else:
@@ -1903,7 +1903,7 @@ class Repository:
         return {str(r['status']):int(r['n']) for r in rows}
 
     def recent_retry_jobs(self, limit: int=20, *, shop_id: int | None=None) -> list[dict[str,Any]]:
-        with self.db.connect() as c:
+        with self.db.session() as c:
             if shop_id is None:
                 rows=c.execute('SELECT * FROM retry_jobs ORDER BY updated_at DESC,id DESC LIMIT ?',(limit,)).fetchall()
             else:
@@ -1912,7 +1912,7 @@ class Repository:
 
     def requeue_retry_job(self, job_id: int, *, shop_id: int | None=None) -> bool:
         now=utcnow()
-        with self.db.connect() as c:
+        with self.db.session() as c:
             sql="""UPDATE retry_jobs SET status='pending',attempts=0,next_attempt_at=?,locked_by=NULL,
                    locked_until=NULL,last_error=NULL,updated_at=? WHERE id=?"""
             params: list[Any]=[now,now,job_id]
@@ -1924,7 +1924,7 @@ class Repository:
     # --- supply planning / demand history --------------------------------
     def ensure_shop_supply_preferences(self, shop_id: int) -> dict[str,Any]:
         now=utcnow()
-        with self.db.connect() as c:
+        with self.db.session() as c:
             c.execute("""INSERT INTO shop_supply_preferences(shop_id,updated_at) VALUES(?,?)
                          ON CONFLICT(shop_id) DO NOTHING""",(shop_id,now))
             row=c.execute('SELECT * FROM shop_supply_preferences WHERE shop_id=?',(shop_id,)).fetchone()
@@ -1945,7 +1945,7 @@ class Repository:
             if not lo <= v <= hi: raise ValueError(f'{k} must be {lo}..{hi}')
         self.ensure_shop_supply_preferences(shop_id)
         assignments=','.join(f'{k}=?' for k in clean); params=list(clean.values())+[utcnow(),shop_id]
-        with self.db.connect() as c:
+        with self.db.session() as c:
             c.execute(f'UPDATE shop_supply_preferences SET {assignments},updated_at=? WHERE shop_id=?',params)
             row=c.execute('SELECT * FROM shop_supply_preferences WHERE shop_id=?',(shop_id,)).fetchone()
         return dict(row)
@@ -1953,7 +1953,7 @@ class Repository:
     def set_product_supply_settings(self, shop_id: int, internal_sku: str, *, lead_time_days: int | None=None,
                                     safety_stock_days: int | None=None, target_stock_days: int | None=None,
                                     pack_size: float | None=None, min_order_qty: float | None=None) -> dict[str,Any]:
-        with self.db.connect() as c:
+        with self.db.session() as c:
             p=c.execute('SELECT id FROM products WHERE shop_id=? AND internal_sku=? AND active=1',(shop_id,internal_sku)).fetchone()
         if not p: raise ValueError('product not found')
         vals={'lead_time_days':lead_time_days,'safety_stock_days':safety_stock_days,'target_stock_days':target_stock_days,
@@ -1964,7 +1964,7 @@ class Repository:
         if pack_size is not None and float(pack_size)<=0: raise ValueError('pack_size must be > 0')
         if min_order_qty is not None and float(min_order_qty)<0: raise ValueError('min_order_qty must be >= 0')
         now=utcnow(); pid=int(p['id'])
-        with self.db.connect() as c:
+        with self.db.session() as c:
             c.execute("""INSERT INTO product_supply_settings(product_id,lead_time_days,safety_stock_days,target_stock_days,pack_size,min_order_qty,updated_at)
                          VALUES(?,?,?,?,?,?,?) ON CONFLICT(product_id) DO UPDATE SET
                          lead_time_days=excluded.lead_time_days,safety_stock_days=excluded.safety_stock_days,
@@ -1976,7 +1976,7 @@ class Repository:
 
     def products_for_supply(self, shop_id: int) -> list[dict[str,Any]]:
         defaults=self.ensure_shop_supply_preferences(shop_id)
-        with self.db.connect() as c:
+        with self.db.session() as c:
             rows=c.execute("""SELECT p.id product_id,p.internal_sku,p.name,
                 COALESCE(ps.lead_time_days,?) lead_time_days,
                 COALESCE(ps.safety_stock_days,?) safety_stock_days,
@@ -1994,7 +1994,7 @@ class Repository:
         enabled=[c for c in conns if c.enabled and c.marketplace in {'ozon','wildberries','yandex_market'}]
         if not enabled: return []
         ids=[c.id for c in enabled]; placeholders=','.join('?' for _ in ids)
-        with self.db.connect() as c:
+        with self.db.session() as c:
             rows=c.execute(f"""SELECT sr.data_date,COUNT(DISTINCT sr.connection_id) n
                 FROM source_runs sr WHERE sr.connection_id IN ({placeholders}) AND sr.data_date BETWEEN ? AND ?
                 AND sr.status='success' AND (sr.endpoint='statistics/orders' OR sr.endpoint='statistics/orders/backfill'
@@ -2005,7 +2005,7 @@ class Repository:
 
     def physical_product_daily_units(self, shop_id: int, start_date: str, end_date: str) -> dict[int,dict[str,float]]:
         """Latest ordered_units per listing/day, aggregated to a physical product."""
-        with self.db.connect() as c:
+        with self.db.session() as c:
             rows=c.execute("""WITH ranked AS (
                 SELECT p.id product_id,pm.data_date,pm.value,
                        ROW_NUMBER() OVER(PARTITION BY pm.listing_id,pm.data_date,pm.metric_key,pm.fulfillment_scheme
@@ -2028,7 +2028,7 @@ class Repository:
 
     def save_supply_recommendations(self, shop_id: int, as_of_date: str, rows: Iterable[dict[str,Any]], *, method_version: str='wma-v1') -> int:
         now=utcnow(); saved=0
-        with self.db.connect() as c:
+        with self.db.session() as c:
             c.execute('BEGIN IMMEDIATE')
             for r in rows:
                 c.execute("""INSERT INTO supply_recommendation_snapshots(
@@ -2057,7 +2057,7 @@ class Repository:
         return saved
 
     def latest_supply_recommendations(self, shop_id: int, as_of_date: str | None=None) -> list[dict[str,Any]]:
-        with self.db.connect() as c:
+        with self.db.session() as c:
             if as_of_date is None:
                 row=c.execute('SELECT MAX(as_of_date) d FROM supply_recommendation_snapshots WHERE shop_id=?',(shop_id,)).fetchone()
                 as_of_date=str(row['d']) if row and row['d'] else None
@@ -2082,7 +2082,7 @@ class Repository:
         shipments=list(shipments)
         active_ids={str(x) for x in active_external_ids} if active_external_ids is not None else None
         now=utcnow(); saved=0
-        with self.db.connect() as c:
+        with self.db.session() as c:
             c.execute('BEGIN IMMEDIATE')
             for shipment in shipments:
                 external_id=str(shipment['external_supply_id'])
@@ -2160,7 +2160,7 @@ class Repository:
         completed_wb={'5','ACCEPTED','NOT_ACTIVE'}
         completed_ozon={'ORDER_STATE_COMPLETED','COMPLETED','ORDER_STATE_CANCELLED','CANCELLED',
                         'ORDER_STATE_REJECTED_AT_SUPPLY_WAREHOUSE','REJECTED_AT_SUPPLY_WAREHOUSE','NOT_ACTIVE'}
-        with self.db.connect() as c:
+        with self.db.session() as c:
             rows=c.execute("""SELECT s.marketplace,s.external_supply_id,s.status,s.planned_at,s.arrival_at,
                     s.warehouse_name,i.marketplace_sku,i.planned_units,i.accepted_units,i.remaining_units,
                     pl.product_id,p.internal_sku,p.name,s.updated_at
@@ -2196,7 +2196,7 @@ class Repository:
 
     def save_forecast_quality(self, shop_id: int, rows: Iterable[dict[str,Any]], *, method_version: str) -> int:
         now=utcnow(); saved=0
-        with self.db.connect() as c:
+        with self.db.session() as c:
             c.execute('BEGIN IMMEDIATE')
             for r in rows:
                 predicted=float(r['predicted_units']); actual=float(r['actual_units']); err=abs(predicted-actual)
@@ -2213,7 +2213,7 @@ class Repository:
         return saved
 
     def forecast_quality_rows(self, shop_id: int, *, limit: int=500) -> list[dict[str,Any]]:
-        with self.db.connect() as c:
+        with self.db.session() as c:
             rows=c.execute("""SELECT q.*,p.internal_sku,p.name FROM forecast_quality_snapshots q
                 LEFT JOIN products p ON p.id=q.product_id WHERE q.shop_id=?
                 ORDER BY q.evaluated_at DESC,q.id DESC LIMIT ?""",(shop_id,max(1,int(limit)))).fetchall()
@@ -2228,7 +2228,7 @@ class Repository:
         capture day; warehouse rows from that run are summed. Missing days stay
         missing and are never interpreted as zero stock.
         """
-        with self.db.connect() as c:
+        with self.db.session() as c:
             rows=c.execute("""WITH latest_run AS (
                 SELECT i.listing_id,i.fulfillment_scheme,substr(i.captured_at,1,10) d,MAX(i.source_run_id) source_run_id
                 FROM inventory_snapshots i JOIN product_listings pl ON pl.id=i.listing_id
@@ -2255,7 +2255,7 @@ class Repository:
         ``arrival_at`` is a planned warehouse date, so Ozon is deliberately
         excluded instead of pretending it is an observed delay.
         """
-        with self.db.connect() as c:
+        with self.db.session() as c:
             rows=c.execute("""SELECT pl.product_id,s.planned_at,s.arrival_at
                 FROM inbound_shipments s JOIN inbound_shipment_items i ON i.shipment_id=s.id
                 JOIN product_listings pl ON pl.id=i.listing_id
@@ -2284,7 +2284,7 @@ class Repository:
         if horizon_days is not None:
             filters.append('q.horizon_days=?'); params.append(int(horizon_days))
         where=' AND '.join(filters)
-        with self.db.connect() as c:
+        with self.db.session() as c:
             rows=c.execute(f"""WITH ranked AS (
                 SELECT q.*,ROW_NUMBER() OVER (PARTITION BY q.product_id ORDER BY q.as_of_date DESC,q.id DESC) rn
                 FROM forecast_quality_snapshots q WHERE {where})
@@ -2296,7 +2296,7 @@ class Repository:
 
     def save_supply_calibrations(self, shop_id: int, as_of_date: str, rows: Iterable[dict[str,Any]], *, method_version: str) -> int:
         now=utcnow(); saved=0
-        with self.db.connect() as c:
+        with self.db.session() as c:
             c.execute('BEGIN IMMEDIATE')
             for r in rows:
                 c.execute("""INSERT INTO supply_calibration_snapshots(
@@ -2321,7 +2321,7 @@ class Repository:
         return saved
 
     def latest_supply_calibrations(self, shop_id: int, as_of_date: str | None=None) -> list[dict[str,Any]]:
-        with self.db.connect() as c:
+        with self.db.session() as c:
             if as_of_date is None:
                 row=c.execute('SELECT MAX(as_of_date) d FROM supply_calibration_snapshots WHERE shop_id=?',(shop_id,)).fetchone()
                 as_of_date=str(row['d']) if row and row['d'] else None
@@ -2339,7 +2339,7 @@ class Repository:
     def listing_by_offer_id(self, connection_id: int, offer_id: str):
         clean=str(offer_id or '').strip()
         if not clean: return None
-        with self.db.connect() as c:
+        with self.db.session() as c:
             r=c.execute('SELECT * FROM product_listings WHERE connection_id=? AND offer_id=? ORDER BY id LIMIT 1',
                         (connection_id,clean)).fetchone()
         return ProductListing(r['id'],r['product_id'],r['connection_id'],r['marketplace_sku'],r['offer_id']) if r else None
@@ -2354,7 +2354,7 @@ class Repository:
         """
         rows=list(promotions); complete={str(x) for x in complete_external_ids} if complete_external_ids is not None else None
         now=utcnow(); saved=0
-        with self.db.connect() as c:
+        with self.db.session() as c:
             c.execute('BEGIN IMMEDIATE')
             for promo in rows:
                 external=str(promo.get('external_promotion_id') or '').strip()
@@ -2409,7 +2409,7 @@ class Repository:
         return saved
 
     def promotions_for_shop(self, shop_id: int, start_date: str, end_date: str) -> list[dict[str,Any]]:
-        with self.db.connect() as c:
+        with self.db.session() as c:
             rows=c.execute("""SELECT pr.*,mc.marketplace,
                 COUNT(pp.id) product_rows,SUM(CASE WHEN pp.in_action=1 THEN 1 ELSE 0 END) participating_products,
                 SUM(CASE WHEN pp.in_action=1 AND pp.listing_id IS NOT NULL THEN 1 ELSE 0 END) linked_products
@@ -2423,7 +2423,7 @@ class Repository:
         return [dict(r) for r in rows]
 
     def promotion_products_for_shop(self, shop_id: int, start_date: str, end_date: str) -> list[dict[str,Any]]:
-        with self.db.connect() as c:
+        with self.db.session() as c:
             rows=c.execute("""SELECT pr.marketplace,pr.external_promotion_id,pr.name promotion_name,pr.promo_type,
                 pr.start_at,pr.end_at,pp.marketplace_sku,pp.in_action,pp.base_price,pp.promo_price,pp.discount_pct,
                 pp.listing_id,pl.product_id,p.internal_sku,p.name product_name
@@ -2475,7 +2475,7 @@ class Repository:
     # --- Action Center workflow ------------------------------------------
     def sync_action_center(self, shop_id: int, as_of_date: str, items: Iterable[dict[str,Any]]) -> None:
         rows=list(items); now=utcnow(); active={str(x['action_key']) for x in rows}
-        with self.db.connect() as c:
+        with self.db.session() as c:
             c.execute('BEGIN IMMEDIATE')
             for item in rows:
                 key=str(item['action_key']); evidence=canonical_json(item.get('evidence') or {})
@@ -2512,7 +2512,7 @@ class Repository:
         params=[shop_id]
         if not include_resolved: sql += " AND status<>'resolved'"
         sql += " ORDER BY last_priority,last_seen_at DESC LIMIT ?"; params.append(limit)
-        with self.db.connect() as c: rows=c.execute(sql,params).fetchall()
+        with self.db.session() as c: rows=c.execute(sql,params).fetchall()
         return [dict(r) for r in rows]
 
     def set_action_status(self, shop_id: int, action_key: str, status: str, *, telegram_user_id: int | None=None, snooze_hours: int | None=None) -> bool:
@@ -2521,14 +2521,14 @@ class Repository:
         if status=='snoozed':
             hours=max(1,min(int(snooze_hours or 24),720))
             snooze=(datetime.now(timezone.utc)+timedelta(hours=hours)).isoformat(timespec='seconds')
-        with self.db.connect() as c:
+        with self.db.session() as c:
             cur=c.execute("""UPDATE action_center_state SET status=?,snoozed_until=?,acknowledged_by=?
                 WHERE shop_id=? AND action_key=? AND status<>'resolved'""",
                 (status,snooze,telegram_user_id,shop_id,str(action_key)))
         return cur.rowcount>0
 
     def action_history(self, shop_id: int, start_date: str, end_date: str, limit: int=200) -> list[dict[str,Any]]:
-        with self.db.connect() as c:
+        with self.db.session() as c:
             rows=c.execute("""SELECT h.*,s.status current_status,s.snoozed_until FROM action_center_history h
                 LEFT JOIN action_center_state s ON s.shop_id=h.shop_id AND s.action_key=h.action_key
                 WHERE h.shop_id=? AND h.as_of_date BETWEEN ? AND ?

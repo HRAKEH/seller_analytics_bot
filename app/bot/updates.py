@@ -8,6 +8,7 @@ from time import monotonic
 from typing import Any, Awaitable, Callable
 
 from aiogram import BaseMiddleware, types
+from app.services.performance import timed_async
 
 log = logging.getLogger(__name__)
 
@@ -34,6 +35,7 @@ class TelegramUpdateMiddleware(BaseMiddleware):
         self.max_entries = max_entries
         self._seen: OrderedDict[tuple[Any, ...], _Delivery] = OrderedDict()
 
+    @timed_async('telegram_update')
     async def __call__(
         self,
         handler: Callable[[types.TelegramObject, dict[str, Any]], Awaitable[Any]],

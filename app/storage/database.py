@@ -861,8 +861,18 @@ class Database:
         conn.execute("PRAGMA busy_timeout=30000")
         return conn
 
+    @contextmanager
+    def session(self):
+        """Transaction plus deterministic close; sqlite's own context only commits/rolls back."""
+        conn = self.connect()
+        try:
+            with conn:
+                yield conn
+        finally:
+            conn.close()
+
     def initialize(self) -> int:
-        with self.connect() as conn:
+        with self.session() as conn:
             conn.execute("CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)")
             current = conn.execute("SELECT COALESCE(MAX(version),0) FROM schema_migrations").fetchone()[0]
             for version in sorted(MIGRATIONS):
@@ -874,6 +884,8 @@ class Database:
                     conn.execute('BEGIN IMMEDIATE')
                 MIGRATIONS[version](conn)
                 conn.execute("INSERT INTO schema_migrations(version, applied_at) VALUES(?, datetime('now'))", (version,))
+            # A derived index only: no data rewrite or schema-version bump.
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_inventory_scheme_history ON inventory_snapshots(listing_id,fulfillment_scheme,available_units)')
             conn.commit()
             conn.execute('PRAGMA foreign_keys=ON')
             return conn.execute("SELECT COALESCE(MAX(version),0) FROM schema_migrations").fetchone()[0]
@@ -886,7 +898,7 @@ class Database:
             current=0
             if existed_before:
                 try:
-                    with self.connect() as conn:
+                    with self.session() as conn:
                         row=conn.execute("SELECT COALESCE(MAX(version),0) FROM schema_migrations").fetchone()
                         current=int(row[0]) if row else 0
                 except sqlite3.Error:
@@ -953,22 +965,22 @@ class Database:
                 raise
 
     def schema_version(self) -> int:
-        with self.connect() as conn:
+        with self.session() as conn:
             row = conn.execute("SELECT COALESCE(MAX(version),0) FROM schema_migrations").fetchone()
             return int(row[0]) if row else 0
 
     def integrity_check(self) -> bool:
-        with self.connect() as conn:
+        with self.session() as conn:
             return conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
 
     def quick_check(self) -> bool:
-        with self.connect() as conn:
+        with self.session() as conn:
             return conn.execute("PRAGMA quick_check").fetchone()[0] == "ok"
 
     def checkpoint(self, mode: str = "PASSIVE") -> tuple[int, int, int]:
         mode = mode.upper()
         if mode not in {"PASSIVE", "FULL", "RESTART", "TRUNCATE"}:
             raise ValueError("invalid checkpoint mode")
-        with self.connect() as conn:
+        with self.session() as conn:
             row = conn.execute(f"PRAGMA wal_checkpoint({mode})").fetchone()
             return tuple(int(x) for x in row)

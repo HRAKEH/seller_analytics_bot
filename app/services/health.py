@@ -6,6 +6,7 @@ import logging
 from datetime import datetime, timezone, timedelta
 from typing import Any
 from app.storage.database import LATEST_SCHEMA_VERSION
+from app.services.performance import snapshot, format_performance
 
 log=logging.getLogger(__name__)
 
@@ -15,7 +16,7 @@ def build_health(registry, *, deep: bool=False, shop_id: int | None=None, includ
     checks: dict[str,Any]={}
     ok=True
     try:
-        with db.connect() as c:
+        with db.session() as c:
             c.execute('SELECT 1').fetchone()
         checks['database']='ok'
     except Exception as exc:
@@ -38,6 +39,8 @@ def build_health(registry, *, deep: bool=False, shop_id: int | None=None, includ
     try: checks['retry_jobs']=repo.retry_job_counts(shop_id)
     except Exception: checks['retry_jobs']={}
     if include_runtime_details:
+        checks['performance']=snapshot(db.path)
+        checks['shops_busy']=sum(ctx.job_lock.locked() for ctx in registry.contexts() if hasattr(ctx,'job_lock'))
         try:
             lease=repo.lease_info('singleton:telegram-poller')
             checks['poller_lease']={'owner_id':lease.get('owner_id'),'expires_at':lease.get('expires_at')} if lease else None
@@ -77,6 +80,9 @@ def format_health(report: dict[str,Any]) -> str:
     if 'sqlite_quick_check' in c: lines.append(f'SQLite quick_check: {c["sqlite_quick_check"]}')
     lease=c.get('poller_lease')
     if lease: lines.append(f'Poller lease: <code>{lease.get("owner_id")}</code> до {lease.get("expires_at")}')
+    if 'performance' in c:
+        lines.append(f'Магазинов с активной загрузкой: {c.get("shops_busy",0)}')
+        lines.append(format_performance(c['performance']))
     return '\n'.join(lines)
 
 

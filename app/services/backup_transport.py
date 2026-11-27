@@ -19,6 +19,7 @@ from aiogram.types import FSInputFile
 
 from app.services.backups import BackupResult, preserve_backup_file, _sha256
 from app.services.backup_files import unpack_backup, database_member
+from app.services.performance import run_heavy_io
 
 
 log = logging.getLogger(__name__)
@@ -42,16 +43,7 @@ class BackupUpload:
 
 async def run_backup_io(function, *args, **kwargs):
     """Keep the event loop responsive and finish disk work before temp cleanup."""
-    task = asyncio.create_task(asyncio.to_thread(partial(function, *args, **kwargs)))
-    try:
-        return await asyncio.shield(task)
-    except asyncio.CancelledError:
-        # A thread cannot be cancelled. Do not remove its files while it writes.
-        try:
-            await task
-        except Exception:
-            pass
-        raise
+    return await run_heavy_io(function, *args, **kwargs)
 
 
 def _prepare_single(source: Path, directory: Path) -> BackupUpload:

@@ -34,6 +34,7 @@ from app.services.backup_transport import (
 )
 from app.services.exporting import export_xlsx, export_csv_zip
 from app.services.health import build_health, format_health
+from app.services.performance import run_heavy_io
 from app.services.supply import build_supply_plan, evaluate_forecast_quality, build_supply_calibration
 from app.services.actions import build_action_center
 from app.services.readiness import build_readiness, format_readiness, format_onboarding_help
@@ -762,7 +763,7 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
                 path=Path(tmp)/export_filename('Данные',shop.name if shop else 'Магазин',start,end.isoformat(),suffix)
                 include_finance=allowed(message,'finance');include_technical=is_system_owner(message)
                 exporter=export_xlsx if fmt=='xlsx' else export_csv_zip
-                result=exporter(ctx.repository,ctx.shop_id,end,days,path,
+                result=await run_heavy_io(exporter,ctx.repository,ctx.shop_id,end,days,path,
                     include_finance=include_finance,include_technical=include_technical)
                 if not allowed(message) or (include_finance and not allowed(message,'finance')) or (
                         include_technical and not is_system_owner(message)):
@@ -1197,7 +1198,7 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
         try: days=int(parts[1]) if len(parts)>1 else p.product_report_days
         except ValueError: return await message.answer('Формат: /products или /products 7')
         days=max(1,min(days,30)); end=local_now().date()-timedelta(days=1)
-        await send(message,format_product_report(build_product_report(ctx.repository,ctx.shop_id,end,
+        await send(message,format_product_report(await run_heavy_io(build_product_report,ctx.repository,ctx.shop_id,end,
             days=days,stock_lookback_days=p.stock_velocity_days,stock_risk_days=p.stock_risk_days)))
 
     @dp.message(Command('stocks'))
@@ -1215,7 +1216,7 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
         else:
             await message.answer('👁 Режим viewer: показываю последний сохранённый снимок без обращения к API.')
         end=local_now().date()-timedelta(days=1)
-        await send(message,format_stock_report(build_product_report(ctx.repository,ctx.shop_id,end,
+        await send(message,format_stock_report(await run_heavy_io(build_product_report,ctx.repository,ctx.shop_id,end,
             days=p.product_report_days,stock_lookback_days=p.stock_velocity_days,stock_risk_days=p.stock_risk_days)))
 
     @dp.message(Command('finance'))
@@ -1237,7 +1238,7 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
             await message.answer('⏳ Уже выполняется другая загрузка. Показываю сохранённые финансы.')
         else:
             await message.answer('👁 Режим viewer: показываю сохранённые финансы без обновления API.')
-        await send(message,format_finance(build_finance_report(ctx.repository,ctx.shop_id,end,days)))
+        await send(message,format_finance(await run_heavy_io(build_finance_report,ctx.repository,ctx.shop_id,end,days)))
 
     @dp.message(Command('ads'))
     async def cmd_ads(message: types.Message):
@@ -1256,7 +1257,7 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
             await message.answer('⏳ Уже выполняется другая загрузка. Показываю сохранённую рекламную статистику.')
         else:
             await message.answer('👁 Режим viewer: показываю сохранённую рекламную статистику без обновления API.')
-        await send(message,format_advertising(build_advertising_report(ctx.repository,ctx.shop_id,end,days)))
+        await send(message,format_advertising(await run_heavy_io(build_advertising_report,ctx.repository,ctx.shop_id,end,days)))
 
     @dp.message(Command('management'))
     async def cmd_management(message: types.Message):
@@ -1276,14 +1277,14 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
             await message.answer('⏳ Уже выполняется другая загрузка. Показываю расчёт по сохранённым данным.')
         else:
             await message.answer('👁 Режим viewer: расчёт по уже сохранённым данным.')
-        await send(message,format_management(build_management_report(ctx.repository,ctx.shop_id,end,days)))
+        await send(message,format_management(await run_heavy_io(build_management_report,ctx.repository,ctx.shop_id,end,days)))
 
     @dp.message(Command('sku_finance'))
     async def cmd_sku_finance(message: types.Message):
         if not allowed(message): return await denied(message)
         try: days,start,end=parse_report_period(message.text or '',pref().finance_lookback_days,local_now().date())
         except ValueError: return await message.answer('Формат: /sku_finance [дней] [YYYY-MM-DD] · от 1 до 31 дня, без будущих дат.')
-        await send(message,format_sku_economics(build_sku_economics(ctx.repository,ctx.shop_id,end,days)))
+        await send(message,format_sku_economics(await run_heavy_io(build_sku_economics,ctx.repository,ctx.shop_id,end,days)))
 
     @dp.message(Command('reconcile'))
     async def cmd_reconcile(message: types.Message):
@@ -1304,7 +1305,7 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
                     await message.answer(f'⚠️ {failed} загрузок завершились ошибкой; ранее успешные данные не затёрты.')
         else:
             await message.answer('👁 Режим viewer: показываю последнюю сохранённую сверку без обновления API.')
-        await send(message,format_reconciliation(build_reconciliation_report(ctx.repository,ctx.shop_id,end,days)))
+        await send(message,format_reconciliation(await run_heavy_io(build_reconciliation_report,ctx.repository,ctx.shop_id,end,days)))
 
     @dp.message(Command('refresh'))
     async def cmd_refresh(message: types.Message):
@@ -1324,7 +1325,7 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
         except RuntimeError as exc:return await message.answer(f'⚠️ {escape(str(exc)[:220])}')
         await send(message,format_refresh(stages,start,end),permission='operate')
         if allowed(message,'finance'):
-            await send(message,format_finance(build_finance_report(ctx.repository,ctx.shop_id,end,days)),permission='finance')
+            await send(message,format_finance(await run_heavy_io(build_finance_report,ctx.repository,ctx.shop_id,end,days)),permission='finance')
 
     @dp.message(Command('sources'))
     async def cmd_sources(message: types.Message):
@@ -1523,14 +1524,14 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
     async def cmd_forecast_quality(message: types.Message):
         if not allowed(message): return await denied(message)
         end=local_now().date()-timedelta(days=1)
-        report=evaluate_forecast_quality(ctx.repository,ctx.shop_id,end,persist=allowed(message,'operate'))
+        report=await run_heavy_io(evaluate_forecast_quality,ctx.repository,ctx.shop_id,end,persist=allowed(message,'operate'))
         await send(message,format_forecast_quality(report))
 
     @dp.message(Command('supply_calibration'))
     async def cmd_supply_calibration(message: types.Message):
         if not allowed(message): return await denied(message)
         end=local_now().date()-timedelta(days=1)
-        report=build_supply_calibration(ctx.repository,ctx.shop_id,end,persist=False)
+        report=await run_heavy_io(build_supply_calibration,ctx.repository,ctx.shop_id,end,persist=False)
         await send(message,format_supply_calibration(report))
 
     @dp.message(Command('supply_calibration_refresh'))
@@ -1538,8 +1539,8 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
         if not allowed(message,'operate'): return await denied(message,'operate')
         end=local_now().date()-timedelta(days=1)
         # Refresh the rolling backtest first; calibration must learn only from completed history.
-        evaluate_forecast_quality(ctx.repository,ctx.shop_id,end,persist=True)
-        report=build_supply_calibration(ctx.repository,ctx.shop_id,end,persist=True)
+        await run_heavy_io(evaluate_forecast_quality,ctx.repository,ctx.shop_id,end,persist=True)
+        report=await run_heavy_io(build_supply_calibration,ctx.repository,ctx.shop_id,end,persist=True)
         await send(message,format_supply_calibration(report),permission='operate')
 
     @dp.message(Command('promotions'))
@@ -1569,7 +1570,7 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
         try: days=int(parts[1]) if len(parts)>1 else None
         except ValueError: return await message.answer('Формат: /supply [дней]')
         end=local_now().date()-timedelta(days=1)
-        plan=build_supply_plan(ctx.repository,ctx.shop_id,end,lookback_days=days,persist=False)
+        plan=await run_heavy_io(build_supply_plan,ctx.repository,ctx.shop_id,end,lookback_days=days,persist=False)
         await send(message,format_supply_plan(plan))
 
     @dp.message(Command('supply_refresh'))
@@ -1586,7 +1587,7 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
         try: await ctx.collect_promotions(local_now().date())
         except Exception as exc: await message.answer(f'⚠️ Акции не обновлены: {escape(str(exc)[:250])}. Использую последний успешный календарь.')
         end=local_now().date()-timedelta(days=1)
-        plan=build_supply_plan(ctx.repository,ctx.shop_id,end,lookback_days=days,persist=True)
+        plan=await run_heavy_io(build_supply_plan,ctx.repository,ctx.shop_id,end,lookback_days=days,persist=True)
         await send(message,format_supply_plan(plan),permission='operate')
 
     @dp.message(Command('supply_sku'))
@@ -1595,7 +1596,7 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
         parts=(message.text or '').split(maxsplit=1)
         if len(parts)<2: return await message.answer('Формат: /supply_sku INTERNAL_SKU')
         sku=parts[1].strip(); end=local_now().date()-timedelta(days=1)
-        plan=build_supply_plan(ctx.repository,ctx.shop_id,end,persist=False)
+        plan=await run_heavy_io(build_supply_plan,ctx.repository,ctx.shop_id,end,persist=False)
         row=next((r for r in plan.rows if r.internal_sku==sku),None)
         if row is None: return await message.answer('⚠️ Физический товар с таким internal_sku не найден.')
         await send(message,format_supply_product(row))
@@ -1706,10 +1707,11 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
         retry=repo.retry_job_counts(ctx.shop_id)
         active_alerts=repo.active_alert_states(ctx.shop_id)
         recent_days=repo.recent_metric_days(ctx.shop_id,limit=10)
+        db_ok=await run_heavy_io(repo.db.quick_check)
         text='\n'.join([
             '🧪 <b>Диагностика текущего магазина</b>','━━━━━━━━━━━━━━━━',
             f'Магазин: <b>{escape(shop.name if shop else str(ctx.shop_id))}</b>',
-            f'Целостность SQLite: {"✅" if repo.db.quick_check() else "❌"}',
+            f'Целостность SQLite: {"✅" if db_ok else "❌"}',
             f'Версия схемы: {repo.db.schema_version()}',
             f'Подключений магазина: {len(repo.list_connections(ctx.shop_id))}',
             f'Полных/частичных дат в истории: {len(recent_days)} из последних 10 проверенных',
@@ -1855,17 +1857,17 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
     async def saved_finance(message):
         if not allowed(message):return await denied(message)
         days,_,end=parse_report_period(message.text,1,local_now().date())
-        await send(message,format_finance(build_finance_report(ctx.repository,ctx.shop_id,end,days)))
+        await send(message,format_finance(await run_heavy_io(build_finance_report,ctx.repository,ctx.shop_id,end,days)))
 
     async def saved_ads(message):
         if not allowed(message):return await denied(message)
         days,_,end=parse_report_period(message.text,1,local_now().date())
-        await send(message,format_advertising(build_advertising_report(ctx.repository,ctx.shop_id,end,days)))
+        await send(message,format_advertising(await run_heavy_io(build_advertising_report,ctx.repository,ctx.shop_id,end,days)))
 
     async def saved_management(message):
         if not allowed(message):return await denied(message)
         days,_,end=parse_report_period(message.text,1,local_now().date())
-        await send(message,format_management(build_management_report(ctx.repository,ctx.shop_id,end,days)))
+        await send(message,format_management(await run_heavy_io(build_management_report,ctx.repository,ctx.shop_id,end,days)))
 
     from .period_picker import PeriodPicker
     period_actions={
@@ -2164,14 +2166,14 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
     async def btn_products(message: types.Message):
         if not allowed(message): return await denied(message)
         p=pref(); end=local_now().date()-timedelta(days=1)
-        await send(message,format_product_report(build_product_report(ctx.repository,ctx.shop_id,end,
+        await send(message,format_product_report(await run_heavy_io(build_product_report,ctx.repository,ctx.shop_id,end,
             days=p.product_report_days,stock_lookback_days=p.stock_velocity_days,stock_risk_days=p.stock_risk_days)))
 
     @dp.message(F.text == '📦 Остатки')
     async def btn_stocks(message: types.Message):
         if not allowed(message): return await denied(message)
         p=pref(); end=local_now().date()-timedelta(days=1)
-        await send(message,format_stock_report(build_product_report(ctx.repository,ctx.shop_id,end,
+        await send(message,format_stock_report(await run_heavy_io(build_product_report,ctx.repository,ctx.shop_id,end,
             days=p.product_report_days,stock_lookback_days=p.stock_velocity_days,stock_risk_days=p.stock_risk_days)))
 
     @dp.message(F.text == '🔄 Обновить остатки')
@@ -2188,7 +2190,7 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
     async def btn_supply(message: types.Message):
         if not allowed(message): return await denied(message)
         end=local_now().date()-timedelta(days=1)
-        await send(message,format_supply_plan(build_supply_plan(ctx.repository,ctx.shop_id,end,persist=False)))
+        await send(message,format_supply_plan(await run_heavy_io(build_supply_plan,ctx.repository,ctx.shop_id,end,persist=False)))
 
     @dp.message(F.text == '📈 Результат')
     async def btn_management(message: types.Message): await cmd_management(message)
@@ -2197,7 +2199,7 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
     async def btn_reconcile(message: types.Message):
         if not allowed(message): return await denied(message)
         p=pref(); end=local_now().date()-timedelta(days=1)
-        await send(message,format_reconciliation(build_reconciliation_report(ctx.repository,ctx.shop_id,end,p.finance_lookback_days)))
+        await send(message,format_reconciliation(await run_heavy_io(build_reconciliation_report,ctx.repository,ctx.shop_id,end,p.finance_lookback_days)))
 
     @dp.message(F.text == '📜 История')
     async def btn_history(message: types.Message):

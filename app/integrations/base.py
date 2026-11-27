@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from typing import Any
 import httpx
+from app.services.performance import timed_api
 
 log=logging.getLogger(__name__)
 
@@ -117,6 +118,7 @@ class MarketplaceClient:
         key=(id(loop),self.rate_scope,rate_key)
         return max(0.0,self._shared_rate_next.get(key,0.0)-loop.time())
 
+    @timed_api
     async def request(self, method: str, path: str, *, params=None, json=None, headers=None,
                       rate_key: str = 'default', min_interval: float | None = None,
                       retry_on_429: bool = True, fail_fast_rate_limit: bool = False) -> FetchResult:
