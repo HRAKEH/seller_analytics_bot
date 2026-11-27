@@ -277,3 +277,14 @@ async def test_history_shows_actual_storage_and_marks_pruned_files(ui):
     text=next(method.text for method in reversed(ui.telegram.methods) if getattr(method,'text',None))
     assert 'Копии бота на сервере: 1' in text and '7 дней' in text and '512 МиБ' in text
     assert old.path.name in text and 'файл уже удалён' in text
+
+
+
+def test_retention_without_deletion_does_not_unpack_backups(ui,monkeypatch):
+    recent=snapshot(ui)
+    service=configured(ui,backup_compress=False)
+    def fail(*args,**kwargs):
+        raise AssertionError('No backup verification is needed when there is nothing to delete')
+    monkeypatch.setattr(service,'_usable',fail)
+    assert service.prune(7)==0
+    assert recent.path.exists()

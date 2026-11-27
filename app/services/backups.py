@@ -233,6 +233,14 @@ class BackupService:
             paths=sorted(self._files(),key=lambda path:(path.stat().st_mtime_ns,path.name),reverse=True)
             if not paths:
                 return 0
+            cutoff=datetime.now(timezone.utc).timestamp()-max(1,int(retention_days))*86400
+            # No deletion is necessary: avoid decompressing and checking a
+            # potentially gigabyte-sized backup every hour. Before ANY deletion
+            # the existing full verification still runs.
+            if (len(paths)<=self.max_count and
+                    sum(path.stat().st_size for path in paths)<=self.max_total_bytes and
+                    all(path.stat().st_mtime>=cutoff for path in paths)):
+                return 0
             protected={path.resolve() for path in preserve}
             # Never remove the final usable recovery point, even when it exceeds a limit.
             latest=next((path for path in paths if self._usable(path)),None)
@@ -240,7 +248,6 @@ class BackupService:
                 log.warning('Backup retention skipped: no usable recovery point')
                 return 0
             protected.add(latest.resolve())
-            cutoff=datetime.now(timezone.utc).timestamp()-max(1,int(retention_days))*86400
             removed=0
             def remove(path):
                 nonlocal removed
