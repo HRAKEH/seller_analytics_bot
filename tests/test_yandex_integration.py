@@ -78,7 +78,7 @@ def test_orders_reject_corrupt_or_cross_account_data(mutation):
     with pytest.raises(ValueError):normalize_orders({'orders':[item]},1,DAY.isoformat(),20)
 
 
-def test_cancelled_orders_and_partial_lines_are_excluded():
+def test_all_created_orders_and_partial_cancellations_are_separate():
     full=order()
     full['status']='CANCELLED'
     full['items'][0]['count']=2
@@ -91,15 +91,15 @@ def test_cancelled_orders_and_partial_lines_are_excluded():
     active['items'][0]['prices']={'payment':{'value':9123,'currencyId':'RUR'}}
     points,obs=normalize_orders({'orders':[full,active]},1,DAY.isoformat(),20)
     assert {p.metric_key:p.value for p in points}=={
-        'ordered_units':12,'ordered_revenue':9123,'cancellations_units':2}
-    assert obs[0].fulfillment_units=={'FBS':12}
+        'ordered_units':14,'ordered_revenue':11823,'cancellations_units':2}
+    assert obs[0].fulfillment_units=={'FBS':14}
     gross,_=normalize_orders({'orders':[full,active]},1,DAY.isoformat(),20,include_created=True)
-    assert {p.metric_key:p.value for p in gross}=={'ordered_units':12,'ordered_revenue':9123,'cancellations_units':2,'ym_created_units':14,'ym_created_revenue':11823}
+    assert {p.metric_key:p.value for p in gross}=={'ordered_units':14,'ordered_revenue':11823,'cancellations_units':2,'ym_created_units':14,'ym_created_revenue':11823,'ym_noncancelled_units':12,'ym_noncancelled_revenue':9123}
     partial=order()
     partial['items'][0]['itemStatuses']=[{'status':'CREATED','count':2},{'status':'CANCELLED','count':1}]
     points,obs=normalize_orders({'orders':[partial]},1,DAY.isoformat(),20)
     assert {p.metric_key:p.value for p in points}=={
-        'ordered_units':2,'ordered_revenue':200,'cancellations_units':1}
+        'ordered_units':3,'ordered_revenue':300,'cancellations_units':1}
 
 
 def test_stock_explicit_zero_and_overreserve():
@@ -270,3 +270,14 @@ async def test_partner_stock_routes_only_configured_campaign():
         result=await client.inventory_snapshot()
         assert result.ok and normalize_stocks(result.data,result.data['scheme'])[0].available_units==7
         assert len(calls)==3
+
+
+def test_partial_cancellation_keeps_original_order_amount_and_separate_active_total():
+    payload=order()
+    payload['items'][0]['itemStatuses']=[{'status':'CREATED','count':2},{'status':'CANCELLED','count':1}]
+    points,obs=normalize_orders({'orders':[payload]},1,DAY.isoformat(),20,include_created=True)
+    values={p.metric_key:p.value for p in points}
+    assert values['ordered_units']==3 and values['ordered_revenue']==300
+    assert values['ym_noncancelled_units']==2 and values['ym_noncancelled_revenue']==200
+    assert obs[0].ordered_units==3 and obs[0].ordered_revenue==300
+    assert obs[0].fulfillment_units=={'FBS':3}

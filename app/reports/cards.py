@@ -184,14 +184,14 @@ def format_daily_card(repo, shop_id: int, report: DailyReport) -> DailyCardText:
             else:accruals.append('После удержаний Ozon: ⏳ начисления ещё не загружены.')
         elif s.marketplace=='yandex_market':
             finance=None
-            created=repo.latest_metric(s.connection_id,report.day,'ym_created_units')
-            created_money=repo.latest_metric(s.connection_id,report.day,'ym_created_revenue')
-            refreshed=created is not None and created_money is not None
-            label='Без отмен' if refreshed else 'Заказано (старые данные, обновите)'
-            summary.append('🛒 '+label+': <b>'+units+'</b> · '+(rubles(s.ordered_revenue) if s.ordered_revenue is not None else '⏳ нет суммы'))
-            if refreshed:
-                details.append('Оформлено с отменами: '+num(created['value'])+' шт. · '+rubles(created_money['value']))
-            details.append('Источник: заказы Яндекс Маркета по дате создания (Москва). Без отмен — отдельный расчёт, не гарантированное совпадение со сводкой кабинета.')
+            active=repo.latest_metric(s.connection_id,report.day,'ym_noncancelled_units')
+            active_money=repo.latest_metric(s.connection_id,report.day,'ym_noncancelled_revenue')
+            summary.append('🛒 Заказано: <b>'+units+' · '+rubles(s.ordered_revenue)+'</b>' if s.units is not None and s.ordered_revenue is not None else '🛒 Заказано: <b>'+units+'</b> · ⏳ сумма неполная.')
+            if active is not None and active_money is not None and s.units is not None:
+                details.append('Без отмен среди оформленных в этот день: '+num(active['value'])+' шт. · '+rubles(active_money['value']))
+            if s.units is None:
+                details.append('Обновите заказы за выбранную дату: старый расчёт не смешивается с новым.')
+            details.append('Источник: все товары в заказах Яндекс Маркета по дате создания (Москва), включая отменённые.')
             details.append('Оплата, баллы Плюса и компенсации скидок Маркета; без доставки и удержаний.')
             accruals.append('Выплаты и удержания не рассчитаны по сумме заказов.')
         else:
@@ -244,7 +244,7 @@ def format_daily_card(repo, shop_id: int, report: DailyReport) -> DailyCardText:
         summary.append('🕘 События проверены: '+display_time(min(event_freshness),tz=tz))
     if event_load_failed or any(s.warning for s in sources):
         summary.append('⚠️ Есть сбой загрузки — см. «Подробнее».')
-    details.extend(['','Общий итог — сумма показанных цен: WB до удержаний, Ozon по цене покупателя, Яндекс Маркет — оплата и баллы Плюса. '
+    details.extend(['','Общий итог — ориентир по сумме показанных цен, денежные базы отличаются: WB до удержаний, Ozon по цене покупателя, Яндекс Маркет — оплата, баллы Плюса и компенсации скидок. '
         'При пересчёте валют это оценка по ЦБ. Начисления после удержаний смотрите отдельно.'])
     accruals.extend(['','Это не чистая прибыль: себестоимость и налоги здесь не вычитаются.'])
     return DailyCardText('\n'.join(summary),'\n'.join(details),'\n'.join(accruals))

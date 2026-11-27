@@ -838,6 +838,22 @@ def _migration_23(conn):
 
 
 MIGRATIONS[23] = _migration_23
+
+
+def _migration_24(conn):
+    # Historical Yandex snapshots used a different basis. Preserve them under
+    # archive keys; neither period totals nor SKU forecasts may silently mix
+    # pre-upgrade noncancelled orders with all created orders.
+    conn.execute("""UPDATE metric_values SET metric_key='ym_legacy_' || metric_key
+        WHERE metric_key IN ('ordered_units','ordered_revenue')
+        AND connection_id IN (SELECT id FROM marketplace_connections WHERE marketplace='yandex_market')""")
+    conn.execute("""UPDATE product_metric_values SET metric_key='ym_legacy_' || metric_key
+        WHERE metric_key IN ('ordered_units','ordered_revenue','fulfillment_units')
+        AND listing_id IN (SELECT pl.id FROM product_listings pl JOIN marketplace_connections mc
+            ON mc.id=pl.connection_id WHERE mc.marketplace='yandex_market')""")
+
+
+MIGRATIONS[24] = _migration_24
 LATEST_SCHEMA_VERSION = max(MIGRATIONS)
 
 

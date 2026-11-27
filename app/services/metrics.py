@@ -11,6 +11,11 @@ class MetricDefinition:
     description: str = ""
 
 METRICS: dict[str, MetricDefinition] = {
+    'ym_noncancelled_units': MetricDefinition('ym_noncancelled_units','Яндекс Маркет: без отмен по дате создания','units',False),
+    'ym_noncancelled_revenue': MetricDefinition('ym_noncancelled_revenue','Яндекс Маркет: сумма без отмен по дате создания','RUB',False),
+    'ym_legacy_ordered_units': MetricDefinition('ym_legacy_ordered_units','Яндекс Маркет: прежний расчёт количества (архив)','units',False),
+    'ym_legacy_ordered_revenue': MetricDefinition('ym_legacy_ordered_revenue','Яндекс Маркет: прежний расчёт суммы (архив)','RUB',False),
+    'ym_legacy_fulfillment_units': MetricDefinition('ym_legacy_fulfillment_units','Яндекс Маркет: прежний расчёт по схемам (архив)','units',False),
     'ym_created_units': MetricDefinition('ym_created_units','Яндекс Маркет: оформлено с отменами','units',False),
     'ym_created_revenue': MetricDefinition('ym_created_revenue','Яндекс Маркет: сумма оформленных с отменами','RUB',False),
     "ym_order_services": MetricDefinition("ym_order_services", "Услуги по заказам Яндекс Маркета", "RUB", False, "Стоимость услуг по дате создания заказа; не выплата и не расходы по дате начисления"),

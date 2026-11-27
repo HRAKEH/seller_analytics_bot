@@ -89,7 +89,7 @@ class CollectionService:
         try:
             points,observations=normalize_orders(result.data,connection_id,ds,client.campaign_id,include_created=True)
             # Do not persist buyer addresses, names or phone numbers from orders.
-            rid=self.repo.record_success(connection_id,endpoint,ds,{'normalizer':'ym_exclude_cancelled_v2','payload':result.data},points,
+            rid=self.repo.record_success(connection_id,endpoint,ds,{'normalizer':'ym_created_v3','payload':result.data},points,
                 attempts=result.attempts,store_raw=False)
             self._save_product_observations(shop_id=shop_id,connection_id=connection_id,
                 marketplace=market,source_run_id=rid,observations=observations)

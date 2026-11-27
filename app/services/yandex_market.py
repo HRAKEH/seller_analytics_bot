@@ -36,6 +36,7 @@ def money(value):
 def normalize_orders(payload, connection_id, day, campaign_id, *, include_created=False):
     products = {}; seen = set()
     created_units=0; created_amount=Decimal(0)
+    active_units=0; active_amount=Decimal(0)
     campaigns = {campaign_id} if isinstance(campaign_id, int) else set(campaign_id)
     for order in rows(payload, 'orders'):
         oid = order.get('orderId')
@@ -97,20 +98,26 @@ def normalize_orders(payload, connection_id, day, campaign_id, *, include_create
             # API prices cover all units of this SKU line. Partial cancellations
             # are allocated proportionally to the surviving quantity, rounded
             # to kopecks (the API does not return a per-unit price breakdown).
-            if cancelled:
-                amount = (amount * Decimal(active) / Decimal(count)).quantize(
-                    Decimal('0.01'), rounding=ROUND_HALF_UP)
+            active_units += active
+            active_amount += (amount * Decimal(active) / Decimal(count)).quantize(
+                Decimal('0.01'), rounding=ROUND_HALF_UP) if cancelled else amount
             obs = products.setdefault(sku, ProductDayObservation(day, sku, item.get('offerName') or sku, sku))
-            obs.ordered_units += active
+            obs.ordered_units += count
             obs.ordered_revenue += float(amount)
             obs.cancellations_units += cancelled
-            obs.fulfillment_units[scheme] = obs.fulfillment_units.get(scheme, 0) + active
+            obs.fulfillment_units[scheme] = obs.fulfillment_units.get(scheme, 0) + count
     observations = list(products.values())
     points = [MetricPoint(connection_id, day, metric, sum(getattr(x, metric) for x in observations), unit, True)
               for metric, unit in [('ordered_units','units'),('ordered_revenue','RUB'),('cancellations_units','units')]]
+    # Canonical totals use the same creation-date cohort as WB/Ozon.
+    # Sum the original Decimal amounts, not floating-point SKU subtotals.
+    points[0] = MetricPoint(connection_id,day,'ordered_units',created_units,'units',True)
+    points[1] = MetricPoint(connection_id,day,'ordered_revenue',float(created_amount),'RUB',True)
     if include_created:
         points.extend([MetricPoint(connection_id,day,'ym_created_units',created_units,'units',True),
-                       MetricPoint(connection_id,day,'ym_created_revenue',float(created_amount),'RUB',True)])
+                       MetricPoint(connection_id,day,'ym_created_revenue',float(created_amount),'RUB',True),
+                       MetricPoint(connection_id,day,'ym_noncancelled_units',active_units,'units',True),
+                       MetricPoint(connection_id,day,'ym_noncancelled_revenue',float(active_amount),'RUB',True)])
     return points, observations
 
 
