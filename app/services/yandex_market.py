@@ -33,8 +33,9 @@ def money(value):
         raise ValueError('Некорректная сумма Яндекс Маркета') from None
 
 
-def normalize_orders(payload, connection_id, day, campaign_id):
+def normalize_orders(payload, connection_id, day, campaign_id, *, include_created=False):
     products = {}; seen = set()
+    created_units=0; created_amount=Decimal(0)
     campaigns = {campaign_id} if isinstance(campaign_id, int) else set(campaign_id)
     for order in rows(payload, 'orders'):
         oid = order.get('orderId')
@@ -76,6 +77,8 @@ def normalize_orders(payload, connection_id, day, campaign_id):
             for component in ('cashback', 'subsidy'):
                 if prices.get(component) is not None:
                     amount += money(prices[component])
+            created_units += count
+            created_amount += amount
             cancelled = count if status == 'CANCELLED' else 0
             if item.get('itemStatuses') is not None:
                 states = rows(item, 'itemStatuses'); seen_status = set(); total = 0; cancelled = 0
@@ -105,6 +108,9 @@ def normalize_orders(payload, connection_id, day, campaign_id):
     observations = list(products.values())
     points = [MetricPoint(connection_id, day, metric, sum(getattr(x, metric) for x in observations), unit, True)
               for metric, unit in [('ordered_units','units'),('ordered_revenue','RUB'),('cancellations_units','units')]]
+    if include_created:
+        points.extend([MetricPoint(connection_id,day,'ym_created_units',created_units,'units',True),
+                       MetricPoint(connection_id,day,'ym_created_revenue',float(created_amount),'RUB',True)])
     return points, observations
 
 

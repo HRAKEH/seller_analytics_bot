@@ -93,6 +93,8 @@ def test_cancelled_orders_and_partial_lines_are_excluded():
     assert {p.metric_key:p.value for p in points}=={
         'ordered_units':12,'ordered_revenue':9123,'cancellations_units':2}
     assert obs[0].fulfillment_units=={'FBS':12}
+    gross,_=normalize_orders({'orders':[full,active]},1,DAY.isoformat(),20,include_created=True)
+    assert {p.metric_key:p.value for p in gross}=={'ordered_units':12,'ordered_revenue':9123,'cancellations_units':2,'ym_created_units':14,'ym_created_revenue':11823}
     partial=order()
     partial['items'][0]['itemStatuses']=[{'status':'CREATED','count':2},{'status':'CANCELLED','count':1}]
     points,obs=normalize_orders({'orders':[partial]},1,DAY.isoformat(),20)

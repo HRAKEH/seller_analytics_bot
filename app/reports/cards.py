@@ -184,9 +184,15 @@ def format_daily_card(repo, shop_id: int, report: DailyReport) -> DailyCardText:
             else:accruals.append('После удержаний Ozon: ⏳ начисления ещё не загружены.')
         elif s.marketplace=='yandex_market':
             finance=None
-            summary.append('🛒 Заказано: <b>'+units+'</b> · '+(rubles(s.ordered_revenue) if s.ordered_revenue is not None else '⏳ нет суммы'))
-            details.append('Источник: заказы Яндекс Маркета по дате создания (Москва). После обновления отменённые единицы исключаются из суммы и количества.')
-            details.append('Сумма оплаты и баллов Плюса за позиции; без доставки, субсидий и удержаний.')
+            created=repo.latest_metric(s.connection_id,report.day,'ym_created_units')
+            created_money=repo.latest_metric(s.connection_id,report.day,'ym_created_revenue')
+            refreshed=created is not None and created_money is not None
+            label='Без отмен' if refreshed else 'Заказано (старые данные, обновите)'
+            summary.append('🛒 '+label+': <b>'+units+'</b> · '+(rubles(s.ordered_revenue) if s.ordered_revenue is not None else '⏳ нет суммы'))
+            if refreshed:
+                details.append('Оформлено с отменами: '+num(created['value'])+' шт. · '+rubles(created_money['value']))
+            details.append('Источник: заказы Яндекс Маркета по дате создания (Москва). Без отмен — отдельный расчёт, не гарантированное совпадение со сводкой кабинета.')
+            details.append('Оплата, баллы Плюса и компенсации скидок Маркета; без доставки и удержаний.')
             accruals.append('Выплаты и удержания не рассчитаны по сумме заказов.')
         else:
             if s.units is not None and s.ordered_revenue is not None:
