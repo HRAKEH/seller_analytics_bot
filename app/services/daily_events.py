@@ -331,6 +331,20 @@ def build_daily_events(repo, connection_id: int, marketplace: str, day: date) ->
             warning='В полученных ответах Ozon нет даты отмены. Точный итог отмен за день не подтверждён.'))
     if marketplace == 'yandex_market':
         note='По заказам известны статусы, но точная дата каждого события не подтверждена.'
-        return DailyEvents(*(DayEvent(source='Яндекс Маркет · '+label,unavailable_note='дата события не подтверждена',warning=note)
-            for label in ('выкупы','возвраты','отмены')))
+        unknown=lambda label: DayEvent(source='Яндекс Маркет · '+label,
+            unavailable_note='дата события не подтверждена',warning=note)
+        cancellation=unknown('отмены')
+        if hasattr(repo,'db'):
+            from .yandex_push import cancellation_day
+            push=cancellation_day(repo.db,connection_id,ds)
+            if push:
+                units=push['units']
+                cancellation=DayEvent(source='Яндекс Маркет · ORDER_CANCELLED + API',
+                    available_units=units,
+                    unavailable_note=f'≥ {units} шт. · по уведомлениям' if units else '⏳ отмены за день не подтверждены',
+                    freshness=push['freshness'],
+                    warning='Учитываются подтверждённые полные отмены по дате события (Москва). Полнота, частичные и исторические отмены не подтверждены.'+
+                        (' Есть ожидающие проверки или противоречивые уведомления.' if push['issues'] else ''),
+                    price_note='Сумма отмен по дате события не подтверждена.')
+        return DailyEvents(unknown('выкупы'),unknown('возвраты'),cancellation)
     raise ValueError('Unknown marketplace')

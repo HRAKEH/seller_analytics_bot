@@ -45,9 +45,14 @@ def error_response(message: str, status: int):
 
 
 def create_push_app(registry) -> web.Application:
-    if not registry.settings.ozon_push_enabled:
-        raise ValueError('OZON_PUSH_ENABLED is false')
-    base_url(registry.settings.ozon_push_base_url)
+    ym_secret=getattr(registry.settings,'yandex_push_secret','')
+    if not registry.settings.ozon_push_enabled and not ym_secret:
+        raise ValueError('Push is disabled')
+    if registry.settings.ozon_push_enabled:
+        base_url(registry.settings.ozon_push_base_url)
+    if ym_secret:
+        from app.services.yandex_push import validate_secret
+        validate_secret(ym_secret)
     store = OzonPushStore(registry.repository.db)
     version_path = Path(__file__).resolve().parents[2] / 'VERSION'
     version = version_path.read_text().strip() if version_path.exists() else 'unknown'
@@ -129,7 +134,11 @@ def create_push_app(registry) -> web.Application:
     app = web.Application(client_max_size=MAX_BODY_BYTES)
     app.router.add_get('/health',health)
     app.router.add_get('/ready',health)
-    app.router.add_post('/ozon/push/{connection_id}/{token}',receive)
+    if registry.settings.ozon_push_enabled:
+        app.router.add_post('/ozon/push/{connection_id}/{token}',receive)
+    if ym_secret:
+        from app.services.yandex_push import register_route
+        register_route(app,registry)
     return app
 
 

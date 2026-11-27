@@ -252,6 +252,8 @@ def format_daily_card(repo, shop_id: int, report: DailyReport) -> DailyCardText:
             details.append('Продажи покупателям: дневная реализация Ozon. Возвраты: '
                            'после вручения, по дате возврата покупателем; отказы при вручении сюда не входят.')
         if s.cancellations is not None:
+            if s.marketplace=='yandex_market':
+                summary.append('  Отменено из заказов дня: '+num(s.cancellations)+' шт.')
             details.append('Отмены среди заказов, созданных в этот день: '+num(s.cancellations)+
                            ' шт. Это другой показатель; он не подставляется в строку «Отменено».')
         if s.freshness:details.append('Заказы обновлены: '+_safe(s.freshness,50))

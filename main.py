@@ -61,6 +61,9 @@ async def main():
     if not settings.owner_ids: raise RuntimeError('TELEGRAM_OWNER_ID is required')
     if settings.ozon_push_enabled:
         base_url(settings.ozon_push_base_url)
+    if settings.yandex_push_secret:
+        from app.services.yandex_push import validate_secret
+        validate_secret(settings.yandex_push_secret)
 
     database=Database(settings.db_file)
     version=database.initialize_safely(settings.db_file.parent/'backups')
@@ -120,10 +123,13 @@ async def main():
             asyncio.create_task(automatic_backup_loop(registry,bot),name='automatic-backup'),
             asyncio.create_task(backup_storage_maintenance_loop(registry),name='backup-storage-maintenance'),
         ]
-        if settings.ozon_push_enabled:
+        if settings.ozon_push_enabled or settings.yandex_push_secret:
             tasks.append(asyncio.create_task(ozon_push_http_server(registry),name='ozon-push-http-server'))
         elif settings.health_server_enabled:
             tasks.append(asyncio.create_task(health_http_server(registry),name='health-http-server'))
+        if settings.yandex_push_secret:
+            from app.services.yandex_push import verification_loop
+            tasks.append(asyncio.create_task(verification_loop(registry),name='yandex-push-verify'))
 
         # A background service is part of the bot's correctness. If one crashes,
         # stop polling and exit non-zero instead of looking healthy while scheduled

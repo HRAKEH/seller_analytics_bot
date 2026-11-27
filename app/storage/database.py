@@ -854,6 +854,27 @@ def _migration_24(conn):
 
 
 MIGRATIONS[24] = _migration_24
+
+
+def _migration_25(conn):
+    conn.execute("""CREATE TABLE ym_push_scope (
+        connection_id INTEGER PRIMARY KEY REFERENCES marketplace_connections(id) ON DELETE CASCADE,
+        account_hash TEXT NOT NULL
+    )""")
+    conn.execute("""CREATE TABLE ym_push_cancellations (
+        connection_id INTEGER NOT NULL REFERENCES marketplace_connections(id) ON DELETE CASCADE,
+        account_hash TEXT NOT NULL, campaign_id INTEGER NOT NULL, order_id INTEGER NOT NULL,
+        event_day TEXT NOT NULL, cancelled_at TEXT NOT NULL, items_json TEXT NOT NULL,
+        units INTEGER NOT NULL CHECK(units>0), status TEXT NOT NULL DEFAULT 'pending',
+        attempts INTEGER NOT NULL DEFAULT 0, retry_after TEXT NOT NULL DEFAULT '',
+        received_at TEXT NOT NULL, verified_at TEXT,
+        PRIMARY KEY(connection_id,account_hash,campaign_id,order_id)
+    )""")
+    conn.execute("""CREATE INDEX idx_ym_push_pending ON ym_push_cancellations(connection_id,account_hash,status,retry_after)""")
+    conn.execute("""CREATE INDEX idx_ym_push_day ON ym_push_cancellations(connection_id,account_hash,event_day,status)""")
+
+
+MIGRATIONS[25] = _migration_25
 LATEST_SCHEMA_VERSION = max(MIGRATIONS)
 
 

@@ -48,7 +48,10 @@ class RuntimeRegistry:
             if not shop or not shop.active: raise ValueError('shop not found or inactive')
             pref=self.repository.ensure_shop_preferences(shop.id,defaults_from_settings(self.settings))
             creds=self.settings.credentials_for_profile(shop.credential_profile)
+            from app.services.yandex_push import sync_scope
             for connection in self.repository.list_connections(shop.id):
+                if connection.marketplace=='yandex_market':
+                    sync_scope(self.repository.db,connection.id,creds if creds.has_yandex_market else None)
                 if connection.marketplace=='ozon':
                     OzonPushStore(self.repository.db).observe_account(connection.id,
                         creds.ozon_client_id if creds.has_ozon else '',creds.profile)
@@ -69,6 +72,7 @@ class RuntimeRegistry:
             ym=None; ym_id=None
             if creds.has_yandex_market:
                 ym_id=self.repository.ensure_connection(shop.id,'yandex_market','Яндекс Маркет').id
+                sync_scope(self.repository.db,ym_id,creds)
                 ids=creds.yandex_market_campaign_ids
                 if len(ids) == 1:
                     ym=YandexMarketClient(creds.yandex_market_api_key,timeout=self.settings.http_timeout)

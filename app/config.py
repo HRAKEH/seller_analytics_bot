@@ -113,6 +113,7 @@ class Settings:
     backup_max_total_mb: int = 512
     ozon_push_enabled: bool = False
     ozon_push_base_url: str = ""
+    yandex_push_secret: str = field(default="", repr=False)
 
 
     yandex_market_api_key: str = field(default="", repr=False)
@@ -201,6 +202,7 @@ class Settings:
             backup_max_total_mb=max(1,int(os.getenv("BACKUP_MAX_TOTAL_MB","512"))),
             ozon_push_enabled=_bool("OZON_PUSH_ENABLED",False),
             ozon_push_base_url=os.getenv("OZON_PUSH_BASE_URL","").strip(),
+            yandex_push_secret=os.getenv("YANDEX_PUSH_SECRET","").strip(),
         )
 
 settings = Settings.from_env()
