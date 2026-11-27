@@ -188,7 +188,11 @@ def format_daily_card(repo, shop_id: int, report: DailyReport) -> DailyCardText:
             active_money=repo.latest_metric(s.connection_id,report.day,'ym_noncancelled_revenue')
             summary.append('🛒 Заказано: <b>'+units+' · '+rubles(s.ordered_revenue)+'</b>' if s.units is not None and s.ordered_revenue is not None else '🛒 Заказано: <b>'+units+'</b> · ⏳ сумма неполная.')
             if active is not None and active_money is not None and s.units is not None:
-                details.append('Без отмен среди оформленных в этот день: '+num(active['value'])+' шт. · '+rubles(active_money['value']))
+                # Separate the creation cohort from the noncancelled comparison;
+                # neither is a cancellation-event total. Do not alter gross totals.
+                active_line=num(active['value'])+' шт. · '+rubles(active_money['value'])
+                summary.append('  Из них без отмен: <b>'+active_line+'</b>')
+                details.append('Без отмен среди оформленных в этот день: '+active_line)
             if s.units is None:
                 details.append('Обновите заказы за выбранную дату: старый расчёт не смешивается с новым.')
             details.append('Источник: все товары в заказах Яндекс Маркета по дате создания (Москва), включая отменённые.')
