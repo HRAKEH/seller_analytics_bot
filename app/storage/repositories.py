@@ -6,6 +6,7 @@ import sqlite3
 from datetime import date, datetime, timezone, timedelta
 from typing import Iterable, Any
 from .database import Database
+from .raw_payloads import pack_raw_json, unpack_raw_json, decoded_raw_row
 from .models import (Seller, Shop, MarketplaceConnection, MetricPoint, SourceRun,
                      Product, ProductListing, ProductMetricPoint, InventoryPoint,
                      ShopPreferences, CommerceEventPoint, AdCampaignPoint, AdProductPoint)
@@ -595,13 +596,13 @@ class Repository:
                   AND sr.status IN ('success','partial')
                 ORDER BY sr.finished_at DESC,sr.id DESC LIMIT 1''',
                 (connection_id,data_date,*endpoints)).fetchone()
-        return dict(row) if row else None
+        return decoded_raw_row(row) if row else None
 
     def raw_payload_for_run(self, source_run_id: int) -> str | None:
         with self.db.session() as c:
             row = c.execute('SELECT payload_json FROM raw_payloads WHERE source_run_id=?',
                             (source_run_id,)).fetchone()
-        return row['payload_json'] if row else None
+        return unpack_raw_json(row['payload_json']) if row else None
 
     def latest_buyout_capture(self, connection_id: int, data_date: str) -> dict | None:
         """One latest snapshot covering this order day, including an empty one.
@@ -622,13 +623,13 @@ class Repository:
             # extension or loading every report into memory at once.
             for row in rows:
                 try:
-                    body=json.loads(row['payload_json'])
+                    body=json.loads(unpack_raw_json(row['payload_json']))
                     first=date.fromisoformat(body['order_date_from'])
                     last=date.fromisoformat(body['order_date_to'])
                 except (ValueError,TypeError,KeyError):
                     continue
                 if first<=day<=last and (last-first).days<90 and last.isoformat()==row['data_date']:
-                    return dict(row)
+                    return decoded_raw_row(row)
         return None
 
     def record_failure(self, connection_id: int, endpoint: str, data_date: str, error: str,
@@ -643,7 +644,7 @@ class Repository:
             run_id = int(cur.lastrowid)
             if raw_payload is not None:
                 c.execute('INSERT INTO raw_payloads(source_run_id,payload_json,created_at) VALUES(?,?,?)',
-                          (run_id, canonical_json(raw_payload), now))
+                          (run_id, pack_raw_json(canonical_json(raw_payload)), now))
             return run_id
 
     def record_success(self, connection_id: int, endpoint: str, data_date: str,
@@ -655,6 +656,7 @@ class Repository:
         now = source_utcnow()
         body = canonical_json(raw_payload)
         digest = hashlib.sha256(body.encode("utf-8")).hexdigest()
+        stored_body = pack_raw_json(body) if store_raw else None
         points = list(metrics)
         for p in points:
             finite_number(p.value)
@@ -687,7 +689,7 @@ class Repository:
                     if store_raw:
                         c.execute('''INSERT INTO raw_payloads(source_run_id,payload_json,created_at)
                             SELECT ?,?,? WHERE NOT EXISTS(SELECT 1 FROM raw_payloads WHERE source_run_id=?)''',
-                            (previous['id'],body,now,previous['id']))
+                            (previous['id'],stored_body,now,previous['id']))
                     # New normalizer versions may add metrics to an unchanged
                     # payload (for example billed advertising on an upgrade).
                     existing={r['metric_key'] for r in c.execute(
@@ -708,7 +710,7 @@ class Repository:
                 (connection_id, endpoint, data_date, status, started_at or now, now, attempts, digest, now, error[:2000] if error else None))
             run_id = int(cur.lastrowid)
             if store_raw:
-                c.execute("INSERT INTO raw_payloads(source_run_id,payload_json,created_at) VALUES(?,?,?)", (run_id, body, now))
+                c.execute("INSERT INTO raw_payloads(source_run_id,payload_json,created_at) VALUES(?,?,?)", (run_id, stored_body, now))
             for p in points:
                 c.execute("""INSERT INTO metric_values
                     (connection_id,data_date,metric_key,value,unit,is_preliminary,as_of,fetched_at,source_run_id)

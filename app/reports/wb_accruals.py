@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from datetime import date
 from html import escape
 import json
+from app.storage.raw_payloads import unpack_raw_json
 from pathlib import Path
 
 from app.services.finance import normalize_wb_finance_report
@@ -43,7 +44,7 @@ def build_wb_accrual_ledger(repo, shop_id: int, start: str, end: str, *, source_
     rows=[]; seen=set()
     keys=('financial_sales','goods_payable','bank_payment','logistics','storage','acceptance','services','penalties','compensation')
     for source in payloads:
-        payload=json.loads(source['payload_json'])
+        payload=json.loads(unpack_raw_json(source['payload_json']))
         reports=payload.get('reports') if isinstance(payload,dict) else payload
         if not isinstance(reports,list):continue
         for index,report in enumerate(reports,1):

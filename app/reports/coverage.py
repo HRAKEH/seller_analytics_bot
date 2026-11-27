@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 from html import escape
 import json
+from app.storage.raw_payloads import unpack_raw_json
 from .dates import readable_dates
 from app.services.daily_events import (
     WB_SALES, WB_CANCELS, OZON_RETURNS, OZON_REALIZATION, DailyEventError,
@@ -97,7 +98,7 @@ def build_source_coverage(repo, shop_id: int, start: str, end: str) -> tuple[Sou
                     if row['endpoint']!=endpoint:continue
                     ds=row['data_date']
                     try:
-                        payload=json.loads(row['payload_json'])
+                        payload=json.loads(unpack_raw_json(row['payload_json']))
                         if endpoint==WB_SALES:reading=normalize_wb_sales_day(payload,ds)[index]
                         elif endpoint==WB_CANCELS:reading=normalize_wb_cancellations_day(payload,ds)
                         elif endpoint==OZON_RETURNS:reading=normalize_ozon_returns_day(payload,ds)

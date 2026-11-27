@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from datetime import date
 import csv
 import json
+from app.storage.raw_payloads import unpack_raw_json
 from pathlib import Path
 
 from app.services.finance import normalize_ozon_accruals
@@ -47,7 +48,7 @@ def build_accrual_ledger(repo, shop_id: int, start: str, end: str, *, source_run
         raise ValueError('Сохранённый источник недоступен. Откройте начисления заново.')
     rows=[]
     for source in payloads:
-        payload=json.loads(source['payload_json'])
+        payload=json.loads(unpack_raw_json(source['payload_json']))
         for index,operation in enumerate(payload['accruals'],1):
             metrics={p.metric_key:p.value for p in normalize_ozon_accruals({'accruals':[operation]},source['connection_id'],source['data_date'])}
             posting=operation.get('posting') or {}
