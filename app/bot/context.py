@@ -230,8 +230,8 @@ class AppContext:
         async with self.operation_lock('reconciliation'):
             outcomes=[]
             outcomes += await self.collector.backfill_orders(start=start,end=end,shop_id=self.shop_id,
-                wb_connection_id=self.wb_connection_id if marketplace in (None,'wildberries') else None,ozon_connection_id=self.ozon_connection_id if marketplace in (None,'ozon') else None)
-            if self.yandex_market_connection_id is not None and marketplace in (None,'yandex_market'):
+                wb_connection_id=self.wb_connection_id,ozon_connection_id=self.ozon_connection_id)
+            if self.yandex_market_connection_id is not None:
                 current=start
                 while current<=end:
                     outcomes.append(await self.collector.collect_yandex_orders_day(self.yandex_market_connection_id,current,shop_id=self.shop_id))
@@ -274,8 +274,8 @@ class AppContext:
         if self.demo_mode(): return []
         async with self.operation_lock('promotions'):
             outcomes=await self.collector.collect_promotions(shop_id=self.shop_id,as_of=day or date.today(),
-                wb_connection_id=self.wb_connection_id,ozon_connection_id=self.ozon_connection_id)
-            if self.yandex_market_connection_id is not None:
+                wb_connection_id=self.wb_connection_id if marketplace in (None,'wildberries') else None,ozon_connection_id=self.ozon_connection_id if marketplace in (None,'ozon') else None)
+            if self.yandex_market_connection_id is not None and marketplace in (None,'yandex_market'):
                 outcomes.append(await self.collector.collect_yandex_snapshot(self.yandex_market_connection_id,'promotions',day))
             return outcomes
 
