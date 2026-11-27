@@ -30,7 +30,7 @@ from app.services.preferences import update_validated
 from app.services.backups import BackupService
 from app.services.backup_transport import (
     TELEGRAM_DOWNLOAD_LIMIT, backup_upload, backup_saved_message, deliver_backup,
-    run_backup_io, unpack_restore_source,
+    run_backup_io, unpack_restore_source, try_backup_operation,
 )
 from app.services.exporting import export_xlsx, export_csv_zip
 from app.services.health import build_health, format_health
@@ -778,17 +778,20 @@ def register_handlers(dp: Dispatcher, ctx: AppContext, registry=None) -> None:
     async def cmd_backup(message: types.Message):
         if not allowed(message,'manage'): return await denied(message,'manage')
         if not is_system_owner(message): return await system_denied(message)
-        service=BackupService.from_settings(ctx.repository.db,ctx.repository,ctx.settings)
-        try:
-            result=await run_backup_io(service.create,kind='manual')
-        except Exception as exc:
-            return await message.answer(f'⚠️ Резервную копию не удалось создать: {escape(str(exc)[:300])}')
-        try:
-            async with backup_upload(result.path) as upload:
-                await deliver_backup(message.bot,message.chat.id,result,upload)
-        except Exception as exc:
-            await message.answer(backup_saved_message(
-                result,f'Отправка в Telegram не удалась: {str(exc)[:200]}'),parse_mode='HTML')
+        with try_backup_operation(ctx.repository.db.path) as acquired:
+            if not acquired:
+                return await message.answer('⏳ Резервная копия уже создаётся или отправляется. Повторная копия не запущена.')
+            service=BackupService.from_settings(ctx.repository.db,ctx.repository,ctx.settings)
+            try:
+                result=await run_backup_io(service.create,kind='manual')
+            except Exception as exc:
+                return await message.answer(f'⚠️ Резервную копию не удалось создать: {escape(str(exc)[:300])}')
+            try:
+                async with backup_upload(result.path) as upload:
+                    await deliver_backup(message.bot,message.chat.id,result,upload)
+            except Exception as exc:
+                await message.answer(backup_saved_message(
+                    result,f'Отправка в Telegram не удалась: {str(exc)[:200]}'),parse_mode='HTML')
 
     @dp.message(Command('backups'))
     async def cmd_backups(message: types.Message):

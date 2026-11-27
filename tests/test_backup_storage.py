@@ -288,3 +288,35 @@ def test_retention_without_deletion_does_not_unpack_backups(ui,monkeypatch):
     monkeypatch.setattr(service,'_usable',fail)
     assert service.prune(7)==0
     assert recent.path.exists()
+
+
+@pytest.mark.asyncio
+async def test_backup_duplicate_is_rejected_and_auto_slot_is_preserved(ui):
+    from app.services.scheduler import automatic_backup_once
+    settings=replace(ui.ctx.settings,auto_backup_enabled=True,auto_backup_hour_utc=0,
+                     auto_backup_send_telegram=False,instance_id='backup-guard-test')
+    registry=SimpleNamespace(repository=ui.repo,settings=settings,default_shop_id=ui.shop.id)
+    now=datetime.now(timezone.utc)
+    with transport.try_backup_operation(ui.repo.db.path) as acquired:
+        assert acquired
+        with transport.try_backup_operation(ui.repo.db.path) as second:
+            assert not second
+        await press(ui,'/backup')
+        text=next(method.text for method in reversed(ui.telegram.methods) if getattr(method,'text',None))
+        assert 'Повторная копия не запущена' in text
+        await automatic_backup_once(registry,now=now)
+        assert ui.repo.get_job_state(ui.shop.id,'database_backup')!=now.date().isoformat()
+        assert not ui.repo.recent_backups()
+    await automatic_backup_once(registry,now=now)
+    await automatic_backup_once(registry,now=now)
+    assert len(ui.repo.recent_backups())==1
+    assert ui.repo.get_job_state(ui.shop.id,'database_backup')==now.date().isoformat()
+
+
+def test_backup_guard_releases_after_exception(ui):
+    with pytest.raises(RuntimeError,match='failed'):
+        with transport.try_backup_operation(ui.repo.db.path) as acquired:
+            assert acquired
+            raise RuntimeError('failed')
+    with transport.try_backup_operation(ui.repo.db.path) as acquired:
+        assert acquired

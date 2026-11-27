@@ -243,36 +243,40 @@ async def multi_alerts_loop(bot: Bot, registry):
 async def automatic_backup_once(registry,bot=None,now=None):
     """Create once; retry delivery separately without making new DB copies."""
     from app.services.backups import BackupService
-    from app.services.backup_transport import backup_upload, deliver_backup, run_backup_io
+    from app.services.backup_transport import backup_upload, deliver_backup, run_backup_io, try_backup_operation
     settings=registry.settings
     if not settings.auto_backup_enabled:return
     now=now or datetime.now(ZoneInfo('UTC'));run_key=now.date().isoformat()
     if now.hour<settings.auto_backup_hour_utc:return
     repo=registry.repository;lease=f'scheduler:backup:{run_key}'
-    if not repo.acquire_lease(lease,settings.instance_id,3600):return
-    try:
-        service=BackupService.from_settings(repo.db,repo,settings)
-        if repo.get_job_state(registry.default_shop_id,'database_backup')!=run_key:
-            await run_backup_io(service.create,kind='automatic')
-            repo.set_job_state(registry.default_shop_id,'database_backup',run_key)
-        if not settings.auto_backup_send_telegram or bot is None:return
-        with repo.db.connect() as c:
-            row=c.execute("SELECT * FROM backup_history WHERE kind='automatic' AND status='success' AND created_at LIKE ? ORDER BY id DESC LIMIT 1",(run_key+'%',)).fetchone()
-        if row is None:return
-        path=service.directory/row['filename']
-        recipients=[uid for uid in settings.tech_admin_ids if uid in settings.owner_ids
-                    and repo.get_job_state(registry.default_shop_id,f'database_backup_delivery:{uid}')!=run_key]
-        if not recipients:return
-        async with backup_upload(path) as upload:
-            result=await run_backup_io(service.result_from_history,row)
-            for uid in recipients:
-                key=f'database_backup_delivery:{uid}'
-                try:
-                    await deliver_backup(bot,uid,result,upload,automatic_day=run_key)
-                    repo.set_job_state(registry.default_shop_id,key,run_key)
-                except asyncio.CancelledError:raise
-                except Exception:log.exception('Automatic backup delivery failed for system owner %s; will retry',uid)
-    finally:repo.release_lease(lease,settings.instance_id)
+    with try_backup_operation(repo.db.path) as acquired:
+        if not acquired:
+            # Next scheduler tick may retry; do not consume today's slot.
+            return
+        if not repo.acquire_lease(lease,settings.instance_id,3600):return
+        try:
+            service=BackupService.from_settings(repo.db,repo,settings)
+            if repo.get_job_state(registry.default_shop_id,'database_backup')!=run_key:
+                await run_backup_io(service.create,kind='automatic')
+                repo.set_job_state(registry.default_shop_id,'database_backup',run_key)
+            if not settings.auto_backup_send_telegram or bot is None:return
+            with repo.db.session() as c:
+                row=c.execute("SELECT * FROM backup_history WHERE kind='automatic' AND status='success' AND created_at LIKE ? ORDER BY id DESC LIMIT 1",(run_key+'%',)).fetchone()
+            if row is None:return
+            path=service.directory/row['filename']
+            recipients=[uid for uid in settings.tech_admin_ids if uid in settings.owner_ids
+                        and repo.get_job_state(registry.default_shop_id,f'database_backup_delivery:{uid}')!=run_key]
+            if not recipients:return
+            async with backup_upload(path) as upload:
+                result=await run_backup_io(service.result_from_history,row)
+                for uid in recipients:
+                    key=f'database_backup_delivery:{uid}'
+                    try:
+                        await deliver_backup(bot,uid,result,upload,automatic_day=run_key)
+                        repo.set_job_state(registry.default_shop_id,key,run_key)
+                    except asyncio.CancelledError:raise
+                    except Exception:log.exception('Automatic backup delivery failed for system owner %s; will retry',uid)
+        finally:repo.release_lease(lease,settings.instance_id)
 
 
 async def automatic_backup_loop(registry,bot=None):

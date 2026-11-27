@@ -2,11 +2,13 @@
 from __future__ import annotations
 
 import asyncio
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass
 from functools import partial
 from html import escape
 import logging
+import os
+from threading import Lock
 import hashlib
 import json
 import shutil
@@ -28,6 +30,40 @@ log = logging.getLogger(__name__)
 TELEGRAM_UPLOAD_LIMIT = 45 * 1024 * 1024
 TELEGRAM_DOWNLOAD_LIMIT = 20_000_000
 MAX_RESTORE_DATABASE_SIZE = 200 * 1024 * 1024
+
+_backup_operation_lock = Lock()
+
+@contextmanager
+def try_backup_operation(db_path):
+    """Reject duplicate backup jobs before the heavy-I/O queue.
+
+    Linux processes sharing a database also share an advisory file lock.
+    """
+    if not _backup_operation_lock.acquire(blocking=False):
+        yield False
+        return
+    fd = None
+    try:
+        try:
+            import fcntl
+        except ImportError:  # Windows development: process-local guard.
+            fcntl = None
+        if fcntl is not None:
+            lock_path = Path(str(Path(db_path).resolve()) + '.backup-operation.lock')
+            lock_path.parent.mkdir(parents=True, exist_ok=True)
+            fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                yield False
+                return
+        yield True
+    finally:
+        try:
+            if fd is not None:
+                os.close(fd)
+        finally:
+            _backup_operation_lock.release()
 
 
 @dataclass(frozen=True)
